@@ -7,19 +7,7 @@ edition = "2021"
 
 [lib]
 name = "utils"
-path = "src/utils/lib.rs"
-
-[[bin]]
-name = "creator"
-path = "src/contract_creator.rs"
-
-[[bin]]
-name = "listener"
-path = "src/contract_listener.rs"
-
-[[bin]]
-name = "settler"
-path = "src/contract_settler.rs"
+path = "src/lib.rs"
 
 [dependencies]
 tokio = { version = "1.28.0", features = ["full"] }

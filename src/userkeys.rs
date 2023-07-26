@@ -3,19 +3,19 @@ use sha2::{Digest, Sha256};
 
 use super::{nostr::{Note, SignedNote}, secrets::PRIV_KEY};
 
-pub struct ServerBot {
+pub struct UserKeys {
     pub id: String,
     keypair: KeyPair,
 }
 
-impl ServerBot {
+impl UserKeys {
     pub fn new() -> Self {
         let secp = Secp256k1::new();
         let secret_key = SecretKey::from_slice(&hex::decode(PRIV_KEY).unwrap()).unwrap();
         let keypair = KeyPair::from_secret_key(&secp, &secret_key);
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let id = hex::encode(Sha256::digest(&public_key.serialize()[..]));
-        ServerBot { id, keypair }
+        UserKeys { id, keypair }
     }
 
     pub fn get_public_key(&self) -> String {
