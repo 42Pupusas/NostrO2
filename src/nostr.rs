@@ -8,7 +8,7 @@ use futures_util::{StreamExt, SinkExt, stream::SplitSink};
 use tokio::{task::spawn_blocking, sync::mpsc::{UnboundedReceiver, unbounded_channel}};
 use tokio_tungstenite::{tungstenite::{protocol::{Message as WsMessage, CloseFrame, frame::coding::CloseCode}, Error as TungsteniteError}, connect_async, WebSocketStream};
 
-use super::secrets::RELAY_URL;
+use super::{utils::{new_keys, get_unix_timestamp}};
 
 pub struct NostrRelay {
     _url: Arc<str>,
@@ -17,8 +17,8 @@ pub struct NostrRelay {
 }
 
 impl NostrRelay {
-    pub async fn new() -> Self {
-        let url = RELAY_URL;
+    pub async fn new(relay_url:&str) -> Self {
+        let url = relay_url;
         let url_object = url::Url::parse(url).unwrap();
 
         if let Ok((ws_stream, _)) = connect_async(url_object).await {
@@ -130,7 +130,12 @@ pub struct Note {
 }
 
 impl Note {
-    pub fn new(pubkey: String, tags: Vec<Vec<String>>, kind: u32, content: String) -> Self {
+    pub fn new(
+      pubkey: String,
+      tags: Vec<Vec<String>>,
+      kind: u32,
+      content: String
+    ) -> Self {
         Note {
             pubkey,
             created_at: get_unix_timestamp(),

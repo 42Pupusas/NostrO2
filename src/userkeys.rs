@@ -1,27 +1,27 @@
 use secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
-use super::{nostr::{Note, SignedNote}, secrets::PRIV_KEY};
+use super::{nostr::{Note, SignedNote}};
 
 pub struct UserKeys {
-    pub id: String,
     keypair: KeyPair,
 }
 
 impl UserKeys {
-    pub fn new() -> Self {
+    pub fn new(private_key: &str) -> Self {
         let secp = Secp256k1::new();
-        let secret_key = SecretKey::from_slice(&hex::decode(PRIV_KEY).unwrap()).unwrap();
+        let secret_key = SecretKey::from_slice(
+          &hex::decode(private_key).unwrap()
+        ).unwrap();
         let keypair = KeyPair::from_secret_key(&secp, &secret_key);
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-        let id = hex::encode(Sha256::digest(&public_key.serialize()[..]));
-        UserKeys { id, keypair }
+        UserKeys { keypair }
     }
 
     pub fn get_public_key(&self) -> String {
         return self.keypair.public_key().to_string()[2..].to_string();
     }
-    
+
     pub fn sign_nostr_event(&self, event: Note) -> SignedNote {
         // Serialize the event as JSON
         let json_str = event.serialize_for_nostr();
