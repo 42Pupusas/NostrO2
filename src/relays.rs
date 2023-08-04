@@ -1,12 +1,11 @@
-use rand::{thread_rng, Rng};
-use std::{time::{SystemTime, UNIX_EPOCH}, sync::{Arc, Mutex}};
-use secp256k1::SecretKey;
+use secp256k1::schnorr::{Signature};
+use secp256k1::{Message, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value};
-
-use futures_util::{StreamExt, SinkExt, stream::SplitSink};
+use futures_util::{StreamExt, stream::SplitSink, SinkExt};
 use tokio::{task::spawn_blocking, sync::mpsc::{UnboundedReceiver, unbounded_channel}};
 use tokio_tungstenite::{tungstenite::{protocol::{Message as WsMessage, CloseFrame, frame::coding::CloseCode}, Error as TungsteniteError}, connect_async, WebSocketStream};
+use std::sync::{Arc,Mutex};
 
 use super::{utils::{new_keys, get_unix_timestamp}};
 
@@ -172,9 +171,32 @@ pub struct SignedNote {
 
 impl SignedNote {
     pub fn prepare_ws_message(&self) -> WsMessage {
-        let event_string = json!(["EVENT", self]).to_string();
-        let event_ws_message = WsMessage::Text(event_string);
-        event_ws_message
+      let event_string = json!(["EVENT", self]).to_string();
+      let event_ws_message = WsMessage::Text(event_string);
+      event_ws_message
+    }
+
+    pub fn verify_note(signed_note: SignedNote) -> bool {
+      let signature_of_signed_note = Signature::from_slice(
+        &hex::decode(signed_note.sig)
+        .expect("Failed to decode signed_note signature.")
+      ).expect("Failed to instantiate Signature from byte array.");
+      let message_of_signed_note = Message::from_slice(
+        &hex::decode(signed_note.id)
+        .expect("Failed to decode signed_note id.")
+      ).expect("Failed to instantiate Message from byte array.");
+      let public_key_of_signed_note = XOnlyPublicKey::from_slice(
+        &hex::decode(signed_note.pubkey)
+        .expect("Failed to decode signed_note public")
+      ).expect("Failed to instantiate XOnlyPublicKey from byte array.");
+
+      match signature_of_signed_note.verify(
+        &message_of_signed_note,
+        &public_key_of_signed_note
+      ) {
+        Ok(()) => return true,
+        _ => return false
+      };
     }
 }
 

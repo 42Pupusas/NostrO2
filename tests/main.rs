@@ -1,6 +1,6 @@
-extern crate rustr;
-use rustr::userkeys::{UserKeys};
-use rustr::nostr::{Note, SignedNote};
+extern crate nostro2;
+use nostro2::userkeys::{UserKeys};
+use nostro2::notes::{Note, SignedNote};
 use secp256k1::schnorr::{Signature};
 use secp256k1::{Message, XOnlyPublicKey};
 
@@ -36,19 +36,7 @@ mod tests {
       content_of_note.to_string()
     );
     let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-    let signature_of_signed_note = Signature::from_slice(
-      &hex::decode(signed_note.sig).unwrap()
-    ).unwrap();
-    let message_of_signed_note = Message::from_slice(
-      &hex::decode(signed_note.id).unwrap()
-    ).unwrap();
-    let public_key_of_signed_note = XOnlyPublicKey::from_slice(
-      &hex::decode(signed_note.pubkey).unwrap()
-    ).unwrap();
-    signature_of_signed_note.verify(
-      &message_of_signed_note,
-      &public_key_of_signed_note
-    );
+    assert_eq!(SignedNote::verify_note(signed_note), true);
   }
   // Send a kind 1 message to relay and recieve it.
   // Open relay to url
