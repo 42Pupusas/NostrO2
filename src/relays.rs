@@ -1,18 +1,28 @@
-use secp256k1::schnorr::{Signature};
-use secp256k1::{Message, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_value, Value};
+use serde_json::{json, Value};
 use futures_util::{StreamExt, stream::SplitSink, SinkExt};
 use tokio::{task::spawn_blocking, sync::mpsc::{UnboundedReceiver, unbounded_channel}};
 use tokio_tungstenite::{tungstenite::{protocol::{Message as WsMessage, CloseFrame, frame::coding::CloseCode}, Error as TungsteniteError}, connect_async, WebSocketStream};
 use std::sync::{Arc,Mutex};
 
-use super::{utils::{new_keys, get_unix_timestamp}};
+use super::{utils::{new_keys}};
+use super::{notes::{SignedNote}};
 
 pub struct NostrRelay {
     _url: Arc<str>,
-    ws_write: Arc<Mutex<SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, WsMessage>>>,
-    notes_receiver: tokio::sync::Mutex<UnboundedReceiver<Result<WsMessage, TungsteniteError>>>,
+    ws_write: Arc<
+      Mutex<
+        SplitSink<
+          WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
+          >,
+          WsMessage
+        >
+      >
+    >,
+    notes_receiver: tokio::sync::Mutex<
+      UnboundedReceiver<Result<WsMessage, TungsteniteError>>
+    >,
 }
 
 impl NostrRelay {
@@ -39,9 +49,10 @@ impl NostrRelay {
                 _url: Arc::from(url),
                 ws_write: Arc::new(Mutex::new(ws_write)),
                 notes_receiver: tokio::sync::Mutex::new(rx),
-            } } else {
-                panic!("Failed to connect to Nostr Relay");
             }
+        } else {
+            panic!("Failed to connect to Nostr Relay");
+        }
     }
 
     pub async fn subscribe(&self, filter: Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -64,7 +75,9 @@ impl NostrRelay {
         let ws_stream = Arc::clone(&self.ws_write);
         spawn_blocking(move || {
             let mut write = ws_stream.lock().unwrap();
-            match tokio::runtime::Handle::current().block_on(write.send(note.prepare_ws_message())) {
+            match tokio::runtime::Handle::current().block_on(
+              write.send(note.prepare_ws_message())
+            ) {
                 Ok(_) => {
                     ()
                 },
@@ -100,13 +113,13 @@ impl NostrRelay {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NostrSubscription {
+struct NostrSubscription {
     id: String,
     filters: Value,
 }
 
 impl NostrSubscription {
-    pub fn new(filter: Value) -> WsMessage {
+    fn new(filter: Value) -> WsMessage {
         let id = hex::encode(&new_keys()[..]);
         let nostr_subscription = NostrSubscription {
             id,
@@ -118,85 +131,3 @@ impl NostrSubscription {
         nostr_subscription_string
     }
 }
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Note {
-    pub pubkey: String,
-    pub created_at: u64,
-    pub kind: u32,
-    pub tags: Vec<Vec<String>>,
-    pub content: String,
-}
-
-impl Note {
-    pub fn new(
-      pubkey: String,
-      tags: Vec<Vec<String>>,
-      kind: u32,
-      content: String
-    ) -> Self {
-        Note {
-            pubkey,
-            created_at: get_unix_timestamp(),
-            kind,
-            tags,
-            content,
-        }
-    }
-    pub fn serialize_for_nostr(&self) -> String {
-        let value = to_value(self).unwrap();
-
-        let json_str = json!([
-            0,
-            value["pubkey"],
-            value["created_at"],
-            value["kind"],
-            value["tags"],
-            value["content"]
-        ]);
-        json_str.to_string()
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SignedNote {
-    pub id: String,
-    pub pubkey: String,
-    pub created_at: u64,
-    pub kind: u32,
-    pub tags: Vec<Vec<String>>,
-    pub content: String,
-    pub sig: String,
-}
-
-impl SignedNote {
-    pub fn prepare_ws_message(&self) -> WsMessage {
-      let event_string = json!(["EVENT", self]).to_string();
-      let event_ws_message = WsMessage::Text(event_string);
-      event_ws_message
-    }
-
-    pub fn verify_note(signed_note: SignedNote) -> bool {
-      let signature_of_signed_note = Signature::from_slice(
-        &hex::decode(signed_note.sig)
-        .expect("Failed to decode signed_note signature.")
-      ).expect("Failed to instantiate Signature from byte array.");
-      let message_of_signed_note = Message::from_slice(
-        &hex::decode(signed_note.id)
-        .expect("Failed to decode signed_note id.")
-      ).expect("Failed to instantiate Message from byte array.");
-      let public_key_of_signed_note = XOnlyPublicKey::from_slice(
-        &hex::decode(signed_note.pubkey)
-        .expect("Failed to decode signed_note public")
-      ).expect("Failed to instantiate XOnlyPublicKey from byte array.");
-
-      match signature_of_signed_note.verify(
-        &message_of_signed_note,
-        &public_key_of_signed_note
-      ) {
-        Ok(()) => return true,
-        _ => return false
-      };
-    }
-}
-
