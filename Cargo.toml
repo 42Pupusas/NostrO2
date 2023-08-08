@@ -1,25 +1,9 @@
 [package]
-name = "microrust"
+name = "nostro2"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-name = "utils"
-path = "src/utils/lib.rs"
-
-[[bin]]
-name = "creator"
-path = "src/contract_creator.rs"
-
-[[bin]]
-name = "listener"
-path = "src/contract_listener.rs"
-
-[[bin]]
-name = "settler"
-path = "src/contract_settler.rs"
 
 [dependencies]
 tokio = { version = "1.28.0", features = ["full"] }
@@ -29,7 +13,7 @@ url = "2.3.1"
 futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 rand = "0.8.5"
-secp256k1 = "0.27.0"
+secp256k1 = {version="0.27.0", features=["global-context"]}
 sha2 = "0.10.6"
 hex = "0.4.3"
 reqwest = { version = "0.11", features = ["json"] }
@@ -45,3 +29,4 @@ lightning-invoice = "0.23.0"
 async-stream = "0.3.5"
 tokio-stream = "0.1.14"
 tungstenite = "0.19.0"
+tokio-test = "0.4.2"
