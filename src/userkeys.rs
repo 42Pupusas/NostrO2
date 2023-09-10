@@ -1,7 +1,7 @@
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
-use super::{notes::{Note, SignedNote}};
+use super::notes::{Note, SignedNote};
 
 pub struct UserKeys {
     keypair: KeyPair,

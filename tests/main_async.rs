@@ -4,7 +4,6 @@ use nostro2::userkeys::{UserKeys};
 use nostro2::relays::{NostrRelay};
 use nostro2::utils::{get_unix_timestamp};
 use serde_json::{json, from_str};
-use tokio_tungstenite::tungstenite::Message;
 
 const URL: &str = "wss://relay.roadrunner.lat";
 const PK1: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd6275d";
@@ -20,7 +19,7 @@ async fn connect_subscribe_and_read_note() {
 
   loop {
    match ws_connection.read_notes().await {
-    Some(Ok(Message::Text(message))) => {
+    Some(Ok(message)) => {
       if let Ok((_type, _id, note)) = from_str::<(String, String, SignedNote)>(&message) {
         assert_eq!(SignedNote::verify_note(note), true);
         break;
@@ -53,7 +52,7 @@ async fn connect_subscribe_and_send_note() {
   ).await.expect("Not Subscribed");
   loop {
    match ws_connection.read_notes().await {
-    Some(Ok(Message::Text(message))) => {
+    Some(Ok(message)) => {
       if let Ok((_type, _id, note)) = from_str::<(String, String, SignedNote)>(&message) {
         assert_eq!(note.kind, 300);
         break;

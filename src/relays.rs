@@ -1,32 +1,38 @@
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use futures_util::{StreamExt, stream::SplitSink, SinkExt};
-use tokio::{task::spawn_blocking, sync::mpsc::{UnboundedReceiver, unbounded_channel}};
-use tokio_tungstenite::{tungstenite::{protocol::{Message as WsMessage, CloseFrame, frame::coding::CloseCode}, Error as TungsteniteError}, connect_async, WebSocketStream};
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::{
+    sync::mpsc::{unbounded_channel, UnboundedReceiver},
+    task::spawn_blocking,
+};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{
+        protocol::{frame::coding::CloseCode, CloseFrame, Message as WsMessage},
+        Error as TungsteniteError,
+    },
+    WebSocketStream,
+};
 
-use super::{utils::{new_keys}};
-use super::{notes::{SignedNote}};
+use super::notes::SignedNote;
+use super::utils::new_keys;
 
 pub struct NostrRelay {
     _url: Arc<str>,
     ws_write: Arc<
-      Mutex<
-        SplitSink<
-          WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
-          >,
-          WsMessage
-        >
-      >
+        Mutex<
+            SplitSink<
+                WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+                WsMessage,
+            >,
+        >,
     >,
-    notes_receiver: tokio::sync::Mutex<
-      UnboundedReceiver<Result<WsMessage, TungsteniteError>>
-    >,
+    notes_receiver: tokio::sync::Mutex<UnboundedReceiver<Result<WsMessage, TungsteniteError>>>,
 }
 
 impl NostrRelay {
-    pub async fn new(relay_url:&str) -> Self {
+    pub async fn new(relay_url: &str) -> Self {
         let url = relay_url;
         let url_object = url::Url::parse(url).unwrap();
 
@@ -34,13 +40,23 @@ impl NostrRelay {
             let (ws_write, mut ws_read) = ws_stream.split();
 
             let (tx, rx) = unbounded_channel();
+
             tokio::spawn(async move {
                 while let Some(note) = ws_read.next().await {
-                    match tx.send(note) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            println!("Error sending note to channel: {:?}", e);
-                        }
+                    println!("note: {:?}", note);
+
+                    match &note {
+                        // Add conditions here to filter out undesired messages
+                        Err(tokio_tungstenite::tungstenite::Error::Protocol(_)) => continue, // Ignore ResetWithoutClosingHandshake errors
+                        Ok(tokio_tungstenite::tungstenite::protocol::Message::Close(_)) => continue, // Ignore Close messages
+
+                        // For all other messages, forward to the channel
+                        _ => match tx.send(note) {
+                            Ok(_) => (),
+                            Err(_e) => {
+                                println!("Error sending note to channel");
+                            }
+                        },
                     }
                 }
             });
@@ -75,12 +91,9 @@ impl NostrRelay {
         let ws_stream = Arc::clone(&self.ws_write);
         spawn_blocking(move || {
             let mut write = ws_stream.lock().unwrap();
-            match tokio::runtime::Handle::current().block_on(
-              write.send(note.prepare_ws_message())
-            ) {
-                Ok(_) => {
-                    ()
-                },
+            match tokio::runtime::Handle::current().block_on(write.send(note.prepare_ws_message()))
+            {
+                Ok(_) => (),
                 Err(e) => {
                     println!("Error sending note to relay: {:?}", e);
                 }
@@ -88,12 +101,21 @@ impl NostrRelay {
         });
     }
 
-    pub async fn read_notes(&self) -> Option<Result<WsMessage, TungsteniteError>> {
+    pub async fn read_notes(&self) -> Option<Result<String, TungsteniteError>> {
         let mut lock = self.notes_receiver.lock().await;
-        lock.recv().await
+        match lock.recv().await {
+            Some(Ok(WsMessage::Text(text))) => Some(Ok(text)),
+            Some(Ok(WsMessage::Binary(bin))) => {
+                // If you want to handle binary messages as well
+                Some(Ok(String::from_utf8_lossy(&bin).into_owned()))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            // Handle other message types like Close, Ping, Pong or continue to ignore them
+            _ => None,
+        }
     }
 
-   pub async fn close(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn close(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ws_write = Arc::clone(&self.ws_write);
         let close_msg = WsMessage::Close(Some(CloseFrame {
             code: CloseCode::Normal,

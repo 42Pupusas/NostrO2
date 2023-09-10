@@ -1,6 +1,6 @@
 use rand::{thread_rng, Rng};
 use secp256k1::SecretKey;
-use std::{time::{SystemTime, UNIX_EPOCH}};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn new_keys() -> SecretKey {
     let mut rng = thread_rng();

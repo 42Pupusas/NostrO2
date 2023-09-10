@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::{tungstenite::{protocol::{Message as WsMessage}}};
-use secp256k1::schnorr::{Signature};
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+use secp256k1::schnorr::Signature;
 use secp256k1::{Message, XOnlyPublicKey};
 use serde_json::{json, to_value};
-
-use super::{utils::{get_unix_timestamp}};
+use super::utils::get_unix_timestamp;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Note {
