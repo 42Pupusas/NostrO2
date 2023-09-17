@@ -43,8 +43,6 @@ impl NostrRelay {
 
             tokio::spawn(async move {
                 while let Some(note) = ws_read.next().await {
-                    println!("note: {:?}", note);
-
                     match &note {
                         // Add conditions here to filter out undesired messages
                         Err(tokio_tungstenite::tungstenite::Error::Protocol(_)) => continue, // Ignore ResetWithoutClosingHandshake errors

@@ -1,5 +1,5 @@
 extern crate nostro2;
-use nostro2::userkeys::{UserKeys};
+use nostro2::userkeys::UserKeys;
 use nostro2::notes::{Note, SignedNote};
 
 
@@ -32,7 +32,7 @@ mod tests {
       user_key_pair.get_public_key().to_string(),
       [].to_vec(),
       300,
-      content_of_note.to_string()
+      content_of_note
     );
     let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
     assert_eq!(SignedNote::verify_note(signed_note), true);

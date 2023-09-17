@@ -1,6 +1,6 @@
 # NostrO2
 
-This crate is a first approach at building simple Rust tools for interacting with the Nostr ecosystem.
+This crate is our first approach at building simple Rust tools for interacting with the Nostr ecosystem.
 
 ## Features
 
@@ -13,14 +13,14 @@ Add `nostro2` to your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-nostro2 = "0.1.1"
+nostro2 = "0.1.3"
 ```
 
 ## Example
 
-Using this library is very simple. Connect to a relay, send a subscription event, and await the received messages.
+Using this library is straightforward. Connect to a relay, send a subscription event, and await the received messages.
 
-Rust and `serde` allow for performant parsing of the notes into objects, which can then be pattern amtch with ease.
+Rust and serde allow for performant parsing of the notes into objects, which can then be pattern matched with ease.
 
 ```rust
 let nostr_relay = NostrRelay::new("wss://nostr.bongbong.com").await.unwrap();
@@ -43,7 +43,7 @@ while let Some(result) = nostr_relay.read_notes().await {
             }
         }
         _ => {
-            nostr_relay.close().await.expect("Error al cerrar la conexion");
+            nostr_relay.close().await.expect("Error");
             return Err("Error".to_string());
         }
     }

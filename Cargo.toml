@@ -1,13 +1,13 @@
 [package]
 name = "nostro2"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
 repository = "https://github.com/42Pupusas/NostrO2.git"
 readme = "README.md"
-homepage = ""
-documentation = ""
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 [dependencies]
 tokio = { version = "1.28.0", features = ["full"] }

@@ -42,16 +42,14 @@ impl UserKeys {
             .sign_schnorr_no_aux_rand(&id_message, &self.keypair)
             .to_string();
         
-        // Crteate the signed
-        let signed_note = SignedNote {
-            id,
-            pubkey: self.get_public_key(),
-            created_at: note.created_at,
-            kind: note.kind,
-            tags: note.tags,
-            content: note.content,
-            sig,
-        };
+        let signed_note = SignedNote::new(
+          id,
+          self.get_public_key(),
+          note.tags,
+          note.kind,
+          &*note.content,
+          sig
+        );
         signed_note
     }
 }
