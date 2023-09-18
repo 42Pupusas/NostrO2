@@ -1,11 +1,9 @@
 use super::utils::get_unix_timestamp;
-use secp256k1::schnorr::Signature;
-use secp256k1::{Message, XOnlyPublicKey};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
+use serde::{de ,Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use serde::de;
 
 #[derive(Debug)]
 pub struct Note {
