@@ -62,14 +62,29 @@ impl<'de> Deserialize<'de> for Note {
 }
 
 impl Note {
-    pub fn new(pubkey: String, tags: Vec<Vec<Arc<str>>>, kind: u32, content: &str) -> Self {
+    pub fn new(pubkey: String, kind: u32, content: &str) -> Self {
         Note {
             pubkey: Arc::from(pubkey),
             created_at: get_unix_timestamp(),
             kind,
-            tags,
+            tags: Vec::new(),
             content: Arc::from(content),
         }
+    }
+
+    pub fn tag_note(&mut self, tag_type: &str, tag: &str,) {
+        let tag_type = Arc::from(tag_type);
+        let tag = Arc::from(tag);
+        if let Some(index) = self.tags.iter().position(|inner| inner.get(0) == Some(&tag_type)) {
+            // Tag type exists, push the tag to the corresponding inner array.
+            self.tags[index].push(tag);
+        } else {
+            // Tag type doesn't exist, create a new inner array and push it to the outer array.
+            let mut new_inner = vec![tag_type];
+            new_inner.push(tag);
+            self.tags.push(new_inner);
+        }    
+
     }
 
     pub fn serialize_for_nostr(&self) -> String {
@@ -97,11 +112,11 @@ impl Note {
 #[derive(Debug)]
 pub struct SignedNote {
     id: Arc<str>,
-    pub pubkey: Arc<str>,
-    pub created_at: u64,
-    pub kind: u32,
-    pub tags: Vec<Vec<Arc<str>>>,
-    pub content: Arc<str>,
+    pubkey: Arc<str>,
+    created_at: u64,
+    kind: u32,
+    tags: Vec<Vec<Arc<str>>>,
+    content: Arc<str>,
     sig: Arc<str>,
 }
 
@@ -198,6 +213,34 @@ impl SignedNote {
         let event_string = json!(["EVENT", self]).to_string();
         let event_ws_message = WsMessage::Text(event_string);
         event_ws_message
+    }
+    
+    pub fn get_id(&self) -> &str {
+        &*self.id
+    }
+
+    pub fn get_pubkey(&self) -> &str {
+        &*self.pubkey
+    }
+
+    pub fn get_created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    pub fn get_kind(&self) -> u32 {
+        self.kind
+    }
+
+    pub fn get_tags(&self) -> &Vec<Vec<Arc<str>>> {
+        &self.tags
+    }
+
+    pub fn get_content(&self) -> &str {
+        &*self.content
+    }
+
+    pub fn get_sig(&self) -> &str {
+        &*self.sig
     }
 
     pub fn verify_note(signed_note: SignedNote) -> bool {

@@ -1,6 +1,6 @@
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{from_str, json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::{
     sync::mpsc::{unbounded_channel, UnboundedReceiver},
@@ -17,6 +17,32 @@ use tokio_tungstenite::{
 
 use super::notes::SignedNote;
 use super::utils::new_keys;
+
+#[derive(Debug, Deserialize)]
+pub enum RelayEvents {
+    EVENT(String, String, SignedNote),
+    EOSE(String, String),
+    OK(String, String, bool, String),
+    NOTICE(String, String),
+}
+
+impl RelayEvents {
+    pub fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if let Ok((event, id, signed_note)) = from_str::<(String, String, SignedNote)>(s) {
+            Ok(RelayEvents::EVENT(event, id, signed_note))
+        } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
+            Ok(RelayEvents::EOSE(event, notice))
+        } else if let Ok((event, id, success, notice)) =
+            from_str::<(String, String, bool, String)>(s)
+        {
+            Ok(RelayEvents::OK(event, id, success, notice))
+        } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
+            Ok(RelayEvents::NOTICE(event, notice))
+        } else {
+            Err("Could not parse event".into())
+        }
+    }
+}
 
 pub struct NostrRelay {
     _url: Arc<str>,
@@ -44,17 +70,15 @@ impl NostrRelay {
             tokio::spawn(async move {
                 while let Some(note) = ws_read.next().await {
                     match &note {
-                        // Add conditions here to filter out undesired messages
-                        Err(tokio_tungstenite::tungstenite::Error::Protocol(_)) => continue, // Ignore ResetWithoutClosingHandshake errors
-                        Ok(tokio_tungstenite::tungstenite::protocol::Message::Close(_)) => continue, // Ignore Close messages
-
-                        // For all other messages, forward to the channel
-                        _ => match tx.send(note) {
-                            Ok(_) => (),
-                            Err(_e) => {
-                                println!("Error sending note to channel");
+                        Ok(tokio_tungstenite::tungstenite::protocol::Message::Text(_)) => {
+                            match tx.send(note) {
+                                Ok(_) => (),
+                                Err(_e) => {
+                                    println!("Error sending note to channel");
+                                }
                             }
-                        },
+                        }
+                        _ => continue,
                     }
                 }
             });
@@ -99,13 +123,12 @@ impl NostrRelay {
         });
     }
 
-    pub async fn read_notes(&self) -> Option<Result<String, TungsteniteError>> {
+    pub async fn read_from_relay(&self) -> Option<Result<RelayEvents, TungsteniteError>> {
         let mut lock = self.notes_receiver.lock().await;
         match lock.recv().await {
-            Some(Ok(WsMessage::Text(text))) => Some(Ok(text)),
-            Some(Ok(WsMessage::Binary(bin))) => {
-                // If you want to handle binary messages as well
-                Some(Ok(String::from_utf8_lossy(&bin).into_owned()))
+            Some(Ok(WsMessage::Text(text))) => {
+                let event = RelayEvents::from_str(&text).unwrap();
+                Some(Ok(event))
             }
             Some(Err(e)) => Some(Err(e)),
             // Handle other message types like Close, Ping, Pong or continue to ignore them

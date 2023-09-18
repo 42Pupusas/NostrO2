@@ -1,9 +1,9 @@
 extern crate nostro2;
 use nostro2::notes::{Note, SignedNote};
-use nostro2::relays::NostrRelay;
+use nostro2::relays::{NostrRelay, RelayEvents};
 use nostro2::userkeys::UserKeys;
 use nostro2::utils::get_unix_timestamp;
-use serde_json::{from_str, json};
+use serde_json::json;
 
 const URL: &str = "wss://relay.roadrunner.lat";
 const PK1: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd6275d";
@@ -19,14 +19,14 @@ async fn connect_subscribe_and_read_note() {
         .expect("Failed to subscribe to relay!");
 
     loop {
-        match ws_connection.read_notes().await {
-            Some(Ok(message)) => {
-                if let Ok((_type, _id, note)) = from_str::<(String, String, SignedNote)>(&message) {
-                    assert_eq!(SignedNote::verify_note(note), true);
+        if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
+            match relay_msg {
+                RelayEvents::EVENT(_event, _id, signed_note) => {
+                    assert_eq!(SignedNote::verify_note(signed_note), true);
                     break;
                 }
+                _ => println!("Not an Note Event!"),
             }
-            _ => println!("None"),
         }
     }
 }
@@ -40,7 +40,6 @@ async fn connect_subscribe_and_send_note() {
     println!("Created UserKeys!");
     let unsigned_note = Note::new(
         user_key_pair.get_public_key().to_string(),
-        [].to_vec(),
         300,
         content_of_note,
     );
@@ -61,21 +60,17 @@ async fn connect_subscribe_and_send_note() {
     println!("Subscribed to relay!");
 
     loop {
-        match ws_connection.read_notes().await {
-            Some(Ok(message)) => {
-                println!("Message: {}", message);
-                match from_str::<(String, String, SignedNote)>(&message) {
-                    Ok((_type, _id, note)) => {
-                        println!("Received Note!");
-                        assert_eq!(note.kind, 300);
-                        break;
-                    }
-                    Err(e) => {
-                        println!("Deserialization error: {:?}", e);
-                    }
-                }
-            }
-            _ => println!("None"),
+        if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
+            match relay_msg {
+            RelayEvents::EVENT(_event, _id, signed_note) => {
+                assert_eq!(SignedNote::verify_note(signed_note), true);
+                break;
+            },
+            RelayEvents::OK(_event, id, success, _msg) => {
+                println!("Message received: {:?} {:?}", id, success);
+            },
+            _ => println!("Not an Note Event!"),
+            } 
         }
     }
 }
