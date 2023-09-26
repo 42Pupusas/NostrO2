@@ -2,6 +2,7 @@ use super::utils::get_unix_timestamp;
 use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
 use serde::{de ,Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
@@ -60,6 +61,7 @@ impl<'de> Deserialize<'de> for Note {
 }
 
 impl Note {
+    
     pub fn new(pubkey: String, kind: u32, content: &str) -> Self {
         Note {
             pubkey: Arc::from(pubkey),
@@ -109,12 +111,16 @@ impl Note {
 
 #[derive(Debug)]
 pub struct SignedNote {
+
+    // id is a crypto representation of the the kind, tags, pukey and content
     id: Arc<str>,
     pubkey: Arc<str>,
     created_at: u64,
     kind: u32,
     tags: Vec<Vec<Arc<str>>>,
     content: Arc<str>,
+    
+    // is a schnorr signed string of the ID
     sig: Arc<str>,
 }
 
@@ -241,17 +247,17 @@ impl SignedNote {
         &*self.sig
     }
 
-    pub fn verify_note(signed_note: SignedNote) -> bool {
+    pub fn verify_signature(&self) -> bool {
         let signature_of_signed_note = Signature::from_slice(
-            &hex::decode(&*signed_note.sig).expect("Failed to decode signed_note signature."),
+            &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
         )
         .expect("Failed to instantiate Signature from byte array.");
         let message_of_signed_note = Message::from_slice(
-            &hex::decode(&*signed_note.id).expect("Failed to decode signed_note id."),
+            &hex::decode(&*self.id).expect("Failed to decode signed_note id."),
         )
         .expect("Failed to instantiate Message from byte array.");
         let public_key_of_signed_note = XOnlyPublicKey::from_slice(
-            &hex::decode(&*signed_note.pubkey).expect("Failed to decode signed_note public"),
+            &hex::decode(&*self.pubkey).expect("Failed to decode signed_note public"),
         )
         .expect("Failed to instantiate XOnlyPublicKey from byte array.");
 
@@ -260,4 +266,31 @@ impl SignedNote {
             _ => return false,
         };
     }
+
+    pub fn verify_content(&self) -> bool {
+        //let new_note = Note { signed_note.get_pubkey().to_string(), signed_note.get_kind(), signed_note.get_content() };
+        let copied_note = Note {
+            pubkey: self.pubkey.clone(),
+            created_at: self.created_at,
+            kind: self.kind,
+            tags: self.tags.clone(),
+            content: self.content.clone(),
+        };
+        // if we serialize and has the note content, kind and tags, we can compare the id
+        // with the id that was signed
+        let serialized_note = copied_note.serialize_for_nostr();
+        
+        let mut hasher = Sha256::new();
+        hasher.update(serialized_note);
+        
+        // Hex Encod the hash
+        let hash_result = hasher.finalize();
+        let new_id = hex::encode(hash_result);
+        
+        match &new_id == &*self.id {
+            true => return true,
+            _ => return false,
+        }
+    }
+
 }

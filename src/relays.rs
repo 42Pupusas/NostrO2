@@ -58,7 +58,7 @@ pub struct NostrRelay {
 }
 
 impl NostrRelay {
-    pub async fn new(relay_url: &str) -> Self {
+    pub async fn new(relay_url: &str) -> Result<Self, String> {
         let url = relay_url;
         let url_object = url::Url::parse(url).unwrap();
 
@@ -83,13 +83,13 @@ impl NostrRelay {
                 }
             });
 
-            NostrRelay {
+            Ok(NostrRelay {
                 _url: Arc::from(url),
                 ws_write: Arc::new(Mutex::new(ws_write)),
                 notes_receiver: tokio::sync::Mutex::new(rx),
-            }
+            })
         } else {
-            panic!("Failed to connect to Nostr Relay");
+            Err("Could not connect to relay".into())
         }
     }
 
