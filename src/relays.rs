@@ -1,10 +1,10 @@
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, Value};
-use std::sync::{Arc, Mutex};
-use tokio::{
-    sync::mpsc::{unbounded_channel, UnboundedReceiver},
-    task::spawn_blocking,
+use std::sync::Arc;
+use tokio::sync::{
+    mpsc::{unbounded_channel, UnboundedReceiver},
+    Mutex,
 };
 use tokio_tungstenite::{
     connect_async,
@@ -26,8 +26,17 @@ pub enum RelayEvents {
     NOTICE(String, String),
 }
 
+#[derive(Debug)]
+pub enum RelayErrors {
+    ConnectionError,
+    ParseError,
+    SubscriptionError(String),
+    SendError(String),
+    ReadError(String),
+}
+
 impl RelayEvents {
-    pub fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_str(s: &str) -> Result<Self, RelayErrors> {
         if let Ok((event, id, signed_note)) = from_str::<(String, String, SignedNote)>(s) {
             Ok(RelayEvents::EVENT(event, id, signed_note))
         } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
@@ -39,7 +48,7 @@ impl RelayEvents {
         } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
             Ok(RelayEvents::NOTICE(event, notice))
         } else {
-            Err("Could not parse event".into())
+            Err(RelayErrors::ParseError)
         }
     }
 }
@@ -47,7 +56,7 @@ impl RelayEvents {
 pub struct NostrRelay {
     _url: Arc<str>,
     ws_write: Arc<
-        Mutex<
+        tokio::sync::Mutex<
             SplitSink<
                 WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
                 WsMessage,
@@ -58,7 +67,7 @@ pub struct NostrRelay {
 }
 
 impl NostrRelay {
-    pub async fn new(relay_url: &str) -> Result<Self, String> {
+    pub async fn new(relay_url: &str) -> Result<Self, RelayErrors> {
         let url = relay_url;
         let url_object = url::Url::parse(url).unwrap();
 
@@ -73,9 +82,7 @@ impl NostrRelay {
                         Ok(tokio_tungstenite::tungstenite::protocol::Message::Text(_)) => {
                             match tx.send(note) {
                                 Ok(_) => (),
-                                Err(_e) => {
-                                    println!("Error sending note to channel");
-                                }
+                                Err(_) => {}
                             }
                         }
                         _ => continue,
@@ -89,69 +96,58 @@ impl NostrRelay {
                 notes_receiver: tokio::sync::Mutex::new(rx),
             })
         } else {
-            Err("Could not connect to relay".into())
+            Err(RelayErrors::ConnectionError)
         }
     }
 
-    pub async fn subscribe(&self, filter: Value) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn subscribe(&self, filter: Value) -> Result<(), RelayErrors> {
         let nostr_subscription = NostrSubscription::new(filter);
-        let ws_stream = Arc::clone(&self.ws_write);
-        spawn_blocking(move || {
-            let mut write = ws_stream.lock().unwrap();
-            match tokio::runtime::Handle::current().block_on(write.send(nostr_subscription)) {
-                Ok(_) => (),
-                Err(e) => {
-                    println!("Error subscribing: {:?}", e);
-                }
+        let mut ws_stream = self.ws_write.lock().await;
+        match ws_stream.send(nostr_subscription).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                println!("Error subscribing to relay: {}", e);
+                Err(RelayErrors::SubscriptionError(e.to_string()))
             }
-        });
-
-        Ok(())
+        }
     }
 
-    pub async fn send_note(&self, note: SignedNote) {
-        let ws_stream = Arc::clone(&self.ws_write);
-        spawn_blocking(move || {
-            let mut write = ws_stream.lock().unwrap();
-            match tokio::runtime::Handle::current().block_on(write.send(note.prepare_ws_message()))
-            {
-                Ok(_) => (),
-                Err(e) => {
-                    println!("Error sending note to relay: {:?}", e);
-                }
+    pub async fn send_note(&self, note: SignedNote) -> Result<(), RelayErrors> {
+        let mut ws_stream = self.ws_write.lock().await;
+        match ws_stream.send(note.prepare_ws_message()).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                println!("Error sending note to relay: {}", e);
+                Err(RelayErrors::SendError(e.to_string()))
             }
-        });
+        }
     }
 
-    pub async fn read_from_relay(&self) -> Option<Result<RelayEvents, TungsteniteError>> {
+    pub async fn read_from_relay(&self) -> Option<Result<RelayEvents, RelayErrors>> {
         let mut lock = self.notes_receiver.lock().await;
         match lock.recv().await {
             Some(Ok(WsMessage::Text(text))) => {
                 let event = RelayEvents::from_str(&text).unwrap();
                 Some(Ok(event))
             }
-            Some(Err(e)) => Some(Err(e)),
+            Some(Err(e)) => Some(Err(RelayErrors::ReadError(e.to_string()))),
             // Handle other message types like Close, Ping, Pong or continue to ignore them
             _ => None,
         }
     }
 
-    pub async fn close(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let ws_write = Arc::clone(&self.ws_write);
+    pub async fn close(&self) -> Result<(), RelayErrors> {
+        let mut ws_write = self.ws_write.lock().await;
         let close_msg = WsMessage::Close(Some(CloseFrame {
             code: CloseCode::Normal,
             reason: "Bye bye".into(),
         }));
-        tokio::task::spawn_blocking(move || {
-            let mut write_guard = ws_write.lock().unwrap();
-            match tokio::runtime::Handle::current().block_on(write_guard.send(close_msg)) {
-                Ok(_) => (),
-                Err(e) => {
-                    println!("Error closing the connection: {:?}", e);
-                }
+        match ws_write.send(close_msg).await {
+            Ok(_) => Ok(()),
+            Err(_e) => {
+                Err(RelayErrors::ConnectionError)
             }
-        });
-        Ok(())
+        }
     }
 }
 

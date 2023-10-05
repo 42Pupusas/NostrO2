@@ -7,14 +7,19 @@ pub struct UserKeys {
     keypair: KeyPair,
 }
 
+#[derive(Debug)]
+pub enum UserError {
+    CouldNotCreateKeys,
+}
+
 impl UserKeys {
-    pub fn new(private_key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(private_key: &str) -> Result<Self, UserError> {
         let secp = Secp256k1::new();
         if let Ok(secret_key) = SecretKey::from_slice(&hex::decode(private_key).unwrap()) {
             let keypair = KeyPair::from_secret_key(&secp, &secret_key);
             Ok(UserKeys { keypair })
         } else {
-            Err("Could not create UserKeys".into())
+            Err(UserError::CouldNotCreateKeys)
         }
     }
 

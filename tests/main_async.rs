@@ -53,7 +53,7 @@ async fn connect_subscribe_and_send_note() {
         );
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
         println!("Signed Note!");
-        ws_connection.send_note(signed_note).await;
+        ws_connection.send_note(signed_note).await.expect("Failed to send note!");
         println!("Sent Note!");
 
         ws_connection

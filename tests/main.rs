@@ -2,8 +2,8 @@ extern crate nostro2;
 use nostro2::notes::Note;
 use nostro2::userkeys::UserKeys;
 
-const PK1: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd6275d";
-const PK2: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d";
+const PRIV: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd6275d";
+const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d";
 
 #[cfg(test)]
 mod tests {
@@ -12,13 +12,13 @@ mod tests {
     // Test Private Public UserKeys Match
     #[test]
     fn test_user_key() {
-        let uk = UserKeys::new(PK1).expect("Failed to create UserKeys!");
-        assert_eq!(PK2, uk.get_public_key());
+        let uk = UserKeys::new(PRIV).unwrap();
+        assert_eq!(PUB, uk.get_public_key());
     }
     // Test Private Public UserKeys Do Not Match
     #[test]
     fn test_not_user_key() {
-        let uk = UserKeys::new(PK1).expect("Failed to create UserKeys!");
+        let uk = UserKeys::new(PRIV).unwrap();
         assert_ne!(
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             uk.get_public_key()
@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn test_create_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
+        let user_key_pair = UserKeys::new(PRIV).unwrap();
         let unsigned_note = Note::new(
             user_key_pair.get_public_key().to_string(),
             300,
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn test_create_tagged_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
+        let user_key_pair = UserKeys::new(PRIV).expect("Failed to create UserKeys!");
         let mut unsigned_note = Note::new(
             user_key_pair.get_public_key().to_string(),
             300,
