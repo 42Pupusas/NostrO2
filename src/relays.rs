@@ -144,9 +144,7 @@ impl NostrRelay {
         }));
         match ws_write.send(close_msg).await {
             Ok(_) => Ok(()),
-            Err(_e) => {
-                Err(RelayErrors::ConnectionError)
-            }
+            Err(_e) => Err(RelayErrors::ConnectionError),
         }
     }
 }
