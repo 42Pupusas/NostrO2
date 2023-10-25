@@ -17,7 +17,8 @@ serialization features and provide ready-to-send outputs for relay messages.
 
 Can be created from a private key `str` and will allow you to sign Nostr Notes.
 
-```rust 
+```rust
+    let new_user = UserKeys::new("<64-bit hex string>");
     let mut unsigned_note = Note::new(
         user_key_pair.get_public_key().to_string(),
         1,
@@ -41,7 +42,7 @@ following the filter protocol in NIP-01.
 
 ```rust
     // Open a connection
-    if let Ok(ws_connection) = NostrRelay::new("relay.roadrunner.lat").await {
+    let ws_connection = NostrRelay::new("relay.roadrunner.lat").await.expect("Failed to connect");
 
     // Subscribe to a filter
     ws_connection
@@ -58,17 +59,18 @@ following the filter protocol in NIP-01.
             match relay_msg {
                 RelayEvents::EVENT(_event, _id, signed_note) => {
                     println!("Message received: {:?}", &signed_note);
+
+                    // Extract the signed note info
+                    let content = signed_note.get_content();
+                    let specific_tags = signed_note.get_tags_by_id("a"); 
                 },
                 RelayEvents::OK(_event, id, success, _msg) => {
-                    println!("Message received: {:?} {:?}", id, success);
+                    println!("Message received: {} {}", id, success);
                 },
                 RelayEvents::EOSE(_event, _sub) => println!("No more events"),
-                RelayEvents::NOTICE(_event, notice) => println!("Relay says: {:?}", notice),
+                RelayEvents::NOTICE(_event, notice) => println!("Relay says: {}", notice),
             }
         }
-    }
-    } else {
-        println!("Failed to connect to relay!");
     }
 ```
 
@@ -83,12 +85,12 @@ The `SignedNotes` objects also provide verification methods for both content and
 
 ## Installation
 
-Add `nostro2` to your `Cargo.toml` dependencies:
+Run `cargo add nostro2` to get the latest version.
+
+You can also add `nostro2` to your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-nostro2 = "0.1.5"
+nostro2 = "0.1.7"
 ```
-
-
 

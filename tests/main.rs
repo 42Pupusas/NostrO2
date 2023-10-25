@@ -61,4 +61,21 @@ mod tests {
         assert_ne!(&*signed_note.get_tags()[1][1], "not-the-test");
         println!("{:?}", signed_note.get_tags());
     }
+    
+    #[test]
+    fn test_try_p_and_e_tags() {
+        let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
+        let user_key_pair = UserKeys::new(PRIV).expect("Failed to create UserKeys!");
+        let mut unsigned_note = Note::new(
+            user_key_pair.get_public_key().to_string(),
+            300,
+            content_of_note,
+        );
+        unsigned_note.tag_note("p", "test");
+        unsigned_note.tag_note("e", "test2");
+        let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
+        println!("{:?}", signed_note.get_tags());
+        assert_ne!(&*signed_note.get_tags_by_id("p"), ["test"]);
+        assert_ne!(&*signed_note.get_tags_by_id("e"), ["test2"]);
+    }
 }
