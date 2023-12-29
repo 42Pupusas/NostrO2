@@ -59,6 +59,5 @@ mod tests {
         assert_ne!(&*signed_note.get_tags()[0][1], "not-the-test");
         assert_ne!(&*signed_note.get_tags()[0][2], "not-the-test");
         assert_ne!(&*signed_note.get_tags()[1][1], "not-the-test");
-        println!("{:?}", signed_note.get_tags());
     }
 }
