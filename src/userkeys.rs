@@ -6,7 +6,8 @@ use chacha20::ChaCha20;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
-use secp256k1::{ecdh::SharedSecret, KeyPair, Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::{ecdh::shared_secret_point, KeyPair, Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::{Parity, XOnlyPublicKey};
 use sha2::{Digest, Sha256};
 
 use super::notes::{Note, SignedNote};
@@ -33,6 +34,10 @@ impl UserKeys {
 
     pub fn get_public_key(&self) -> String {
         return self.keypair.public_key().to_string()[2..].to_string();
+    }
+
+    pub fn get_raw_public_key(&self) -> PublicKey {
+        return self.keypair.public_key();
     }
 
     pub fn sign_nostr_event(&self, note: Note) -> SignedNote {
@@ -67,8 +72,8 @@ impl UserKeys {
         signed_note
     }
 
-    pub fn sign_encrypted_nostr_event(&self, mut note: Note, public_key: PublicKey) -> SignedNote {
-        let encrypted_content = self.encrypt_content(note.content.to_string(), public_key);
+    pub fn sign_encrypted_nostr_event(&self, mut note: Note, pubkey: String) -> SignedNote {
+        let encrypted_content = self.encrypt_content(note.content.to_string(), pubkey);
         note.content = Arc::from(encrypted_content.to_string());
         // Serialize the event as JSON
         let json_str = note.serialize_for_nostr();
@@ -102,11 +107,7 @@ impl UserKeys {
     }
 
     pub fn decrypt_note_content(&self, signed_note: &SignedNote) -> String {
-        let modified_public_key = format!("02{}", signed_note.get_pubkey());
-        let public_key_bytes = hex::decode(modified_public_key).expect("Invalid hex in public key");
-        let public_key = PublicKey::from_slice(&public_key_bytes).unwrap();
-        let shared_secret =
-            UserKeys::derive_shared_secret(self.keypair.secret_key(), public_key).unwrap();
+        let shared_secret = UserKeys::get_shared_point(&self, signed_note.get_pubkey().to_string());
         let conversation_key =
             UserKeys::derive_conversation_key(&shared_secret, b"nip44-v2").unwrap();
         let decoded_params = general_purpose::STANDARD
@@ -120,12 +121,15 @@ impl UserKeys {
         decrypted_string
     }
 
-    fn derive_shared_secret(
-        private_key: SecretKey,
-        public_key: PublicKey,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let shared_secret = SharedSecret::new(&public_key, &private_key);
-        Ok(shared_secret.as_ref().to_vec())
+    fn get_shared_point(&self, public_key_string: String) -> [u8; 32] {
+        let x_only_public_key =
+            XOnlyPublicKey::from_slice(hex::decode(public_key_string).unwrap().as_slice()).unwrap();
+        let public_key = PublicKey::from_x_only_public_key(x_only_public_key, Parity::Even);
+        let mut ssp = shared_secret_point(&public_key, &self.keypair.secret_key())
+            .as_slice()
+            .to_owned();
+        ssp.resize(32, 0); // toss the Y part
+        ssp.try_into().unwrap()
     }
 
     fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> Result<Vec<u8>, String> {
@@ -161,17 +165,26 @@ impl UserKeys {
         Ok((version, nonce, ciphertext, mac))
     }
 
-    fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, &'static str> {
+    fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
         if key.len() != 32 || nonce.len() != 12 {
-            return Err("Invalid key or nonce size");
+            return Err("Invalid key or nonce size".to_string());
         }
 
         let mut cipher =
             ChaCha20::new_from_slices(key, nonce).map_err(|_| "Failed to create cipher")?;
         let mut decrypted = ciphertext.to_vec();
         cipher.apply_keystream(&mut decrypted);
+        // Extract the plaintext length
+        if decrypted.len() < 2 {
+            return Err("Decrypted data too short for length prefix".to_string());
+        }
+        let plaintext_length = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
 
-        Ok(decrypted)
+        // Validate and extract the plaintext
+        if plaintext_length > decrypted.len() - 2 {
+            return Err("Invalid plaintext length".to_string());
+        }
+        Ok(decrypted[2..2 + plaintext_length].to_vec())
     }
 
     fn generate_nonce() -> [u8; 12] {
@@ -186,9 +199,10 @@ impl UserKeys {
         nonce: &[u8],
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut cipher = ChaCha20::new(key.into(), nonce.into());
-        let mut encrypted_content = content.to_vec();
-        cipher.apply_keystream(&mut encrypted_content);
-        Ok(encrypted_content)
+        let mut padded_content = Self::pad_string(content)?;
+        cipher.apply_keystream(&mut padded_content);
+
+        Ok(padded_content)
     }
 
     fn calculate_mac(data: &[u8], key: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -207,9 +221,8 @@ impl UserKeys {
         encoded
     }
 
-    fn encrypt_content(&self, plaintext: String, public_key: PublicKey) -> String {
-        let shared_secret =
-            Self::derive_shared_secret(self.keypair.secret_key(), public_key).unwrap();
+    fn encrypt_content(&self, plaintext: String, public_key_string: String) -> String {
+        let shared_secret = Self::get_shared_point(&self, public_key_string);
         let conversation_key = Self::derive_conversation_key(&shared_secret, b"nip44-v2").unwrap();
         let nonce = Self::generate_nonce();
         let cypher_text = Self::encrypt(plaintext.as_bytes(), &conversation_key, &nonce).unwrap();
@@ -217,20 +230,86 @@ impl UserKeys {
         let encoded_params = Self::base64_encode_params(b"1", &nonce, &cypher_text, &mac);
         encoded_params
     }
+
+    fn pad_string(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        if plaintext.is_empty() || plaintext.len() > 65535 {
+            return Err("Plaintext length must be between 1 and 65535 bytes".to_string());
+        }
+
+        let plaintext_length_with_prefix = plaintext.len() + 2; // +2 for the length prefix
+        let mut total_length = 32;
+        while total_length < plaintext_length_with_prefix {
+            total_length *= 2;
+        }
+
+        let mut padded_message = Vec::with_capacity(total_length);
+        padded_message.extend_from_slice(&(plaintext.len() as u16).to_be_bytes()); // length prefix
+        padded_message.extend_from_slice(plaintext);
+        padded_message.resize(total_length, 0); // add zero bytes for padding
+
+        Ok(padded_message)
+    }
+
 }
 
 mod tests {
+    use rand::Rng;
 
     #[test]
     fn test_nip_44() {
-        let user_keys = crate::userkeys::UserKeys::new(
-            "931CB0E58332505609D13BCAE00498353961467579C95CE0DF6B0301393BCAEB",
-        )
-        .unwrap();
-        let note = crate::notes::Note::new(user_keys.get_public_key(), 4, "Testing Encryption");
+        let pk_list = [
+            "CCCC227A28C49EE57628DA97570AF4FCBACA5776C659C488AB145258E005C68F",
+            "D053D85592C48B73B6DED93681B3743D72234077E325858F0E5FE31B0793A63B",
+            "65336E6F1527392E8CAC9B2F53CDC8083A74435B0A06045B713D893734571069",
+            "BBD39EB40490B8070168959D10C99EB31815D4ED5DDF8916B483101F3B9D4E4F",
+            "2A3AE39CE5404B3C7A7C74DFA3EA5E93DD30584094F9E6419BCD5B8F9BD95F66",
+            "AA6F2CDDEA668B65C882635EB5773F83C0BD0D0F82B8DBC7A3C61DF4F61E4AC1",
+        ];
+
+        for keys in pk_list.iter() {
+            let user_keys = crate::userkeys::UserKeys::new(keys).unwrap();
+            let random_length = rand::thread_rng().gen_range(1..32);
+            let note = crate::notes::Note::new(
+                user_keys.get_public_key(),
+                4,
+                &user_keys.get_public_key()[..random_length],
+            );
+            let encrypted_note =
+                user_keys.sign_encrypted_nostr_event(note, user_keys.get_public_key());
+            let decrypted_content = user_keys.decrypt_note_content(&encrypted_note);
+            assert_eq!(
+                decrypted_content,
+                &user_keys.get_public_key()[..random_length]
+            );
+        }
+    }
+
+    #[test]
+    fn test_encrypting_to_other() {
+        let pk_list = [
+            "CCCC227A28C49EE57628DA97570AF4FCBACA5776C659C488AB145258E005C68F",
+            "D053D85592C48B73B6DED93681B3743D72234077E325858F0E5FE31B0793A63B",
+            "65336E6F1527392E8CAC9B2F53CDC8083A74435B0A06045B713D893734571069",
+            "BBD39EB40490B8070168959D10C99EB31815D4ED5DDF8916B483101F3B9D4E4F",
+            "2A3AE39CE5404B3C7A7C74DFA3EA5E93DD30584094F9E6419BCD5B8F9BD95F66",
+            "AA6F2CDDEA668B65C882635EB5773F83C0BD0D0F82B8DBC7A3C61DF4F61E4AC1",
+        ];
+
+        let user_keys = crate::userkeys::UserKeys::new(&pk_list[0]).unwrap();
+        let user_keys2 = crate::userkeys::UserKeys::new(&pk_list[1]).unwrap();
+        let note = crate::notes::Note::new(
+            user_keys.get_public_key(),
+            4,
+            "PEchan es GAY",
+        );
         let encrypted_note =
-            user_keys.sign_encrypted_nostr_event(note, user_keys.keypair.public_key());
-        let decrypted_content = user_keys.decrypt_note_content(&encrypted_note);
-        assert_eq!(decrypted_content, "Testing Encryption");
+            user_keys.sign_encrypted_nostr_event(note, user_keys2.get_public_key());
+        println!("Encrypted Note: {:?}", encrypted_note.get_content());
+        let decrypted_content = user_keys2.decrypt_note_content(&encrypted_note);
+        println!("Decrypted Content: {:?}", decrypted_content);
+        assert_eq!(
+            decrypted_content,
+            "PEchan es GAY"
+        );
     }
 }
