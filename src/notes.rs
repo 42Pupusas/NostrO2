@@ -72,20 +72,23 @@ impl Note {
     }
 
     pub fn tag_note(&mut self, tag_type: &str, tag: &str) {
-        let tag_type = Arc::from(tag_type);
-        let tag = Arc::from(tag);
-        if let Some(index) = self
-            .tags
-            .iter()
-            .position(|inner| inner.get(0) == Some(&tag_type))
-        {
-            // Tag type exists, push the tag to the corresponding inner array.
-            self.tags[index].push(tag);
+        if tag_type == "p" || tag_type == "e" {
         } else {
-            // Tag type doesn't exist, create a new inner array and push it to the outer array.
-            let mut new_inner = vec![tag_type];
-            new_inner.push(tag);
-            self.tags.push(new_inner);
+            let tag_type = Arc::from(tag_type);
+            let tag = Arc::from(tag);
+            if let Some(index) = self
+                .tags
+                .iter()
+                .position(|inner| inner.get(0) == Some(&tag_type))
+            {
+                // Tag type exists, push the tag to the corresponding inner array.
+                self.tags[index].push(tag);
+            } else {
+                // Tag type doesn't exist, create a new inner array and push it to the outer array.
+                let mut new_inner = vec![tag_type];
+                new_inner.push(tag);
+                self.tags.push(new_inner);
+            }
         }
     }
 
@@ -249,6 +252,7 @@ impl SignedNote {
             sig: Arc::from(sig),
         }
     }
+
     pub fn prepare_ws_message(&self) -> WsMessage {
         let event_string = json!(["EVENT", self]).to_string();
         let event_ws_message = WsMessage::Text(event_string);
@@ -273,6 +277,18 @@ impl SignedNote {
 
     pub fn get_tags(&self) -> &Vec<Vec<Arc<str>>> {
         &self.tags
+    }
+
+    pub fn get_tags_by_id(&self, key: &str) -> Vec<String> {
+        let mut tags = Vec::new();
+        for tag_set in &self.tags {
+            if &*tag_set[0] == key {
+                for tag in &tag_set[1..] {
+                    tags.push(tag.to_string());
+                }
+            }
+        }
+        tags
     }
 
     pub fn get_content(&self) -> &str {
