@@ -4,7 +4,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+use tokio_tungstenite_wasm::Message as WsMessage;
 
 #[derive(Debug)]
 pub struct Note {
@@ -89,6 +89,24 @@ impl Note {
                 new_inner.push(tag);
                 self.tags.push(new_inner);
             }
+        }
+    }
+
+    pub fn tag_for_private_message(&mut self, tag: &str) {
+        let tag_type = Arc::from("p");
+        let tag = Arc::from(tag);
+        if let Some(index) = self
+            .tags
+            .iter()
+            .position(|inner| inner.get(0) == Some(&tag_type))
+        {
+            // Tag type exists, push the tag to the corresponding inner array.
+            self.tags[index].push(tag);
+        } else {
+            // Tag type doesn't exist, create a new inner array and push it to the outer array.
+            let mut new_inner = vec![tag_type];
+            new_inner.push(tag);
+            self.tags.push(new_inner);
         }
     }
 
@@ -279,16 +297,21 @@ impl SignedNote {
         &self.tags
     }
 
-    pub fn get_tags_by_id(&self, key: &str) -> Vec<String> {
+    pub fn get_tags_by_id(&self, key: &str) -> Option<Vec<String>> {
         let mut tags = Vec::new();
-        for tag_set in &self.tags {
-            if &*tag_set[0] == key {
-                for tag in &tag_set[1..] {
-                    tags.push(tag.to_string());
-                }
+        if let Some(index) = self
+            .tags
+            .iter()
+            .position(|inner| inner.get(0) == Some(&Arc::from(key)))
+        {
+            println!("Found tag with key: {}", key);
+            // ignore first elemnt of vector which is the tag type 
+            for tag in &self.tags[index][1..] {
+                tags.push(tag.to_string());
             }
+            return Some(tags);
         }
-        tags
+        None
     }
 
     pub fn get_content(&self) -> &str {

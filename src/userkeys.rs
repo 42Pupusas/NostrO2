@@ -73,8 +73,10 @@ impl UserKeys {
     }
 
     pub fn sign_encrypted_nostr_event(&self, mut note: Note, pubkey: String) -> SignedNote {
+        note.tag_for_private_message(&pubkey);
         let encrypted_content = self.encrypt_content(note.content.to_string(), pubkey);
         note.content = Arc::from(encrypted_content.to_string());
+        note.kind = 4;
         // Serialize the event as JSON
         let json_str = note.serialize_for_nostr();
 
@@ -249,11 +251,9 @@ impl UserKeys {
 
         Ok(padded_message)
     }
-
 }
 
 mod tests {
-    use rand::Rng;
 
     #[test]
     fn test_nip_44() {
@@ -266,6 +266,7 @@ mod tests {
             "AA6F2CDDEA668B65C882635EB5773F83C0BD0D0F82B8DBC7A3C61DF4F61E4AC1",
         ];
 
+        use rand::Rng;
         for keys in pk_list.iter() {
             let user_keys = crate::userkeys::UserKeys::new(keys).unwrap();
             let random_length = rand::thread_rng().gen_range(1..32);
@@ -281,6 +282,8 @@ mod tests {
                 decrypted_content,
                 &user_keys.get_public_key()[..random_length]
             );
+            assert_eq!(encrypted_note.get_kind(), 4);
+            assert_eq!(encrypted_note.get_tags_by_id("p"), Some(vec![user_keys.get_public_key()]));
         }
     }
 
@@ -297,19 +300,12 @@ mod tests {
 
         let user_keys = crate::userkeys::UserKeys::new(&pk_list[0]).unwrap();
         let user_keys2 = crate::userkeys::UserKeys::new(&pk_list[1]).unwrap();
-        let note = crate::notes::Note::new(
-            user_keys.get_public_key(),
-            4,
-            "PEchan es GAY",
-        );
+        let note = crate::notes::Note::new(user_keys.get_public_key(), 4, "PEchan es GAY");
         let encrypted_note =
             user_keys.sign_encrypted_nostr_event(note, user_keys2.get_public_key());
         println!("Encrypted Note: {:?}", encrypted_note.get_content());
         let decrypted_content = user_keys2.decrypt_note_content(&encrypted_note);
         println!("Decrypted Content: {:?}", decrypted_content);
-        assert_eq!(
-            decrypted_content,
-            "PEchan es GAY"
-        );
+        assert_eq!(decrypted_content, "PEchan es GAY");
     }
 }

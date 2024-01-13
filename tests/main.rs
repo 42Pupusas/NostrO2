@@ -73,7 +73,7 @@ mod tests {
         unsigned_note.tag_note("p", "test");
         unsigned_note.tag_note("e", "test2");
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-        assert_ne!(&*signed_note.get_tags_by_id("p"), ["test"]);
-        assert_ne!(&*signed_note.get_tags_by_id("e"), ["test2"]);
+        assert_eq!(signed_note.get_tags_by_id("p"), None);
+        assert_eq!(signed_note.get_tags_by_id("e"), None);
     }
 }

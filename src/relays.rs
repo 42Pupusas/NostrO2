@@ -1,17 +1,14 @@
-use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, Value};
 use std::sync::Arc;
-use tokio::sync::{
-    mpsc::{unbounded_channel, UnboundedReceiver},
+use tokio::{sync::{
+    mpsc,
     Mutex,
-};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{
-        protocol::{frame::coding::CloseCode, CloseFrame, Message as WsMessage},
-        Error as TungsteniteError,
-    },
+}, task::LocalSet};
+
+use tokio_tungstenite_wasm::{
+    connect, CloseCode, CloseFrame, Error as TungsteniteError, Message as WsMessage,
     WebSocketStream,
 };
 
@@ -55,45 +52,47 @@ impl RelayEvents {
 
 pub struct NostrRelay {
     _url: Arc<str>,
-    ws_write: Arc<
-        tokio::sync::Mutex<
-            SplitSink<
-                WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-                WsMessage,
-            >,
-        >,
-    >,
-    notes_receiver: tokio::sync::Mutex<UnboundedReceiver<Result<WsMessage, TungsteniteError>>>,
+    ws_stream: Arc<Mutex<WebSocketStream>>,
+    sender: mpsc::Sender<WsMessage>,
+    receiver: mpsc::Receiver<Result<WsMessage, TungsteniteError>>,
 }
 
 impl NostrRelay {
     pub async fn new(relay_url: &str) -> Result<Self, RelayErrors> {
-        let url = relay_url;
-        let url_object = url::Url::parse(url).unwrap();
+        let local = LocalSet::new();
+        let url_object = url::Url::parse(relay_url).unwrap();
 
-        if let Ok((ws_stream, _)) = connect_async(url_object).await {
-            let (ws_write, mut ws_read) = ws_stream.split();
+        if let Ok(ws_stream) = connect(url_object).await {
+            let (sender, outgoing) = mpsc::channel(32);
+            let (incoming_sender, receiver) = mpsc::channel(32);
 
-            let (tx, rx) = unbounded_channel();
+            let ws_stream = Arc::new(Mutex::new(ws_stream));
 
-            tokio::spawn(async move {
-                while let Some(note) = ws_read.next().await {
-                    match &note {
-                        Ok(tokio_tungstenite::tungstenite::protocol::Message::Text(_)) => {
-                            match tx.send(note) {
-                                Ok(_) => (),
-                                Err(_) => {}
-                            }
-                        }
-                        _ => continue,
-                    }
+            let ws_stream_clone_out = Arc::clone(&ws_stream);
+            let ws_stream_clone_in = Arc::clone(&ws_stream);
+
+            local.spawn_local(async move {
+                let mut outgoing = outgoing;
+                while let Some(msg) = outgoing.recv().await {
+                    let mut lock = ws_stream_clone_out.lock().await;
+                    lock.send(msg).await.unwrap();
                 }
             });
 
+            local.spawn_local(async move {
+                let mut lock = ws_stream_clone_in.lock().await;
+                while let Some(Ok(msg)) = lock.next().await {
+                    incoming_sender.send(Ok(msg)).await.unwrap();
+                }
+            });
+
+            local.await;
+
             Ok(NostrRelay {
-                _url: Arc::from(url),
-                ws_write: Arc::new(Mutex::new(ws_write)),
-                notes_receiver: tokio::sync::Mutex::new(rx),
+                _url: Arc::from(relay_url),
+                ws_stream,
+                sender,
+                receiver,
             })
         } else {
             Err(RelayErrors::ConnectionError)
@@ -102,30 +101,17 @@ impl NostrRelay {
 
     pub async fn subscribe(&self, filter: Value) -> Result<(), RelayErrors> {
         let nostr_subscription = NostrSubscription::new(filter);
-        let mut ws_stream = self.ws_write.lock().await;
-        match ws_stream.send(nostr_subscription).await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                println!("Error subscribing to relay: {}", e);
-                Err(RelayErrors::SubscriptionError(e.to_string()))
-            }
-        }
+        self.sender.send(nostr_subscription).await.unwrap();
+        Ok(())
     }
 
     pub async fn send_note(&self, note: SignedNote) -> Result<(), RelayErrors> {
-        let mut ws_stream = self.ws_write.lock().await;
-        match ws_stream.send(note.prepare_ws_message()).await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                println!("Error sending note to relay: {}", e);
-                Err(RelayErrors::SendError(e.to_string()))
-            }
-        }
+        self.sender.send(note.prepare_ws_message()).await.unwrap();
+        Ok(())
     }
 
-    pub async fn read_from_relay(&self) -> Option<Result<RelayEvents, RelayErrors>> {
-        let mut lock = self.notes_receiver.lock().await;
-        match lock.recv().await {
+    pub async fn read_from_relay(&mut self) -> Option<Result<RelayEvents, RelayErrors>> {
+        match self.receiver.recv().await {
             Some(Ok(WsMessage::Text(text))) => {
                 let event = RelayEvents::from_str(&text).unwrap();
                 Some(Ok(event))
@@ -137,12 +123,12 @@ impl NostrRelay {
     }
 
     pub async fn close(&self) -> Result<(), RelayErrors> {
-        let mut ws_write = self.ws_write.lock().await;
+        let mut ws_stream = self.ws_stream.lock().await;
         let close_msg = WsMessage::Close(Some(CloseFrame {
             code: CloseCode::Normal,
             reason: "Bye bye".into(),
         }));
-        match ws_write.send(close_msg).await {
+        match ws_stream.send(close_msg).await {
             Ok(_) => Ok(()),
             Err(_e) => Err(RelayErrors::ConnectionError),
         }

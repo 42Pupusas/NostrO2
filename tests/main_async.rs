@@ -11,7 +11,7 @@ const PK1: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd62
 #[tokio::test]
 async fn connect_subscribe_and_read_note() {
     // Init Relay
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
+    if let Ok(mut ws_connection) = NostrRelay::new(URL).await {
         ws_connection
             .subscribe(json!({"kinds":[1],"limit":1}))
             .await
@@ -35,7 +35,7 @@ async fn connect_subscribe_and_read_note() {
 #[tokio::test]
 async fn connect_subscribe_and_send_note() {
     let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
+    if let Ok(mut ws_connection) = NostrRelay::new(URL).await {
         let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
         let unsigned_note = Note::new(
             user_key_pair.get_public_key().to_string(),
@@ -75,7 +75,7 @@ async fn connect_subscribe_and_send_note() {
 #[tokio::test]
 async fn check_filtered_tags() {
     let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
+    if let Ok(mut ws_connection) = NostrRelay::new(URL).await {
         let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
         let mut unsigned_note = Note::new(
             user_key_pair.get_public_key().to_string(),
@@ -116,7 +116,7 @@ async fn check_filtered_tags() {
                     RelayEvents::EVENT(_event, _id, signed_note) => {
                         assert_eq!(signed_note.verify_content(), true);
                         assert_eq!(signed_note.verify_signature(), true);
-                        assert_eq!(&*signed_note.get_tags_by_id("l"), ["rust"]);
+                        assert_eq!(&*signed_note.get_tags_by_id("l").unwrap(), ["rust"]);
                     }
                     RelayEvents::EOSE(_, _) => {
                         break;

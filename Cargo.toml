@@ -9,13 +9,17 @@ readme = "README.md"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 futures-util = "0.3.28"
 hex = "0.4.3"
 rand = "0.8.5"
+getrandom = { version = "0.2", features = ["js"] }
 secp256k1 = { version = "0.27.0", features = ["global-context"] }
-tokio = { version = "1.28.0", features = ["full"] }
-tokio-tungstenite = {version = "0.18.0", features = ["native-tls"]}
+tokio = { version = "^1.35.1", features = ["sync", "rt", "macros"] }
+tokio-tungstenite-wasm = "0.2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10.8"
