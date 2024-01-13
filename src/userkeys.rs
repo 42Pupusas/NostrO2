@@ -303,9 +303,7 @@ mod tests {
         let note = crate::notes::Note::new(user_keys.get_public_key(), 4, "PEchan es GAY");
         let encrypted_note =
             user_keys.sign_encrypted_nostr_event(note, user_keys2.get_public_key());
-        println!("Encrypted Note: {:?}", encrypted_note.get_content());
         let decrypted_content = user_keys2.decrypt_note_content(&encrypted_note);
-        println!("Decrypted Content: {:?}", decrypted_content);
         assert_eq!(decrypted_content, "PEchan es GAY");
     }
 }

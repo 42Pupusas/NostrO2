@@ -304,8 +304,6 @@ impl SignedNote {
             .iter()
             .position(|inner| inner.get(0) == Some(&Arc::from(key)))
         {
-            println!("Found tag with key: {}", key);
-            // ignore first elemnt of vector which is the tag type 
             for tag in &self.tags[index][1..] {
                 tags.push(tag.to_string());
             }
