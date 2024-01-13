@@ -2,10 +2,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, Value};
 use std::sync::Arc;
-use tokio::{sync::{
+use tokio::sync::{
     mpsc,
     Mutex,
-}, task::LocalSet};
+};
+use async_utility::thread;
+
 
 use tokio_tungstenite_wasm::{
     connect, CloseCode, CloseFrame, Error as TungsteniteError, Message as WsMessage,
@@ -14,6 +16,7 @@ use tokio_tungstenite_wasm::{
 
 use super::notes::SignedNote;
 use super::utils::new_keys;
+
 
 #[derive(Debug, Deserialize)]
 pub enum RelayEvents {
@@ -51,15 +54,20 @@ impl RelayEvents {
 }
 
 pub struct NostrRelay {
-    _url: Arc<str>,
+    url: Arc<str>,
     ws_stream: Arc<Mutex<WebSocketStream>>,
     sender: mpsc::Sender<WsMessage>,
     receiver: mpsc::Receiver<Result<WsMessage, TungsteniteError>>,
 }
 
+impl std::fmt::Display for NostrRelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.url)
+    }
+}
+
 impl NostrRelay {
     pub async fn new(relay_url: &str) -> Result<Self, RelayErrors> {
-        let local = LocalSet::new();
         let url_object = url::Url::parse(relay_url).unwrap();
 
         if let Ok(ws_stream) = connect(url_object).await {
@@ -71,7 +79,7 @@ impl NostrRelay {
             let ws_stream_clone_out = Arc::clone(&ws_stream);
             let ws_stream_clone_in = Arc::clone(&ws_stream);
 
-            local.spawn_local(async move {
+            thread::spawn(async move {
                 let mut outgoing = outgoing;
                 while let Some(msg) = outgoing.recv().await {
                     let mut lock = ws_stream_clone_out.lock().await;
@@ -79,17 +87,15 @@ impl NostrRelay {
                 }
             });
 
-            local.spawn_local(async move {
+            thread::spawn(async move {
                 let mut lock = ws_stream_clone_in.lock().await;
                 while let Some(Ok(msg)) = lock.next().await {
                     incoming_sender.send(Ok(msg)).await.unwrap();
                 }
             });
 
-            local.await;
-
             Ok(NostrRelay {
-                _url: Arc::from(relay_url),
+                url: Arc::from(relay_url),
                 ws_stream,
                 sender,
                 receiver,

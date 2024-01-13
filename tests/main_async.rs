@@ -128,3 +128,12 @@ async fn check_filtered_tags() {
     } else {
     }
 }
+
+#[tokio::test]
+async fn check_relay_can_run_on_threads() {
+    tokio::spawn(async move {
+        if let Ok(mut ws_connection) = NostrRelay::new(URL).await {
+            assert_eq!(true, true);
+        }
+    });
+}

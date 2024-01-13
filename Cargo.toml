@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
@@ -28,3 +28,4 @@ hkdf = "0.12.4"
 chacha20 = "0.9.1"
 hmac = "0.12.1"
 base64 = "0.21.5"
+async-utility = "0.1.1"
