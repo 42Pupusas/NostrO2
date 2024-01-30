@@ -4,7 +4,9 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio_tungstenite_wasm::Message as WsMessage;
+
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+
 
 #[derive(Debug)]
 pub struct Note {
@@ -271,6 +273,7 @@ impl SignedNote {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn prepare_ws_message(&self) -> WsMessage {
         let event_string = json!(["EVENT", self]).to_string();
         let event_ws_message = WsMessage::Text(event_string);
@@ -320,7 +323,7 @@ impl SignedNote {
         &*self.sig
     }
 
-    pub fn verify_signature(&self) -> bool {
+    fn verify_signature(&self) -> bool {
         let signature_of_signed_note = Signature::from_slice(
             &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
         )
@@ -339,7 +342,7 @@ impl SignedNote {
         };
     }
 
-    pub fn verify_content(&self) -> bool {
+    fn verify_content(&self) -> bool {
         //let new_note = Note { signed_note.get_pubkey().to_string(), signed_note.get_kind(), signed_note.get_content() };
         let copied_note = Note {
             pubkey: self.pubkey.clone(),
@@ -363,5 +366,12 @@ impl SignedNote {
             true => return true,
             _ => return false,
         }
+    }
+
+    pub fn verify(&self) -> bool {
+        if self.verify_signature() && self.verify_content() {
+            return true;
+        }
+        false
     }
 }

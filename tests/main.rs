@@ -36,8 +36,7 @@ mod tests {
             content_of_note,
         );
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-        assert_eq!(signed_note.verify_content(), true);
-        assert_eq!(signed_note.verify_signature(), true);
+        assert_eq!(signed_note.verify(), true);
     }
 
     #[test]
