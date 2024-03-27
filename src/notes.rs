@@ -1,113 +1,78 @@
+use std::fmt::{Display, Formatter};
 use super::utils::get_unix_timestamp;
 use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
 
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-
-
-#[derive(Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Note {
-    pub pubkey: Arc<str>,
+    pub pubkey: String,
     pub created_at: u64,
     pub kind: u32,
-    pub tags: Vec<Vec<Arc<str>>>,
-    pub content: Arc<str>,
-}
-
-impl Serialize for Note {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let serializable_tags: Vec<Vec<&str>> = self
-            .tags
-            .iter()
-            .map(|inner_vec| inner_vec.iter().map(|arc| &**arc).collect())
-            .collect();
-
-        let serialized_data = (
-            &*self.pubkey,
-            self.created_at,
-            self.kind,
-            &serializable_tags,
-            &*self.content,
-        );
-        serialized_data.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Note {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let (pubkey, created_at, kind, tags, content) =
-            <(String, u64, u32, Vec<Vec<String>>, String)>::deserialize(deserializer)?;
-
-        let deserialized_tags: Vec<Vec<Arc<str>>> = tags
-            .into_iter()
-            .map(|inner_vec| inner_vec.into_iter().map(|s| Arc::from(s)).collect())
-            .collect();
-
-        Ok(Note {
-            pubkey: Arc::from(pubkey),
-            created_at,
-            kind,
-            tags: deserialized_tags,
-            content: Arc::from(content),
-        })
-    }
+    pub tags: Vec<Vec<String>>,
+    pub content: String,
 }
 
 impl Note {
-    pub fn new(pubkey: String, kind: u32, content: &str) -> Self {
+    pub fn new(pubkey: &str, kind: u32, content: &str) -> Self {
         Note {
-            pubkey: Arc::from(pubkey),
+            pubkey: pubkey.to_string(),
             created_at: get_unix_timestamp(),
             kind,
             tags: Vec::new(),
-            content: Arc::from(content),
+            content: content.to_string(),
         }
     }
 
-    pub fn tag_note(&mut self, tag_type: &str, tag: &str) {
+    pub fn add_tag(&mut self, tag_type: &str, tag: &str) {
         if tag_type == "p" || tag_type == "e" {
         } else {
-            let tag_type = Arc::from(tag_type);
-            let tag = Arc::from(tag);
             if let Some(index) = self
                 .tags
                 .iter()
-                .position(|inner| inner.get(0) == Some(&tag_type))
+                .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
             {
                 // Tag type exists, push the tag to the corresponding inner array.
-                self.tags[index].push(tag);
+                self.tags[index].push(tag.to_string());
             } else {
                 // Tag type doesn't exist, create a new inner array and push it to the outer array.
-                let mut new_inner = vec![tag_type];
-                new_inner.push(tag);
+                let mut new_inner = vec![tag_type.to_string()];
+                new_inner.push(tag.to_string());
                 self.tags.push(new_inner);
             }
         }
     }
 
-    pub fn tag_for_private_message(&mut self, tag: &str) {
-        let tag_type = Arc::from("p");
-        let tag = Arc::from(tag);
+    pub fn add_pubkey_tag(&mut self, pubkey: &str) {
+        let tag_type = "p";
         if let Some(index) = self
             .tags
             .iter()
-            .position(|inner| inner.get(0) == Some(&tag_type))
+            .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
         {
             // Tag type exists, push the tag to the corresponding inner array.
-            self.tags[index].push(tag);
+            self.tags[index].push(pubkey.to_string());
         } else {
             // Tag type doesn't exist, create a new inner array and push it to the outer array.
-            let mut new_inner = vec![tag_type];
-            new_inner.push(tag);
+            let mut new_inner = vec![tag_type.to_string()];
+            new_inner.push(pubkey.to_string());
+            self.tags.push(new_inner);
+        }
+    }
+
+    pub fn add_event_tag(&mut self, event_id: &str) {
+        let tag_type = "e";
+        if let Some(index) = self
+            .tags
+            .iter()
+            .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
+        {
+            // Tag type exists, push the tag to the corresponding inner array.
+            self.tags[index].push(event_id.to_string());
+        } else {
+            // Tag type doesn't exist, create a new inner array and push it to the outer array.
+            let mut new_inner = vec![tag_type.to_string()];
+            new_inner.push(event_id.to_string());
             self.tags.push(new_inner);
         }
     }
@@ -119,11 +84,7 @@ impl Note {
             &*self.pubkey,
             self.created_at,
             self.kind,
-            &self
-                .tags
-                .iter()
-                .map(|v| v.iter().map(AsRef::as_ref).collect::<Vec<&str>>())
-                .collect::<Vec<Vec<&str>>>(),
+            &self.tags,
             &*self.content,
         );
 
@@ -133,151 +94,44 @@ impl Note {
     }
 }
 
-#[derive(Debug)]
+impl Display for Note {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).expect("Failed to serialize Note.")
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SignedNote {
     // id is a crypto representation of the the kind, tags, pukey and content
-    id: Arc<str>,
-    pubkey: Arc<str>,
+    id: String,
+    pubkey: String,
     created_at: u64,
     kind: u32,
-    tags: Vec<Vec<Arc<str>>>,
-    content: Arc<str>,
-
+    tags: Vec<Vec<String>>,
+    content: String,
     // is a schnorr signed string of the ID
-    sig: Arc<str>,
-}
-
-use serde::ser::SerializeStruct;
-
-impl Serialize for SignedNote {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let serializable_tags: Vec<Vec<&str>> = self
-            .tags
-            .iter()
-            .map(|inner_vec| inner_vec.iter().map(|arc| &**arc).collect())
-            .collect();
-
-        let mut s = serializer.serialize_struct("SignedNote", 7)?;
-        s.serialize_field("id", &*self.id)?;
-        s.serialize_field("pubkey", &*self.pubkey)?;
-        s.serialize_field("created_at", &self.created_at)?;
-        s.serialize_field("kind", &self.kind)?;
-        s.serialize_field("tags", &serializable_tags)?;
-        s.serialize_field("content", &*self.content)?;
-        s.serialize_field("sig", &*self.sig)?;
-        s.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for SignedNote {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // We expect a map here
-        let data = std::collections::HashMap::<String, Value>::deserialize(deserializer)?;
-
-        // Extract values from the map, convert to the appropriate types,
-        // and handle missing values using .get() and .ok_or().
-
-        let id = Arc::from(
-            data.get("id")
-                .ok_or(de::Error::missing_field("id"))?
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
-        let pubkey = Arc::from(
-            data.get("pubkey")
-                .ok_or(de::Error::missing_field("pubkey"))?
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
-        let created_at = data
-            .get("created_at")
-            .ok_or(de::Error::missing_field("created_at"))?
-            .as_u64()
-            .unwrap();
-        let kind = data
-            .get("kind")
-            .ok_or(de::Error::missing_field("kind"))?
-            .as_u64()
-            .unwrap() as u32;
-        let content = Arc::from(
-            data.get("content")
-                .ok_or(de::Error::missing_field("content"))?
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
-        let sig = Arc::from(
-            data.get("sig")
-                .ok_or(de::Error::missing_field("sig"))?
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
-
-        // For tags
-
-        static EMPTY_VEC: Vec<Value> = Vec::new();
-        let tags_data = data
-            .get("tags")
-            .ok_or(de::Error::missing_field("tags"))?
-            .as_array()
-            .unwrap_or(&EMPTY_VEC);
-        let mut tags = Vec::with_capacity(tags_data.len());
-        for tag_set in tags_data {
-            let mut inner_tags = Vec::new();
-            if let Some(tag_array) = tag_set.as_array() {
-                for tag in tag_array {
-                    inner_tags.push(Arc::from(tag.as_str().unwrap().to_string()));
-                }
-            }
-            tags.push(inner_tags);
-        }
-
-        Ok(SignedNote {
-            id,
-            pubkey,
-            created_at,
-            kind,
-            tags,
-            content,
-            sig,
-        })
-    }
+    sig: String,
 }
 
 impl SignedNote {
-    pub fn new(
-        id: String,
-        pubkey: String,
-        tags: Vec<Vec<Arc<str>>>,
-        kind: u32,
-        content: &str,
-        sig: String,
-    ) -> Self {
+    pub fn new(note: Note, id: String, sig: String) -> Self {
         SignedNote {
-            id: Arc::from(id),
-            pubkey: Arc::from(pubkey),
-            created_at: get_unix_timestamp(),
-            kind,
-            tags,
-            content: Arc::from(content),
-            sig: Arc::from(sig),
+            id,
+            pubkey: note.pubkey.to_string(),
+            created_at: note.created_at,
+            kind: note.kind,
+            tags: note
+                .tags
+                .iter()
+                .map(|inner| inner.iter().map(|x| x.to_string()).collect())
+                .collect(),
+            content: note.content.to_string(),
+            sig,
         }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn prepare_ws_message(&self) -> WsMessage {
-        let event_string = json!(["EVENT", self]).to_string();
-        let event_ws_message = WsMessage::Text(event_string);
-        event_ws_message
     }
 
     pub fn get_id(&self) -> &str {
@@ -296,7 +150,7 @@ impl SignedNote {
         self.kind
     }
 
-    pub fn get_tags(&self) -> &Vec<Vec<Arc<str>>> {
+    pub fn get_tags(&self) -> &Vec<Vec<String>> {
         &self.tags
     }
 
@@ -305,9 +159,9 @@ impl SignedNote {
         if let Some(index) = self
             .tags
             .iter()
-            .position(|inner| inner.get(0) == Some(&Arc::from(key)))
+            .position(|inner| inner.get(0) == Some(&key.to_string()))
         {
-            for tag in &self.tags[index][1..] {
+            for tag in &self.tags[index] {
                 tags.push(tag.to_string());
             }
             return Some(tags);
@@ -345,11 +199,11 @@ impl SignedNote {
     fn verify_content(&self) -> bool {
         //let new_note = Note { signed_note.get_pubkey().to_string(), signed_note.get_kind(), signed_note.get_content() };
         let copied_note = Note {
-            pubkey: self.pubkey.clone(),
+            pubkey: self.pubkey.to_string(),
             created_at: self.created_at,
             kind: self.kind,
             tags: self.tags.clone(),
-            content: self.content.clone(),
+            content: self.content.to_string(),
         };
         // if we serialize and has the note content, kind and tags, we can compare the id
         // with the id that was signed
@@ -373,5 +227,15 @@ impl SignedNote {
             return true;
         }
         false
+    }
+}
+
+impl Display for SignedNote {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).expect("Failed to serialize SignedNote.")
+        )
     }
 }

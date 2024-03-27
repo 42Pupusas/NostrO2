@@ -31,7 +31,7 @@ mod tests {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let user_key_pair = UserKeys::new(PRIV).unwrap();
         let unsigned_note = Note::new(
-            user_key_pair.get_public_key().to_string(),
+            &user_key_pair.get_public_key(),
             300,
             content_of_note,
         );
@@ -44,13 +44,13 @@ mod tests {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let user_key_pair = UserKeys::new(PRIV).expect("Failed to create UserKeys!");
         let mut unsigned_note = Note::new(
-            user_key_pair.get_public_key().to_string(),
+            &user_key_pair.get_public_key(),
             300,
             content_of_note,
         );
-        unsigned_note.tag_note("t", "test");
-        unsigned_note.tag_note("t", "test2");
-        unsigned_note.tag_note("ta", "test3");
+        unsigned_note.add_tag("t", "test");
+        unsigned_note.add_tag("t", "test2");
+        unsigned_note.add_tag("ta", "test3");
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
         assert_eq!(&*signed_note.get_tags()[0][1], "test");
         assert_eq!(&*signed_note.get_tags()[0][2], "test2");
@@ -65,12 +65,12 @@ mod tests {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let user_key_pair = UserKeys::new(PRIV).expect("Failed to create UserKeys!");
         let mut unsigned_note = Note::new(
-            user_key_pair.get_public_key().to_string(),
+            &user_key_pair.get_public_key(),
             300,
             content_of_note,
         );
-        unsigned_note.tag_note("p", "test");
-        unsigned_note.tag_note("e", "test2");
+        unsigned_note.add_tag("p", "test");
+        unsigned_note.add_tag("e", "test2");
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
         assert_eq!(signed_note.get_tags_by_id("p"), None);
         assert_eq!(signed_note.get_tags_by_id("e"), None);

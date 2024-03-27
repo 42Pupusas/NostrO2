@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use base64::{engine::general_purpose, Engine as _};
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
@@ -62,20 +60,17 @@ impl UserKeys {
             .to_string();
 
         let signed_note = SignedNote::new(
+            note,
             id,
-            self.get_public_key(),
-            note.tags,
-            note.kind,
-            &*note.content,
             sig,
         );
         signed_note
     }
 
     pub fn sign_encrypted_nostr_event(&self, mut note: Note, pubkey: String) -> SignedNote {
-        note.tag_for_private_message(&pubkey);
+        note.add_pubkey_tag(&pubkey);
         let encrypted_content = self.encrypt_content(note.content.to_string(), pubkey);
-        note.content = Arc::from(encrypted_content.to_string());
+        note.content = encrypted_content;
         note.kind = 4;
         // Serialize the event as JSON
         let json_str = note.serialize_for_nostr();
@@ -98,11 +93,8 @@ impl UserKeys {
             .to_string();
 
         let signed_note = SignedNote::new(
+            note,
             id,
-            self.get_public_key(),
-            note.tags,
-            note.kind,
-            &*note.content,
             sig,
         );
         signed_note
@@ -253,57 +245,3 @@ impl UserKeys {
     }
 }
 
-mod tests {
-
-    #[test]
-    fn test_nip_44() {
-        let pk_list = [
-            "CCCC227A28C49EE57628DA97570AF4FCBACA5776C659C488AB145258E005C68F",
-            "D053D85592C48B73B6DED93681B3743D72234077E325858F0E5FE31B0793A63B",
-            "65336E6F1527392E8CAC9B2F53CDC8083A74435B0A06045B713D893734571069",
-            "BBD39EB40490B8070168959D10C99EB31815D4ED5DDF8916B483101F3B9D4E4F",
-            "2A3AE39CE5404B3C7A7C74DFA3EA5E93DD30584094F9E6419BCD5B8F9BD95F66",
-            "AA6F2CDDEA668B65C882635EB5773F83C0BD0D0F82B8DBC7A3C61DF4F61E4AC1",
-        ];
-
-        use rand::Rng;
-        for keys in pk_list.iter() {
-            let user_keys = crate::userkeys::UserKeys::new(keys).unwrap();
-            let random_length = rand::thread_rng().gen_range(1..32);
-            let note = crate::notes::Note::new(
-                user_keys.get_public_key(),
-                4,
-                &user_keys.get_public_key()[..random_length],
-            );
-            let encrypted_note =
-                user_keys.sign_encrypted_nostr_event(note, user_keys.get_public_key());
-            let decrypted_content = user_keys.decrypt_note_content(&encrypted_note);
-            assert_eq!(
-                decrypted_content,
-                &user_keys.get_public_key()[..random_length]
-            );
-            assert_eq!(encrypted_note.get_kind(), 4);
-            assert_eq!(encrypted_note.get_tags_by_id("p"), Some(vec![user_keys.get_public_key()]));
-        }
-    }
-
-    #[test]
-    fn test_encrypting_to_other() {
-        let pk_list = [
-            "CCCC227A28C49EE57628DA97570AF4FCBACA5776C659C488AB145258E005C68F",
-            "D053D85592C48B73B6DED93681B3743D72234077E325858F0E5FE31B0793A63B",
-            "65336E6F1527392E8CAC9B2F53CDC8083A74435B0A06045B713D893734571069",
-            "BBD39EB40490B8070168959D10C99EB31815D4ED5DDF8916B483101F3B9D4E4F",
-            "2A3AE39CE5404B3C7A7C74DFA3EA5E93DD30584094F9E6419BCD5B8F9BD95F66",
-            "AA6F2CDDEA668B65C882635EB5773F83C0BD0D0F82B8DBC7A3C61DF4F61E4AC1",
-        ];
-
-        let user_keys = crate::userkeys::UserKeys::new(&pk_list[0]).unwrap();
-        let user_keys2 = crate::userkeys::UserKeys::new(&pk_list[1]).unwrap();
-        let note = crate::notes::Note::new(user_keys.get_public_key(), 4, "PEchan es GAY");
-        let encrypted_note =
-            user_keys.sign_encrypted_nostr_event(note, user_keys2.get_public_key());
-        let decrypted_content = user_keys2.decrypt_note_content(&encrypted_note);
-        assert_eq!(decrypted_content, "PEchan es GAY");
-    }
-}

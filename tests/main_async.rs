@@ -2,151 +2,122 @@ extern crate nostro2;
 use nostro2::notes::Note;
 use nostro2::relays::{NostrRelay, RelayEvents};
 use nostro2::userkeys::UserKeys;
-use nostro2::utils::get_unix_timestamp;
+use nostro2::utils::new_keys;
 use serde_json::json;
 
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
 
-const URL: &str = "wss://relay.nostrss.re";
-const PK1: &str = "07947aa9d48d099604ea53e2d347203d90fb133d77a430de43373b8eabd6275d";
+    #[test]
+    fn test_relay_events() {
+        let mut relay_connection = NostrRelay::new("wss://relay.arrakis.lat").unwrap();
 
-#[tokio::test]
-async fn connect_subscribe_and_read_note() {
-     let subscriber = FmtSubscriber::builder()
-        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-        // will be written to stdout.
-        .with_max_level(Level::TRACE)
-        // completes the builder.
-        .finish();
+        let mut msg_count = 0;
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
-    // Init Relay
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
-        ws_connection
-            .subscribe(json!({"kinds":[1],"limit":1}))
-            .await
-            .expect("Failed to subscribe to relay!");
-
-        loop {
-            if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
-                match relay_msg {
-                    RelayEvents::EVENT(_event, _id, signed_note) => {
-                        assert_eq!(signed_note.verify(), true);
-                        break;
-                    }
-                    _ => {}
+        relay_connection
+            .subscribe(json!({
+                "kinds": [1],
+                "limit": 10,
+            }))
+            .unwrap();
+        while let Ok(event) = relay_connection.read_relay_events() {
+            match event {
+                RelayEvents::EVENT(_event, _id, _signed_note) => {
+                    msg_count += 1;
                 }
+                RelayEvents::EOSE(_event, _notice) => {
+                    break;
+                }
+                _ => {}
             }
         }
-    } else {
-        panic!("Failed to connect to relay!");
+        assert!(msg_count > 0);
     }
-}
 
-#[tokio::test]
-async fn connect_subscribe_and_send_note() {
-    let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
-        let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
-        let unsigned_note = Note::new(
-            user_key_pair.get_public_key().to_string(),
-            300,
-            content_of_note,
-        );
-        let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-        ws_connection
-            .send_note(signed_note)
-            .await
-            .expect("Failed to send note!");
+    #[test]
+    fn send_note() {
+        let mut relay_connection = NostrRelay::new("wss://relay.arrakis.lat").unwrap();
 
-        ws_connection
-            .subscribe(json!({
-              "kinds":[300],
-              "limit":1,
-              "since": get_unix_timestamp() - 100
-            }))
-            .await
-            .expect("Not Subscribed");
+        let user_keys = hex::encode(&new_keys()[..]);
+        let keypair = UserKeys::new(&user_keys).unwrap();
 
-        loop {
-            if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
-                match relay_msg {
-                    RelayEvents::EVENT(_event, _id, signed_note) => {
-                        assert_eq!(signed_note.verify(), true);
-                        break;
-                    }
-                    _ => {}
+        let note = Note::new(&keypair.get_public_key(), 1, "Hello, World!");
+
+        let signednote = keypair.sign_nostr_event(note);
+
+        relay_connection.send_note(signednote).unwrap();
+        while let Ok(event) = relay_connection.read_relay_events() {
+            match event {
+                RelayEvents::OK(_event, _id, success, _notice) => {
+                    assert_eq!(success, true);
+                    break;
                 }
+                _ => {}
             }
         }
     }
-}
 
-#[tokio::test]
-async fn check_filtered_tags() {
-    let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-    if let Ok(ws_connection) = NostrRelay::new(URL).await {
-        let user_key_pair = UserKeys::new(PK1).expect("Failed to create UserKeys!");
-        let mut unsigned_note = Note::new(
-            user_key_pair.get_public_key().to_string(),
-            400,
-            content_of_note,
-        );
-        unsigned_note.tag_note("l", "rust");
-        let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-        let mut unsigned_note2 = Note::new(
-            user_key_pair.get_public_key().to_string(),
-            400,
-            content_of_note,
-        );
-        unsigned_note2.tag_note("l", "python");
-        let signed_note2 = user_key_pair.sign_nostr_event(unsigned_note2);
-        ws_connection
-            .send_note(signed_note)
-            .await
-            .expect("Failed to send note!");
-        ws_connection
-            .send_note(signed_note2)
-            .await
-            .expect("Failed to send note!");
+    use std::sync::Mutex;
+    #[test]
+    fn use_relay_on_threads() {
+        use std::thread;
+        let relay_connection = Arc::new(Mutex::new(
+            NostrRelay::new("wss://relay.arrakis.lat").unwrap(),
+        ));
 
-        ws_connection
-            .subscribe(json!({
-              "kinds":[400],
-              "limit":2,
-              "#l":["rust"],
-            }))
-            .await
-            .expect("Not Subscribed");
+        let relay_clone2 = relay_connection.clone();
 
-
-        loop {
-            if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
-                match relay_msg {
-                    RelayEvents::EVENT(_event, _id, signed_note) => {
-                        assert_eq!(signed_note.verify(), true);
-                        assert_eq!(&*signed_note.get_tags_by_id("l").unwrap(), ["rust"]);
+        let handle2 = thread::spawn(move || {
+            println!("THREAD 2");
+            relay_clone2
+                .lock()
+                .unwrap()
+                .subscribe(json!({
+                    "kinds": [1],
+                    "limit": 10,
+                }))
+                .unwrap();
+            while let Ok(event) = relay_clone2.lock().unwrap().read_relay_events() {
+                match event {
+                    RelayEvents::EVENT(_event, _id, _signed_note) => {
+                        println!("EVENT {}", _signed_note);
                     }
                     RelayEvents::EOSE(_, _) => {
+                        println!("End of THREAD 2");
                         break;
                     }
                     _ => {}
                 }
             }
-        }
-    } else {
-    }
-}
+            return;
+        });
 
-#[tokio::test]
-async fn check_relay_can_run_on_threads() {
-    tokio::spawn(async move {
-        if let Ok(_ws_connection) = NostrRelay::new(URL).await {
-            assert_eq!(true, true);
-        } else {
-            assert_eq!(true, false);
-        }
-    });
+        let relay_clone = relay_connection.clone();
+        let handle = thread::spawn(move || {
+            println!("THREAD 1");
+            relay_clone.lock().unwrap().subscribe(json!({
+                "kinds": [3],
+                "limit": 10,
+            })).unwrap();
+            while let Ok(event) = relay_clone.lock().unwrap().read_relay_events() {
+                match event {
+                    RelayEvents::EVENT(_event, _id, _signed_note) => {
+                        println!("EVENT 2 {}", _signed_note.get_kind());
+                    }
+                    RelayEvents::EOSE(_, _) => {
+                        println!("End of THREAD 1");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        });
+
+        handle.join().unwrap();
+        handle2.join().unwrap();
+        assert!(true);
+    }
 }

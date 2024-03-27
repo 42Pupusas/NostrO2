@@ -1,6 +1,8 @@
+use std::time::SystemTime;
+
 use rand::{thread_rng, Rng};
+use rustls_pki_types::UnixTime;
 use secp256k1::SecretKey;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn new_keys() -> SecretKey {
     let mut rng = thread_rng();
@@ -16,14 +18,15 @@ pub fn new_keys() -> SecretKey {
 }
 
 pub fn get_unix_timestamp() -> u64 {
-    // Get the current time as a SystemTime object
-    let current_time = SystemTime::now();
+    let now = SystemTime::now();
 
-    // Get the duration between the current time and the Unix epoch
-    let duration_since_epoch = current_time.duration_since(UNIX_EPOCH).unwrap();
+    // Convert it to a duration since the Unix epoch
+    let duration_since_epoch = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("Time went backwards");
 
-    // Get the number of seconds since the Unix epoch as a u64 value
-    let unix_timestamp = duration_since_epoch.as_secs();
+    // Create a UnixTime instance representing the current time
+    let current_unix_time = UnixTime::since_unix_epoch(duration_since_epoch);
 
-    unix_timestamp
+    current_unix_time.as_secs()
 }
