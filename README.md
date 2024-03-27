@@ -76,11 +76,10 @@ following the filter protocol in NIP-01.
 
 ### Nostr Authentication
 
-The `SignedNotes` objects also provide verification methods for both content and signatures.
+The `SignedNotes` objects also provide a verification method for both content and signatures.
 
 ```rust
-    assert_eq!(signed_note.verify_content(), true);
-    assert_eq!(signed_note.verify_signature(), true);
+    assert_eq!(signed_note.verify(), true);
 ```
 
 ## Installation
@@ -91,6 +90,6 @@ You can also add `nostro2` to your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-nostro2 = "0.1.7"
+nostro2 = "0.1.14"
 ```
 

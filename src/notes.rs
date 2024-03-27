@@ -150,8 +150,8 @@ impl SignedNote {
         self.kind
     }
 
-    pub fn get_tags(&self) -> &Vec<Vec<String>> {
-        &self.tags
+    pub fn get_tags(&self) -> Vec<Vec<String>> {
+        self.tags.clone()
     }
 
     pub fn get_tags_by_id(&self, key: &str) -> Option<Vec<String>> {

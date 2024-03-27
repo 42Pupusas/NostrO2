@@ -1,8 +1,10 @@
 use std::time::SystemTime;
 
 use rand::{thread_rng, Rng};
-use rustls_pki_types::UnixTime;
 use secp256k1::SecretKey;
+
+#[cfg(target_arch = "wasm32")]
+use rustls_pki_types::UnixTime;
 
 pub fn new_keys() -> SecretKey {
     let mut rng = thread_rng();
@@ -26,7 +28,11 @@ pub fn get_unix_timestamp() -> u64 {
         .expect("Time went backwards");
 
     // Create a UnixTime instance representing the current time
+    #[cfg(target_arch = "wasm32")]
     let current_unix_time = UnixTime::since_unix_epoch(duration_since_epoch);
+    
+    #[cfg(not(target_arch = "wasm32"))]
+    let current_unix_time = duration_since_epoch;
 
     current_unix_time.as_secs()
 }
