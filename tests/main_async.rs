@@ -24,11 +24,8 @@ extern "C" {
 mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
-    use std::sync::Arc;
-    #[cfg(not(target_arch = "wasm32"))]
     use nostro2::{notes::Note, userkeys::UserKeys, utils::new_keys};
-    #[cfg(not(target_arch = "wasm32"))]
-    use tokio::sync::Mutex;
+    use std::sync::Arc;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_futures::spawn_local;
@@ -40,42 +37,72 @@ mod tests {
     use super::*;
 
     #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen_test]
-    fn pass() {
-        let websocket_thread = async {
-            let mut counter = 0;
-            let mut nostr_relay = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
-            let filter = json!({
-                "kinds": [1],
-                "limit": 10,
-            });
-            nostr_relay.subscribe(filter).await.unwrap();
-            while let Ok(event) = nostr_relay.read_relay_events().await {
-                match event {
-                    RelayEvents::EVENT(_event, _id, _signed_note) => {
-                        #[cfg(target_arch = "wasm32")]
-                        console_log!("EVENT 1 {}", _signed_note.get_kind());
-                        counter += 1;
-                    }
-                    RelayEvents::EOSE(_, _) => {
-                        #[cfg(target_arch = "wasm32")]
-                        console_log!("End of THREAD 1");
-                        
-                        break;
+    use serde_json::json;
 
-                    }
-                    _ => {}
+    #[cfg(target_arch = "wasm32")]
+    use crate::tests::nostro2::utils::new_keys;
+    #[cfg(target_arch = "wasm32")]
+    use nostro2::notes::Note;
+    #[cfg(target_arch = "wasm32")]
+    use nostro2::userkeys::UserKeys;
+
+    #[cfg(target_arch = "wasm32")]
+    use tokio_tungstenite_wasm::Message;
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    extern "C" {
+        fn setTimeout(closure: &Closure<dyn FnMut()>, millis: u32);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn pass_threads() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::sync::Mutex;
+
+        let websocket_thread = async {
+            let nostr_relay = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
+
+            let relay_arc = Arc::new(nostr_relay);
+
+            let writer_half = relay_arc.clone();
+            let write_thread = async move {
+                let filter = json!({
+                    "kinds": [20042],
+                });
+                writer_half.subscribe(filter).await.unwrap();
+                let user_keys = hex::encode(&new_keys()[..]);
+                let keypair = UserKeys::new(&user_keys).unwrap();
+                for i in 0..100 {
+                    let note = Note::new(&keypair.get_public_key(), 20042, "Hello, World!");
+                    let signednote = keypair.sign_nostr_event(note);
+                    writer_half.send_note(signednote).await.unwrap();
                 }
-            }
-            assert_eq!(counter, 10);
+            };
+            spawn_local(write_thread);
+
+            let reader_half = relay_arc.clone();
+            let read_thread = async move {
+                while let Ok(event) = reader_half.read_relay_events().await {
+                    match event {
+                        RelayEvents::EVENT(_event, _id, _signed_note) => {
+                            console_log!("EVENT {}", _signed_note.get_kind());
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            spawn_local(read_thread);
         };
+
         spawn_local(websocket_thread);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn send_note() {
-        let mut relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
+        let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
 
         let user_keys = hex::encode(&new_keys()[..]);
         let keypair = UserKeys::new(&user_keys).unwrap();
@@ -99,98 +126,60 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn use_relay_on_threads() {
-        let relay_connection = Arc::new(Mutex::new(
-            NostrRelay::new("wss://relay.arrakis.lat").await.unwrap(),
-        ));
+        use tokio::select;
+
+        let relay_connection = Arc::new(NostrRelay::new("wss://relay.arrakis.lat").await.unwrap());
 
         let relay_clone2 = relay_connection.clone();
 
-        #[cfg(not(target_arch = "wasm32"))]
         let handle2 = tokio::spawn(async move {
-            println!("THREAD 2");
-            relay_clone2
-                .lock()
-                .await
-                .subscribe(json!({
-                    "kinds": [3],
-                    "limit": 10,
-                }))
-                .await
-                .unwrap();
-            while let Ok(event) = relay_clone2.lock().await.read_relay_events().await {
-                match event {
-                    RelayEvents::EVENT(_event, _id, _signed_note) => {
-                        println!("EVENT 2 {}", _signed_note.get_kind());
-                    }
-                    RelayEvents::EOSE(_, _) => {
-                        println!("End of THREAD 2");
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
-
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(async move {
-            println!("THREAD 2");
-            relay_clone2
-                .lock()
-                .await
-                .subscribe(json!({
-                    "kinds": [3],
-                    "limit": 10,
-                }))
-                .await
-                .unwrap();
-            while let Ok(event) = relay_clone2.lock().await.read_relay_events().await {
-                match event {
-                    RelayEvents::EVENT(_event, _id, _signed_note) => {
-                        println!("EVENT 2 {}", _signed_note.get_kind());
-                    }
-                    RelayEvents::EOSE(_, _) => {
-                        println!("End of THREAD 2");
-                        break;
-                    }
-                    _ => {}
+            let mut counter = 0;
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                let test_keys = UserKeys::new(&hex::encode(&new_keys()[..])).unwrap();
+                let new_note = Note::new(&test_keys.get_public_key(), 20042, "Hello, World!");
+                let signed_note = test_keys.sign_nostr_event(new_note);
+                relay_clone2.send_note(signed_note).await.unwrap();
+                counter += 1;
+                println!("THREAD 2");
+                if counter == 12 {
+                    break;
                 }
             }
         });
 
         let relay_clone = relay_connection.clone();
 
-        #[cfg(not(target_arch = "wasm32"))]
         let handle = tokio::spawn(async move {
+            let mut counter = 0;
             println!("THREAD 1");
             relay_clone
-                .lock()
-                .await
                 .subscribe(json!({
-                    "kinds": [1],
-                    "limit": 10,
+                    "kinds": [20042],
                 }))
                 .await
                 .unwrap();
-            while let Ok(event) = relay_clone.lock().await.read_relay_events().await {
+            while let Ok(event) = relay_clone.read_relay_events().await {
                 match event {
                     RelayEvents::EVENT(_event, _id, _signed_note) => {
                         println!("EVENT 1 {}", _signed_note.get_kind());
-                    }
-                    RelayEvents::EOSE(_, _) => {
-                        println!("End of THREAD 1");
-                        break;
+                        counter += 1;
+                        if counter == 3 {
+                            break;
+                        }
                     }
                     _ => {}
                 }
             }
         });
 
-        #[cfg(not(target_arch = "wasm32"))]
-        handle.await.unwrap();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        handle2.await.unwrap();
-
-        assert!(true);
+        select! {
+            _ = handle => {
+                assert!(true);
+            }
+            _ = handle2 => {
+                panic!("THREAD 2 DONE");
+            }
+        }
     }
 }

@@ -7,12 +7,14 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, Value};
 
-
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[cfg(target_arch = "wasm32")]
 use tokio_tungstenite_wasm::{connect, Message, WebSocketStream as WasmWebSocketStream};
@@ -57,13 +59,13 @@ impl RelayEvents {
 pub struct NostrRelay {
     _url: String,
     #[cfg(not(target_arch = "wasm32"))]
-    websocket_writer: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    websocket_writer: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    websocket_reader: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    websocket_reader: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     #[cfg(target_arch = "wasm32")]
-    websocket_writer: SplitSink<WasmWebSocketStream, Message>,
+    websocket_writer: Arc<Mutex<SplitSink<WasmWebSocketStream, Message>>>,
     #[cfg(target_arch = "wasm32")]
-    websocket_reader: SplitStream<WasmWebSocketStream>,
+    websocket_reader: Arc<Mutex<SplitStream<WasmWebSocketStream>>>,
 }
 
 impl NostrRelay {
@@ -81,6 +83,10 @@ impl NostrRelay {
             .map_err(|_| RelayErrors::ConnectionError)?;
 
         let (websocket_writer, websocket_reader) = websocket.split();
+
+        let websocket_writer = Arc::new(Mutex::new(websocket_writer));
+        let websocket_reader = Arc::new(Mutex::new(websocket_reader));
+
         Ok(NostrRelay {
             _url: relay_string.to_string(),
             websocket_writer,
@@ -88,33 +94,39 @@ impl NostrRelay {
         })
     }
 
-    pub async fn subscribe(&mut self, filter: Value) -> Result<String, RelayErrors> {
+    pub async fn subscribe(&self, filter: Value) -> Result<String, RelayErrors> {
         let subscription = NostrSubscription::new(filter);
         self.websocket_writer
+            .lock()
+            .await
             .send(subscription.nostr_message())
             .await
             .map_err(|_| RelayErrors::SubscriptionError("Could not subscribe".into()))?;
+
         Ok(subscription.id())
     }
 
-    pub async fn send_note(&mut self, note: SignedNote) -> Result<(), RelayErrors> {
+    pub async fn send_note(&self, note: SignedNote) -> Result<(), RelayErrors> {
         let note = json!(["EVENT", note]);
 
         #[cfg(not(target_arch = "wasm32"))]
         let message = Message::Text(note.to_string());
-        
+
         #[cfg(target_arch = "wasm32")]
         let message = Message::Text(note.to_string());
-        
+
         self.websocket_writer
-            .send(message).await
+            .lock()
+            .await
+            .send(message)
+            .await
             .map_err(|_| RelayErrors::SendError("Could not send note".into()))?;
-        
+
         Ok(())
     }
 
-    pub async fn read_relay_events(&mut self) -> Result<RelayEvents, RelayErrors> {
-        if let Some(message) = self.websocket_reader.next().await {
+    pub async fn read_relay_events(&self) -> Result<RelayEvents, RelayErrors> {
+        if let Some(message) = self.websocket_reader.lock().await.next().await {
             match message {
                 Ok(message) => {
                     let message = message.to_string();
@@ -127,8 +139,8 @@ impl NostrRelay {
         }
     }
 
-    pub async  fn close(&mut self) {
-        let _ = self.websocket_writer.close().await;
+    pub async fn close(&self) {
+        let _ = self.websocket_writer.lock().await.close().await;
     }
 }
 
