@@ -21,7 +21,7 @@ use tokio_tungstenite_wasm::{connect, Message, WebSocketStream as WasmWebSocketS
 
 use url::Url;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub enum RelayEvents {
     EVENT(String, String, SignedNote),
     EOSE(String, String),
@@ -104,6 +104,18 @@ impl NostrRelay {
             .map_err(|_| RelayErrors::SubscriptionError("Could not subscribe".into()))?;
 
         Ok(subscription.id())
+    }
+
+    pub async fn unsubscribe(&self, id: String) -> Result<(), RelayErrors> {
+        let subscription = json!(["CLOSE", id]).to_string();
+        self.websocket_writer
+            .lock()
+            .await
+            .send(Message::Text(subscription))
+            .await
+            .map_err(|_| RelayErrors::SubscriptionError("Could not unsubscribe".into()))?;
+
+        Ok(())
     }
 
     pub async fn send_note(&self, note: SignedNote) -> Result<(), RelayErrors> {

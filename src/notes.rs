@@ -104,7 +104,7 @@ impl Display for Note {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SignedNote {
     // id is a crypto representation of the the kind, tags, pukey and content
     id: String,

@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use super::notes::{Note, SignedNote};
 
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub struct UserKeys {
     keypair: KeyPair,
 }

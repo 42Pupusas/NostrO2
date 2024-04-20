@@ -9,6 +9,9 @@ readme = "README.md"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -36,5 +39,5 @@ tokio-tungstenite-wasm = { version = "0.3.1", features = ["rustls-tls-webpki-roo
 rustls-pki-types = { version = "1.4.0", features = ["web"] }
 wasm-bindgen-test = "0.3.42"
 wasm-bindgen-futures = "0.4.42"
-wasm-bindgen = "0.2.92"
+wasm-bindgen = "= 0.2.92"
 web-time = "1.1.0"
