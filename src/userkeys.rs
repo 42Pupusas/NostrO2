@@ -17,17 +17,32 @@ pub struct UserKeys {
 
 #[derive(Debug)]
 pub enum UserError {
-    CouldNotCreateKeys,
+    DecryptionError,
+    DecodingError,
 }
+
+impl ToString for UserError {
+    fn to_string(&self) -> String {
+        match self {
+            UserError::DecryptionError => "Failed to decrypt".to_string(),
+            UserError::DecodingError => "Failed to decode".to_string(),
+        }
+    }
+}
+
 
 impl UserKeys {
     pub fn new(private_key: &str) -> Result<Self, UserError> {
         let secp = Secp256k1::new();
-        if let Ok(secret_key) = SecretKey::from_slice(&hex::decode(private_key).unwrap()) {
+        let decoded_private_key = hex::decode(private_key);
+        if decoded_private_key.is_err() {
+            return Err(UserError::DecodingError);
+        }
+        if let Ok(secret_key) = SecretKey::from_slice(&decoded_private_key.unwrap()) {
             let keypair = KeyPair::from_secret_key(&secp, &secret_key);
             Ok(UserKeys { keypair })
         } else {
-            Err(UserError::CouldNotCreateKeys)
+            Err(UserError::DecryptionError)
         }
     }
 
