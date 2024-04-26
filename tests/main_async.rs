@@ -125,6 +125,32 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
+    async fn fetch_events() {
+        let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
+
+
+        let mut counter = 0;
+        let events = relay_connection
+            .subscribe_until_eose(json!({
+                "kinds": [1],
+                "limit": 10,
+            }))
+            .await
+            .unwrap();
+        for event in events {
+            match event {
+                RelayEvents::EVENT(_event, _id, _signed_note) => {
+                    counter += 1;
+                    println!("EVENT {}", _signed_note.get_kind());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(counter, 10);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
     async fn use_relay_on_threads() {
         use tokio::select;
 
