@@ -46,6 +46,13 @@ impl UserKeys {
         }
     }
 
+    pub fn generate() -> Self {
+        let secp = Secp256k1::new();
+        let new_secret_key = crate::utils::new_keys();
+        let keypair = KeyPair::from_secret_key(&secp, &new_secret_key);
+        UserKeys { keypair }
+    }
+
     pub fn get_public_key(&self) -> String {
         return self.keypair.public_key().to_string()[2..].to_string();
     }
@@ -87,7 +94,6 @@ impl UserKeys {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = self.encrypt_content(note.content.to_string(), pubkey);
         note.content = encrypted_content;
-        note.kind = 4;
         // Serialize the event as JSON
         let json_str = note.serialize_for_nostr();
 

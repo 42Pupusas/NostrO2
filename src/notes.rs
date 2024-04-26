@@ -4,7 +4,7 @@ use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub pubkey: String,
     pub created_at: u64,
@@ -161,7 +161,7 @@ impl SignedNote {
             .iter()
             .position(|inner| inner.get(0) == Some(&key.to_string()))
         {
-            for tag in &self.tags[index] {
+            for tag in &self.tags[index][1..] {
                 tags.push(tag.to_string());
             }
             return Some(tags);
