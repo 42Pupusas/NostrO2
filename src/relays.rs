@@ -154,6 +154,25 @@ impl NostrRelay {
     pub async fn close(&self) {
         let _ = self.websocket_writer.lock().await.close().await;
     }
+
+    pub async fn subscribe_until_eose(&self, filter: Value) -> Result<Vec<RelayEvents>, RelayErrors> {
+        let id = self.subscribe(filter).await?;
+        let mut events = Vec::new();
+
+        loop {
+            let event = self.read_relay_events().await?;
+            events.push(event.clone());
+
+            match event {
+                RelayEvents::EOSE(_, _) => {
+                    self.unsubscribe(id).await?;
+                    break;
+                }
+                _ => (),
+            }
+        }
+        Ok(events)
+    }
 }
 
 #[derive(Serialize, Deserialize)]

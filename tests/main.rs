@@ -43,15 +43,20 @@ mod tests {
         let user_key_pair = UserKeys::new(PRIV).expect("Failed to create UserKeys!");
         let mut unsigned_note = Note::new(&user_key_pair.get_public_key(), 300, content_of_note);
         unsigned_note.add_tag("t", "test");
-        unsigned_note.add_tag("t", "test2");
-        unsigned_note.add_tag("ta", "test3");
+        println!("{:?}", unsigned_note.tags);
+        unsigned_note.add_event_tag("adsfasdfadsfadsfasdfadfs");
+        unsigned_note.add_pubkey_tag("adsfasdfadsfadsfasdfadfs");
         let signed_note = user_key_pair.sign_nostr_event(unsigned_note);
-        assert_eq!(&*signed_note.get_tags()[0][1], "test");
-        assert_eq!(&*signed_note.get_tags()[0][2], "test2");
-        assert_eq!(&*signed_note.get_tags()[1][1], "test3");
-        assert_ne!(&*signed_note.get_tags()[0][1], "not-the-test");
-        assert_ne!(&*signed_note.get_tags()[0][2], "not-the-test");
-        assert_ne!(&*signed_note.get_tags()[1][1], "not-the-test");
+        let t_tags = signed_note.get_tags_by_id("t").expect("Failed to get tag!");
+        println!("{:?}", t_tags);
+        let t_tag = t_tags.first().unwrap();
+        assert_eq!(t_tag, "test");
+        let p_tags = signed_note.get_tags_by_id("p").expect("Failed to get tag!");
+        let p_tag = p_tags.first().unwrap();
+        assert_eq!(p_tag, "adsfasdfadsfadsfasdfadfs");
+        let e_tags = signed_note.get_tags_by_id("e").expect("Failed to get tag!");
+        let e_tag = e_tags.first().unwrap();
+        assert_eq!(e_tag, "adsfasdfadsfadsfasdfadfs");
     }
 
     #[test]
