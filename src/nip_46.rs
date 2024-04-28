@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Nip46Commands {
     Ping(String, String),
     SignEvent(String, String, Note),
@@ -64,9 +64,8 @@ impl Nip46Request {
 
     fn sign_request(&self, client_keys: &UserKeys, user_keys: String) -> SignedNote {
         let stringified_request = serde_json::to_string(&self).unwrap();
-        let mut request_note =
+        let request_note =
             Note::new(&client_keys.get_public_key(), 24133, &stringified_request);
-        request_note.add_pubkey_tag(&user_keys);
         client_keys.sign_encrypted_nostr_event(request_note, user_keys)
     }
 
