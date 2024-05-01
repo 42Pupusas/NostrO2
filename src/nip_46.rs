@@ -152,13 +152,19 @@ mod tests {
 
     #[test]
     fn test_nip46_sign_event() {
+        
         // Client the user wants to log in to secureely 
         let client_keys = UserKeys::generate();
+        println!("Client key {}", client_keys.get_public_key());
+
+
+
         // the user keys on the remote signer
         let user_keys = UserKeys::generate();
+        println!("User key {}", user_keys.get_public_key());
 
         // client builds this note to be signed
-        let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
+        let note_request = Note::new(&user_keys.get_public_key(), 42, "sing_me_please");
         // and builds the request note
         let nip46_request = Nip46Request::sign_event_request(note_request, &client_keys);
 
@@ -166,7 +172,7 @@ mod tests {
         let nip46_command = Nip46Request::get_request_command(&nip46_request, &user_keys);
         if let Nip46Commands::SignEvent(pubkey, _id, note) = &nip46_command {
             assert_eq!(pubkey, &client_keys.get_public_key());
-            assert_eq!(note.kind, 24133);
+            assert_eq!(note.kind, 42);
         } else {
             panic!("Not a sign_event command");
         }
@@ -177,6 +183,35 @@ mod tests {
 
         // the client bunker receives the signed note and parses the response
         let response_note = Nip46Response::get_response_note(&signed_note, &client_keys);
-        assert_eq!(response_note.get_content(), "test");
+        assert_eq!(response_note.get_content(), "sing_me_please");
+    }
+
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn test_nip46_ping_request_wasm() {
+        let user_keys = UserKeys::generate();
+        let client_keys = UserKeys::generate();
+        let ping_request = Nip46Request::ping_request(&client_keys, user_keys.get_public_key());
+        assert_eq!(ping_request.get_kind(), 24133);
+
+        let nip46_command = Nip46Request::get_request_command(&ping_request, &user_keys);
+        if let Nip46Commands::Ping(pubkey, _id) = &nip46_command {
+            assert_eq!(pubkey, &client_keys.get_public_key());
+        } else {
+            panic!("Not a ping command");
+        }
+        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
+        assert_eq!(signed_note.verify(), true);
+        let decrypted_note = client_keys.decrypt_note_content(&signed_note);
+        let parsed_response = serde_json::from_str::<Nip46Response>(&decrypted_note).unwrap();
+        assert_eq!(parsed_response.result, "pong");
+
     }
 }

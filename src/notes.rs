@@ -138,6 +138,13 @@ impl SignedNote {
         &*self.id
     }
 
+    pub fn get_note_id(&self) -> String {
+        let hrp = bech32::Hrp::parse("note").expect("valid hrp");
+        let note_data = self.id.as_bytes();
+        let string = bech32::encode::<bech32::Bech32>(hrp, &note_data).expect("failed to encode string");
+        string
+    }
+
     pub fn get_pubkey(&self) -> &str {
         &*self.pubkey
     }
