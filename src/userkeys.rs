@@ -129,6 +129,13 @@ impl UserKeys {
         return self.keypair.public_key().x_only_public_key().0.serialize();
     }
 
+    pub fn get_secret_key(&self) -> [u8; 32] {
+        if !self.extractable {
+            return [0u8; 32];
+        }
+        self.keypair.secret_key().secret_bytes()
+    }
+
     pub fn get_npub(&self) -> String {
         let hrp = Hrp::parse("npub").expect("valid hrp");
         let pk_data = self.keypair.public_key().x_only_public_key().0.serialize();
