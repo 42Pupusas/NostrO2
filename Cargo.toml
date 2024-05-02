@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
@@ -29,6 +29,9 @@ url = "2.5.0"
 futures-util = { version = "0.3.28", features = ["sink", "std"] }
 bech32 = "0.11.0"
 bip39 = { version = "2.0.0", features = ["spanish"] }
+cbc = { version = "0.1.2", features = ["alloc"] }
+aes = "0.8.4"
+libaes = "0.7.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.36.0", features = ["test-util", "macros", "net"] }

@@ -1,11 +1,12 @@
 use crate::{
     notes::{Note, SignedNote},
-    userkeys::UserKeys,
+    userkeys::{UserError, UserKeys},
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Nip46Commands {
+    Connect(String, String),
     Ping(String, String),
     SignEvent(String, String, Note),
 }
@@ -18,7 +19,9 @@ pub struct Nip46Response {
 
 impl Nip46Response {
     pub fn get_response_note(signed_note: &SignedNote, user_keys: &UserKeys) -> SignedNote {
-        let decrypted_note_response = user_keys.decrypt_note_content(signed_note);
+        let decrypted_note_response = user_keys
+            .decrypt_nip_04_content(signed_note)
+            .expect("Could not decrypt note");
         let response_note =
             serde_json::from_str::<Nip46Response>(&decrypted_note_response).unwrap();
         let parsed_note = serde_json::from_str::<SignedNote>(&response_note.result).unwrap();
@@ -48,7 +51,7 @@ impl Nip46Request {
             method: "ping".to_string(),
             params: ping_params,
         };
-        self_try.sign_request(client_keys, user_keys)
+        self_try.sign_request(client_keys, user_keys).unwrap()
     }
 
     pub fn sign_event_request(note_request: Note, client_keys: &UserKeys) -> SignedNote {
@@ -59,19 +62,26 @@ impl Nip46Request {
             method: "sign_event".to_string(),
             params: note_params,
         };
-        self_try.sign_request(client_keys, note_request.pubkey)
+        self_try
+            .sign_request(client_keys, note_request.pubkey)
+            .unwrap()
     }
 
-    fn sign_request(&self, client_keys: &UserKeys, user_keys: String) -> SignedNote {
+    fn sign_request(
+        &self,
+        client_keys: &UserKeys,
+        user_keys: String,
+    ) -> Result<SignedNote, UserError> {
         let stringified_request = serde_json::to_string(&self).unwrap();
-        let request_note =
-            Note::new(&client_keys.get_public_key(), 24133, &stringified_request);
-        client_keys.sign_encrypted_nostr_event(request_note, user_keys)
+        let request_note = Note::new(&client_keys.get_public_key(), 24133, &stringified_request);
+        client_keys.sign_nip_04_encrypted(request_note, user_keys)
     }
 
     pub fn get_request_command(signed_note: &SignedNote, user_keys: &UserKeys) -> Nip46Commands {
         let command_pubkey = signed_note.get_pubkey().to_string();
-        let decrypted_note_request = user_keys.decrypt_note_content(signed_note);
+        let decrypted_note_request = user_keys
+            .decrypt_nip_04_content(signed_note)
+            .expect("Could not decrypt note");
         let signed_request_note =
             serde_json::from_str::<Nip46Request>(&decrypted_note_request).unwrap();
         let command_id = signed_request_note.id;
@@ -82,22 +92,34 @@ impl Nip46Request {
                     serde_json::from_str::<Note>(&signed_request_note.params[0]).unwrap();
                 Nip46Commands::SignEvent(command_pubkey, command_id, response_note)
             }
+            "connect" => Nip46Commands::Connect(command_pubkey, command_id),
             _ => panic!("Unknown command"),
         }
     }
 
-    pub fn respond_to_command(
-        user_keys: &UserKeys,
-        command: Nip46Commands,
-    ) -> SignedNote {
+    pub fn respond_to_command(user_keys: &UserKeys, command: Nip46Commands) -> SignedNote {
         match command {
+            Nip46Commands::Connect(pubkey, id) => {
+                let response = Nip46Response {
+                    id,
+                    result: "ack".to_string(),
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
             Nip46Commands::Ping(pubkey, id) => {
                 let response = Nip46Response {
                     id,
                     result: "pong".to_string(),
                 };
-                let response_note = Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
-                user_keys.sign_encrypted_nostr_event(response_note, pubkey)
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
             }
             Nip46Commands::SignEvent(pubkey, id, note) => {
                 let signed_response = user_keys.sign_nostr_event(note);
@@ -105,12 +127,14 @@ impl Nip46Request {
                     id,
                     result: signed_response.to_string(),
                 };
-                let response_note = Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
-                user_keys.sign_encrypted_nostr_event(response_note, pubkey)
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -144,20 +168,18 @@ mod tests {
         }
         let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
         assert_eq!(signed_note.verify(), true);
-        let decrypted_note = client_keys.decrypt_note_content(&signed_note);
+        let decrypted_note = client_keys
+            .decrypt_nip_04_content(&signed_note)
+            .expect("Could not decrypt note");
         let parsed_response = serde_json::from_str::<Nip46Response>(&decrypted_note).unwrap();
         assert_eq!(parsed_response.result, "pong");
-
     }
 
     #[test]
     fn test_nip46_sign_event() {
-        
-        // Client the user wants to log in to secureely 
+        // Client the user wants to log in to secureely
         let client_keys = UserKeys::generate();
         println!("Client key {}", client_keys.get_public_key());
-
-
 
         // the user keys on the remote signer
         let user_keys = UserKeys::generate();
@@ -186,7 +208,6 @@ mod tests {
         assert_eq!(response_note.get_content(), "sing_me_please");
     }
 
-
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::*;
 
@@ -209,9 +230,8 @@ mod tests {
         }
         let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
         assert_eq!(signed_note.verify(), true);
-        let decrypted_note = client_keys.decrypt_note_content(&signed_note);
+        let decrypted_note = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
         let parsed_response = serde_json::from_str::<Nip46Response>(&decrypted_note).unwrap();
         assert_eq!(parsed_response.result, "pong");
-
     }
 }

@@ -1,13 +1,11 @@
-use base64::{engine::general_purpose, Engine as _};
 use bip39::Language;
-use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::ChaCha20;
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
-use secp256k1::{ecdh::shared_secret_point, KeyPair, Message, PublicKey, Secp256k1, SecretKey};
-use secp256k1::{Parity, XOnlyPublicKey};
+use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
+
+use crate::nips::{
+    nip_04::{nip_04_decrypt, nip_04_encrypt},
+    nip_44::{nip_44_decrypt, nip_44_encrypt},
+};
 
 use super::notes::{Note, SignedNote};
 use bech32::{Bech32, Hrp};
@@ -21,6 +19,7 @@ pub struct UserKeys {
 #[derive(Debug)]
 pub enum UserError {
     DecryptionError,
+    EncryptionError,
     DecodingError,
     NsecError,
     MnemonicError,
@@ -30,6 +29,7 @@ impl ToString for UserError {
     fn to_string(&self) -> String {
         match self {
             UserError::DecryptionError => "Failed to decrypt".to_string(),
+            UserError::EncryptionError => "Failed to encrypt".to_string(),
             UserError::DecodingError => "Failed to decode".to_string(),
             UserError::NsecError => "Failed to decode nsec".to_string(),
             UserError::MnemonicError => "Failed to parse mnemonic".to_string(),
@@ -129,18 +129,73 @@ impl UserKeys {
         return self.keypair.public_key().x_only_public_key().0.serialize();
     }
 
-    pub fn get_secret_key(&self) -> [u8; 32] {
-        if !self.extractable {
-            return [0u8; 32];
-        }
-        self.keypair.secret_key().secret_bytes()
-    }
-
     pub fn get_npub(&self) -> String {
         let hrp = Hrp::parse("npub").expect("valid hrp");
         let pk_data = self.keypair.public_key().x_only_public_key().0.serialize();
         let string = bech32::encode::<Bech32>(hrp, &pk_data).expect("failed to encode string");
         string
+    }
+
+    fn hash_id_and_sign(&self, note: &Note) -> (String, String) {
+        let note_hash = note.serialize_for_nostr();
+        let mut hasher = Sha256::new();
+        hasher.update(note_hash);
+        let hash_result = hasher.finalize();
+        let id_message = Message::from_slice(&hash_result).unwrap();
+        let id = hex::encode(hash_result);
+        let secp = Secp256k1::new();
+        let sig = secp
+            .sign_schnorr_no_aux_rand(&id_message, &self.keypair)
+            .to_string();
+        (id, sig)
+    }
+
+    pub fn sign_nostr_event(&self, note: Note) -> SignedNote {
+        // Serialize the event as JSON
+        let (id, sig) = self.hash_id_and_sign(&note);
+        let signed_note = SignedNote::new(note, id, sig);
+        signed_note
+    }
+
+    pub fn sign_nip_04_encrypted(&self, mut note: Note, pubkey: String) -> Result<SignedNote, UserError> {
+        note.add_pubkey_tag(&pubkey);
+        let encrypted_content = nip_04_encrypt(self.keypair, note.content.to_string(), pubkey)?;
+        note.content = encrypted_content;
+        let (id, sig) = self.hash_id_and_sign(&note);
+        let signed_note = SignedNote::new(note, id, sig);
+        Ok(signed_note)
+    }
+
+    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> Result<String, UserError> {
+        let cyphertext = signed_note.get_content().to_string();
+        let public_key_string = signed_note.get_pubkey().to_string();
+
+        let plaintext = nip_04_decrypt(self.keypair, cyphertext, public_key_string)
+            .map_err(|_| UserError::DecryptionError)?;
+        Ok(plaintext)
+    }
+
+    pub fn sign_nip_44_encrypted(&self, mut note: Note, pubkey: String) -> Result<SignedNote, UserError> {
+        note.add_pubkey_tag(&pubkey);
+        let encrypted_content = nip_44_encrypt(self.keypair, note.content.to_string(), pubkey)?;
+        note.content = encrypted_content;
+        let (id, sig) = self.hash_id_and_sign(&note);
+        let signed_note = SignedNote::new(note, id, sig);
+        Ok(signed_note)
+    }
+
+    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> Result<String, UserError> {
+        let cyphertext = signed_note.get_content().to_string();
+        let public_key_string = signed_note.get_pubkey().to_string();
+        let plaintext = nip_44_decrypt(self.keypair, cyphertext, public_key_string)?;
+        Ok(plaintext)
+    }
+
+    pub fn get_secret_key(&self) -> [u8; 32] {
+        if !self.extractable {
+            return [0u8; 32];
+        }
+        self.keypair.secret_key().secret_bytes()
     }
 
     pub fn get_nsec(&self) -> String {
@@ -192,202 +247,6 @@ impl UserKeys {
         }
     }
 
-    pub fn sign_nostr_event(&self, note: Note) -> SignedNote {
-        // Serialize the event as JSON
-        let json_str = note.serialize_for_nostr();
-
-        // Compute the SHA256 hash of the serialized JSON string
-        let mut hasher = Sha256::new();
-        hasher.update(json_str);
-
-        // Hex Encod the hash
-        let hash_result = hasher.finalize();
-        let id = hex::encode(hash_result);
-
-        // Create a byte representation of the hash.
-        let secp = Secp256k1::new();
-        let id_message = Message::from_slice(&hash_result).unwrap();
-
-        // Sign it with the schnorr.
-        let sig = secp
-            .sign_schnorr_no_aux_rand(&id_message, &self.keypair)
-            .to_string();
-
-        let signed_note = SignedNote::new(note, id, sig);
-        signed_note
-    }
-
-    pub fn sign_encrypted_nostr_event(&self, mut note: Note, pubkey: String) -> SignedNote {
-        note.add_pubkey_tag(&pubkey);
-        let encrypted_content = self.encrypt_content(note.content.to_string(), pubkey);
-        note.content = encrypted_content;
-        // Serialize the event as JSON
-        let json_str = note.serialize_for_nostr();
-
-        // Compute the SHA256 hash of the serialized JSON string
-        let mut hasher = Sha256::new();
-        hasher.update(json_str);
-
-        // Hex Encod the hash
-        let hash_result = hasher.finalize();
-        let id = hex::encode(hash_result);
-
-        // Create a byte representation of the hash.
-        let secp = Secp256k1::new();
-        let id_message = Message::from_slice(&hash_result).unwrap();
-
-        // Sign it with the schnorr.
-        let sig = secp
-            .sign_schnorr_no_aux_rand(&id_message, &self.keypair)
-            .to_string();
-
-        let signed_note = SignedNote::new(note, id, sig);
-        signed_note
-    }
-
-    pub fn decrypt_note_content(&self, signed_note: &SignedNote) -> String {
-        let shared_secret = UserKeys::get_shared_point(&self, signed_note.get_pubkey().to_string());
-        let conversation_key =
-            UserKeys::derive_conversation_key(&shared_secret, b"nip44-v2").unwrap();
-        let decoded_params = general_purpose::STANDARD
-            .decode(signed_note.get_content().to_string())
-            .unwrap();
-        let (_version, nonce, ciphertext, _mac) =
-            Self::extract_components(&decoded_params).unwrap();
-        let decrypted_data =
-            Self::decrypt(&ciphertext, &conversation_key, &nonce).expect("Failed to decrypt");
-        let decrypted_string = String::from_utf8(decrypted_data).unwrap();
-        decrypted_string
-    }
-
-    fn get_shared_point(&self, public_key_string: String) -> [u8; 32] {
-        let x_only_public_key =
-            XOnlyPublicKey::from_slice(hex::decode(public_key_string).unwrap().as_slice()).unwrap();
-        let public_key = PublicKey::from_x_only_public_key(x_only_public_key, Parity::Even);
-        let mut ssp = shared_secret_point(&public_key, &self.keypair.secret_key())
-            .as_slice()
-            .to_owned();
-        ssp.resize(32, 0); // toss the Y part
-        ssp.try_into().unwrap()
-    }
-
-    fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> Result<Vec<u8>, String> {
-        let hkdf = Hkdf::<Sha256>::new(Some(salt), shared_secret);
-        let mut okm = [0u8; 32]; // Output Keying Material (OKM)
-        let conversation_key = hkdf.expand(&[], &mut okm);
-
-        match conversation_key {
-            Ok(_) => Ok(okm.to_vec()),
-            Err(_e) => Err("Failed to derive conversation key.".to_string()),
-        }
-    }
-
-    fn extract_components(
-        decoded: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), &'static str> {
-        // Define the sizes of the components
-        const VERSION_SIZE: usize = 1; // Size of version in bytes
-        const NONCE_SIZE: usize = 12; // Size of nonce in bytes
-        const MAC_SIZE: usize = 32; // Size of MAC in bytes
-
-        // Calculate minimum size and check if the decoded data is long enough
-        if decoded.len() < VERSION_SIZE + NONCE_SIZE + MAC_SIZE {
-            return Err("Decoded data is too short");
-        }
-
-        let version = decoded[0..VERSION_SIZE].to_vec();
-        let nonce = decoded[VERSION_SIZE..VERSION_SIZE + NONCE_SIZE].to_vec();
-        let mac_start = decoded.len() - MAC_SIZE; // MAC is the last 16 bytes
-        let mac = decoded[mac_start..].to_vec();
-        let ciphertext = decoded[VERSION_SIZE + NONCE_SIZE..mac_start].to_vec();
-
-        Ok((version, nonce, ciphertext, mac))
-    }
-
-    fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
-        if key.len() != 32 || nonce.len() != 12 {
-            return Err("Invalid key or nonce size".to_string());
-        }
-
-        let mut cipher =
-            ChaCha20::new_from_slices(key, nonce).map_err(|_| "Failed to create cipher")?;
-        let mut decrypted = ciphertext.to_vec();
-        cipher.apply_keystream(&mut decrypted);
-        // Extract the plaintext length
-        if decrypted.len() < 2 {
-            return Err("Decrypted data too short for length prefix".to_string());
-        }
-        let plaintext_length = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
-
-        // Validate and extract the plaintext
-        if plaintext_length > decrypted.len() - 2 {
-            return Err("Invalid plaintext length".to_string());
-        }
-        Ok(decrypted[2..2 + plaintext_length].to_vec())
-    }
-
-    fn generate_nonce() -> [u8; 12] {
-        let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
-        nonce
-    }
-
-    fn encrypt(
-        content: &[u8],
-        key: &[u8],
-        nonce: &[u8],
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut cipher = ChaCha20::new(key.into(), nonce.into());
-        let mut padded_content = Self::pad_string(content)?;
-        cipher.apply_keystream(&mut padded_content);
-
-        Ok(padded_content)
-    }
-
-    fn calculate_mac(data: &[u8], key: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key)?;
-        mac.update(data);
-        Ok(mac.finalize().into_bytes().to_vec())
-    }
-
-    fn base64_encode_params(version: &[u8], nonce: &[u8], ciphertext: &[u8], mac: &[u8]) -> String {
-        let mut data = Vec::new();
-        data.extend_from_slice(version);
-        data.extend_from_slice(nonce);
-        data.extend_from_slice(ciphertext);
-        data.extend_from_slice(mac);
-        let encoded: String = general_purpose::STANDARD.encode(data);
-        encoded
-    }
-
-    fn encrypt_content(&self, plaintext: String, public_key_string: String) -> String {
-        let shared_secret = Self::get_shared_point(&self, public_key_string);
-        let conversation_key = Self::derive_conversation_key(&shared_secret, b"nip44-v2").unwrap();
-        let nonce = Self::generate_nonce();
-        let cypher_text = Self::encrypt(plaintext.as_bytes(), &conversation_key, &nonce).unwrap();
-        let mac = Self::calculate_mac(&cypher_text, &conversation_key).unwrap();
-        let encoded_params = Self::base64_encode_params(b"1", &nonce, &cypher_text, &mac);
-        encoded_params
-    }
-
-    fn pad_string(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-        if plaintext.is_empty() || plaintext.len() > 65535 {
-            return Err("Plaintext length must be between 1 and 65535 bytes".to_string());
-        }
-
-        let plaintext_length_with_prefix = plaintext.len() + 2; // +2 for the length prefix
-        let mut total_length = 32;
-        while total_length < plaintext_length_with_prefix {
-            total_length *= 2;
-        }
-
-        let mut padded_message = Vec::with_capacity(total_length);
-        padded_message.extend_from_slice(&(plaintext.len() as u16).to_be_bytes()); // length prefix
-        padded_message.extend_from_slice(plaintext);
-        padded_message.resize(total_length, 0); // add zero bytes for padding
-
-        Ok(padded_message)
-    }
 }
 
 #[cfg(test)]
@@ -466,5 +325,23 @@ mod tests {
                 .get_public_key(),
             public_key
         );
+    }
+
+    #[test]
+    fn test_encryption() {
+        let user_keys = UserKeys::generate();
+        let client_keys = UserKeys::generate();
+        let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
+        let signed_note = user_keys.sign_nip_04_encrypted(note_request, client_keys.get_public_key()).unwrap();
+        let decrypted = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
+        assert_eq!(decrypted, "test");
+
+        let nip_44_note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
+        let signed_nip_44_note = user_keys.sign_nip_44_encrypted(
+            nip_44_note_request,
+            client_keys.get_public_key(),
+        ).expect("");
+        let decrypted_nip_44 = client_keys.decrypt_nip_44_content(&signed_nip_44_note).expect("");
+        assert_eq!(decrypted_nip_44, "test");
     }
 }
