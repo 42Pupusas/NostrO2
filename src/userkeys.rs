@@ -157,7 +157,11 @@ impl UserKeys {
         signed_note
     }
 
-    pub fn sign_nip_04_encrypted(&self, mut note: Note, pubkey: String) -> Result<SignedNote, UserError> {
+    pub fn sign_nip_04_encrypted(
+        &self,
+        mut note: Note,
+        pubkey: String,
+    ) -> Result<SignedNote, UserError> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_04_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -175,7 +179,11 @@ impl UserKeys {
         Ok(plaintext)
     }
 
-    pub fn sign_nip_44_encrypted(&self, mut note: Note, pubkey: String) -> Result<SignedNote, UserError> {
+    pub fn sign_nip_44_encrypted(
+        &self,
+        mut note: Note,
+        pubkey: String,
+    ) -> Result<SignedNote, UserError> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_44_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -226,27 +234,33 @@ impl UserKeys {
         mnemonic.word_iter().collect::<Vec<&str>>().join(" ")
     }
 
-    pub fn parse_mnemonic(mnemonic: &str) -> Result<Self, UserError> {
+    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> Result<Self, UserError> {
         let english_parse = bip39::Mnemonic::parse_in(Language::English, mnemonic);
         let spanish_parse = bip39::Mnemonic::parse_in(Language::Spanish, mnemonic);
-
-        if english_parse.is_ok() {
-            let mnemonic = english_parse.unwrap();
-            let secret_key = mnemonic.to_entropy();
-            let secret_key = SecretKey::from_slice(&secret_key).unwrap();
-            let keys = Self::create_user_keys(secret_key, false).unwrap();
-            Ok(keys)
-        } else if spanish_parse.is_ok() {
-            let mnemonic = spanish_parse.unwrap();
-            let secret_key_bytes = mnemonic.to_entropy();
-            let secret_key = SecretKey::from_slice(&secret_key_bytes).unwrap();
-            let keys = Self::create_user_keys(secret_key, false).unwrap();
-            Ok(keys)
+        if english_parse.is_err() && spanish_parse.is_err() {
+            return Err(UserError::MnemonicError);
+        }
+        let mnemonic = if english_parse.is_ok() {
+            english_parse.unwrap()
         } else {
-            Err(UserError::MnemonicError)
+            spanish_parse.unwrap()
+        };
+        let secret_key = mnemonic
+            .to_entropy()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        match extractable {
+            true => Self::create_user_keys(
+                SecretKey::from_slice(&hex::decode(secret_key).unwrap()).unwrap(),
+                true,
+            ),
+            false => Self::create_user_keys(
+                SecretKey::from_slice(&hex::decode(secret_key).unwrap()).unwrap(),
+                false,
+            ),
         }
     }
-
 }
 
 #[cfg(test)]
@@ -283,13 +297,13 @@ mod tests {
         let mnemonic = user_keys.get_mnemonic_phrase();
         let spanish_mnemonic = user_keys.get_mnemonic_spanish();
         assert_eq!(
-            UserKeys::parse_mnemonic(&mnemonic)
+            UserKeys::parse_mnemonic(&mnemonic, false)
                 .unwrap()
                 .get_public_key(),
             user_keys.get_public_key()
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&spanish_mnemonic)
+            UserKeys::parse_mnemonic(&spanish_mnemonic, false)
                 .unwrap()
                 .get_public_key(),
             user_keys.get_public_key()
@@ -314,13 +328,13 @@ mod tests {
             "Not extractable".to_string()
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&mnemonic)
+            UserKeys::parse_mnemonic(&mnemonic, true)
                 .unwrap()
                 .get_public_key(),
             public_key
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&spanish_mnemonic)
+            UserKeys::parse_mnemonic(&spanish_mnemonic, true)
                 .unwrap()
                 .get_public_key(),
             public_key
@@ -332,16 +346,19 @@ mod tests {
         let user_keys = UserKeys::generate();
         let client_keys = UserKeys::generate();
         let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_note = user_keys.sign_nip_04_encrypted(note_request, client_keys.get_public_key()).unwrap();
+        let signed_note = user_keys
+            .sign_nip_04_encrypted(note_request, client_keys.get_public_key())
+            .unwrap();
         let decrypted = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
         assert_eq!(decrypted, "test");
 
         let nip_44_note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_nip_44_note = user_keys.sign_nip_44_encrypted(
-            nip_44_note_request,
-            client_keys.get_public_key(),
-        ).expect("");
-        let decrypted_nip_44 = client_keys.decrypt_nip_44_content(&signed_nip_44_note).expect("");
+        let signed_nip_44_note = user_keys
+            .sign_nip_44_encrypted(nip_44_note_request, client_keys.get_public_key())
+            .expect("");
+        let decrypted_nip_44 = client_keys
+            .decrypt_nip_44_content(&signed_nip_44_note)
+            .expect("");
         assert_eq!(decrypted_nip_44, "test");
     }
 }

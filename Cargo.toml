@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.1.23"
+version = "0.1.24"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
