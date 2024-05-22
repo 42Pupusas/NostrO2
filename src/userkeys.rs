@@ -23,6 +23,7 @@ pub enum UserError {
     DecodingError,
     NsecError,
     MnemonicError,
+    UnknownCommand,
 }
 
 impl ToString for UserError {
@@ -33,6 +34,7 @@ impl ToString for UserError {
             UserError::DecodingError => "Failed to decode".to_string(),
             UserError::NsecError => "Failed to decode nsec".to_string(),
             UserError::MnemonicError => "Failed to parse mnemonic".to_string(),
+            UserError::UnknownCommand => "Unknown command".to_string(),
         }
     }
 }
@@ -155,6 +157,38 @@ impl UserKeys {
         let (id, sig) = self.hash_id_and_sign(&note);
         let signed_note = SignedNote::new(note, id, sig);
         signed_note
+    }
+
+    pub fn encrypt_nip_04_plaintext(
+        &self,
+        plaintext: String,
+        pubkey: String,
+    ) -> Result<String, UserError> {
+        nip_04_encrypt(self.keypair, plaintext, pubkey)
+    }
+
+    pub fn decrypt_nip_04_plaintext(
+        &self,
+        cyphertext: String,
+        pubkey: String,
+    ) -> Result<String, UserError> {
+        nip_04_decrypt(self.keypair, cyphertext, pubkey)
+    }
+
+    pub fn encrypt_nip_44_plaintext(
+        &self,
+        plaintext: String,
+        pubkey: String,
+    ) -> Result<String, UserError> {
+        nip_44_encrypt(self.keypair, plaintext, pubkey)
+    }
+
+    pub fn decrypt_nip_44_plaintext(
+        &self,
+        cyphertext: String,
+        pubkey: String,
+    ) -> Result<String, UserError> {
+        nip_44_decrypt(self.keypair, cyphertext, pubkey)
     }
 
     pub fn sign_nip_04_encrypted(

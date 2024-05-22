@@ -7,14 +7,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Nip46Commands {
     Connect(String, String),
+    Disconnect(String, String),
     Ping(String, String),
     SignEvent(String, String, Note),
+    GetPublickKey(String, String),
+    Nip04Encrypt(String, String, String, String),
+    Nip04Decrypt(String, String, String, String),
+    Nip44Encrypt(String, String, String, String),
+    Nip44Decrypt(String, String, String, String),
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Nip46Response {
     id: String,
     result: String,
+    error: Option<String>,
 }
 
 impl Nip46Response {
@@ -67,6 +74,17 @@ impl Nip46Request {
             .unwrap()
     }
 
+    pub fn get_public_key_request(client_keys: &UserKeys, user_keys: String) -> SignedNote {
+        let random_id = format!("nostro2-{}", crate::utils::get_unix_timestamp());
+        let ping_params = vec!["get_public_key".to_string()];
+        let self_try = Self {
+            id: random_id,
+            method: "get_public_key".to_string(),
+            params: ping_params,
+        };
+        self_try.sign_request(client_keys, user_keys).unwrap()
+    }
+
     fn sign_request(
         &self,
         client_keys: &UserKeys,
@@ -77,23 +95,71 @@ impl Nip46Request {
         client_keys.sign_nip_04_encrypted(request_note, user_keys)
     }
 
-    pub fn get_request_command(signed_note: &SignedNote, user_keys: &UserKeys) -> Nip46Commands {
+    fn decrypt_request(
+        signed_note: &SignedNote,
+        user_keys: &UserKeys,
+    ) -> Result<Nip46Request, UserError> {
+        let nip_04_decrypted_note_request = user_keys.decrypt_nip_04_content(signed_note);
+        let nip_44_decrypted_note_request = user_keys.decrypt_nip_44_content(signed_note);
+
+        if nip_04_decrypted_note_request.is_err() && nip_44_decrypted_note_request.is_err() {
+            return Err(UserError::DecryptionError);
+        }
+
+        if nip_04_decrypted_note_request.is_ok() {
+            let decrypted_note_request = nip_04_decrypted_note_request.unwrap();
+            return Ok(serde_json::from_str::<Nip46Request>(&decrypted_note_request).unwrap());
+        } else {
+            let decrypted_note_request = nip_44_decrypted_note_request.unwrap();
+            return Ok(serde_json::from_str::<Nip46Request>(&decrypted_note_request).unwrap());
+        }
+    }
+
+    pub fn get_request_command(
+        signed_note: &SignedNote,
+        user_keys: &UserKeys,
+    ) -> Result<Nip46Commands, UserError> {
         let command_pubkey = signed_note.get_pubkey().to_string();
-        let decrypted_note_request = user_keys
-            .decrypt_nip_04_content(signed_note)
-            .expect("Could not decrypt note");
-        let signed_request_note =
-            serde_json::from_str::<Nip46Request>(&decrypted_note_request).unwrap();
-        let command_id = signed_request_note.id;
-        match signed_request_note.method.as_str() {
-            "ping" => Nip46Commands::Ping(command_pubkey, command_id),
+        let request_note = Self::decrypt_request(signed_note, user_keys)?;
+        let command_id = request_note.id;
+        match request_note.method.as_str() {
+            "ping" => Ok(Nip46Commands::Ping(command_pubkey, command_id)),
             "sign_event" => {
-                let response_note =
-                    serde_json::from_str::<Note>(&signed_request_note.params[0]).unwrap();
-                Nip46Commands::SignEvent(command_pubkey, command_id, response_note)
+                let response_note = serde_json::from_str::<Note>(&request_note.params[0]).unwrap();
+                Ok(Nip46Commands::SignEvent(
+                    command_pubkey,
+                    command_id,
+                    response_note,
+                ))
             }
-            "connect" => Nip46Commands::Connect(command_pubkey, command_id),
-            _ => panic!("Unknown command"),
+            "connect" => Ok(Nip46Commands::Connect(command_pubkey, command_id)),
+            "disconnect" => Ok(Nip46Commands::Disconnect(command_pubkey, command_id)),
+            "get_public_key" => Ok(Nip46Commands::GetPublickKey(command_pubkey, command_id)),
+            "nip04_encrypt" => Ok(Nip46Commands::Nip04Encrypt(
+                command_pubkey,
+                command_id,
+                request_note.params[1].to_string(),
+                request_note.params[0].to_string(),
+            )),
+            "nip04_decrypt" => Ok(Nip46Commands::Nip04Decrypt(
+                command_pubkey,
+                command_id,
+                request_note.params[1].to_string(),
+                request_note.params[0].to_string(),
+            )),
+            "nip44_encrypt" => Ok(Nip46Commands::Nip44Encrypt(
+                command_pubkey,
+                command_id,
+                request_note.params[1].to_string(),
+                request_note.params[0].to_string(),
+            )),
+            "nip44_decrypt" => Ok(Nip46Commands::Nip44Decrypt(
+                command_pubkey,
+                command_id,
+                request_note.params[1].to_string(),
+                request_note.params[0].to_string(),
+            )),
+            _ => Err(UserError::UnknownCommand),
         }
     }
 
@@ -103,6 +169,19 @@ impl Nip46Request {
                 let response = Nip46Response {
                     id,
                     result: "ack".to_string(),
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::Disconnect(pubkey, id) => {
+                let response = Nip46Response {
+                    id,
+                    result: "ack".to_string(),
+                    error: None,
                 };
                 let response_note =
                     Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
@@ -114,6 +193,7 @@ impl Nip46Request {
                 let response = Nip46Response {
                     id,
                     result: "pong".to_string(),
+                    error: None,
                 };
                 let response_note =
                     Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
@@ -126,6 +206,71 @@ impl Nip46Request {
                 let response = Nip46Response {
                     id,
                     result: signed_response.to_string(),
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::GetPublickKey(pubkey, id) => {
+                let response = Nip46Response {
+                    id,
+                    result: user_keys.get_public_key(),
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::Nip04Encrypt(pubkey, id, content, key) => {
+                let encrypted_content = user_keys.encrypt_nip_04_plaintext(content, key).unwrap();
+                let response = Nip46Response {
+                    id,
+                    result: encrypted_content,
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::Nip04Decrypt(pubkey, id, content, key) => {
+                let decrypted_content = user_keys.decrypt_nip_04_plaintext(content, key).unwrap();
+                let response = Nip46Response {
+                    id,
+                    result: decrypted_content,
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::Nip44Encrypt(pubkey, id, content, key) => {
+                let encrypted_content = user_keys.encrypt_nip_44_plaintext(content, key).unwrap();
+                let response = Nip46Response {
+                    id,
+                    result: encrypted_content,
+                    error: None,
+                };
+                let response_note =
+                    Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
+                user_keys
+                    .sign_nip_04_encrypted(response_note, pubkey)
+                    .unwrap()
+            }
+            Nip46Commands::Nip44Decrypt(pubkey, id, content, key) => {
+                let decrypted_content = user_keys.decrypt_nip_44_plaintext(content, key).unwrap();
+                let response = Nip46Response {
+                    id,
+                    result: decrypted_content,
+                    error: None,
                 };
                 let response_note =
                     Note::new(&user_keys.get_public_key(), 24133, &response.to_string());
@@ -161,12 +306,12 @@ mod tests {
         assert_eq!(ping_request.get_kind(), 24133);
 
         let nip46_command = Nip46Request::get_request_command(&ping_request, &user_keys);
-        if let Nip46Commands::Ping(pubkey, _id) = &nip46_command {
+        if let Ok(Nip46Commands::Ping(pubkey, _id)) = &nip46_command {
             assert_eq!(pubkey, &client_keys.get_public_key());
         } else {
             panic!("Not a ping command");
         }
-        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
+        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command.unwrap());
         assert_eq!(signed_note.verify(), true);
         let decrypted_note = client_keys
             .decrypt_nip_04_content(&signed_note)
@@ -192,7 +337,7 @@ mod tests {
 
         // users bunker receives the request note and parses the command
         let nip46_command = Nip46Request::get_request_command(&nip46_request, &user_keys);
-        if let Nip46Commands::SignEvent(pubkey, _id, note) = &nip46_command {
+        if let Ok(Nip46Commands::SignEvent(pubkey, _id, note)) = &nip46_command {
             assert_eq!(pubkey, &client_keys.get_public_key());
             assert_eq!(note.kind, 42);
         } else {
@@ -200,7 +345,7 @@ mod tests {
         }
 
         // the user bunker signs the event and sends it back
-        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
+        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command.unwrap());
         assert_eq!(signed_note.verify(), true);
 
         // the client bunker receives the signed note and parses the response
@@ -223,12 +368,12 @@ mod tests {
         assert_eq!(ping_request.get_kind(), 24133);
 
         let nip46_command = Nip46Request::get_request_command(&ping_request, &user_keys);
-        if let Nip46Commands::Ping(pubkey, _id) = &nip46_command {
+        if let Ok(Nip46Commands::Ping(pubkey, _id)) = &nip46_command {
             assert_eq!(pubkey, &client_keys.get_public_key());
         } else {
             panic!("Not a ping command");
         }
-        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command);
+        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command.unwrap());
         assert_eq!(signed_note.verify(), true);
         let decrypted_note = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
         let parsed_response = serde_json::from_str::<Nip46Response>(&decrypted_note).unwrap();
