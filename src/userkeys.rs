@@ -1,3 +1,5 @@
+use std::fmt::Formatter;
+
 use bip39::Language;
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
@@ -17,62 +19,88 @@ pub struct UserKeys {
 }
 
 #[derive(Debug)]
-pub enum UserError {
-    DecryptionError,
-    EncryptionError,
-    DecodingError,
-    NsecError,
-    MnemonicError,
+pub enum NostroError {
+    DecryptionError(Box<dyn std::error::Error + Send>),
+    EncryptionError(Box<dyn std::error::Error + Send>),
+    DecodingError(Box<dyn std::error::Error + Send>),
+    NsecError(Box<dyn std::error::Error + Send>),
+    MnemonicError(Box<dyn std::error::Error + Send>),
     UnknownCommand,
 }
 
-impl ToString for UserError {
-    fn to_string(&self) -> String {
+impl std::error::Error for NostroError {
+    fn description(&self) -> &str {
         match self {
-            UserError::DecryptionError => "Failed to decrypt".to_string(),
-            UserError::EncryptionError => "Failed to encrypt".to_string(),
-            UserError::DecodingError => "Failed to decode".to_string(),
-            UserError::NsecError => "Failed to decode nsec".to_string(),
-            UserError::MnemonicError => "Failed to parse mnemonic".to_string(),
-            UserError::UnknownCommand => "Unknown command".to_string(),
+            NostroError::DecryptionError(_) => "Failed to decrypt",
+            NostroError::EncryptionError(_) => "Failed to encrypt",
+            NostroError::DecodingError(_) => "Failed to decode",
+            NostroError::NsecError(_) => "Failed to decode nsec",
+            NostroError::MnemonicError(_) => "Failed to parse mnemonic",
+            NostroError::UnknownCommand => "Unknown command",
+        }
+    }
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        match self {
+            NostroError::DecryptionError(e) => Some(e.as_ref()),
+            NostroError::EncryptionError(e) => Some(e.as_ref()),
+            NostroError::DecodingError(e) => Some(e.as_ref()),
+            NostroError::NsecError(e) => Some(e.as_ref()),
+            NostroError::MnemonicError(e) => Some(e.as_ref()),
+            NostroError::UnknownCommand => None,
+        }
+    }
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NostroError::DecryptionError(e) => Some(e.as_ref()),
+            NostroError::EncryptionError(e) => Some(e.as_ref()),
+            NostroError::DecodingError(e) => Some(e.as_ref()),
+            NostroError::NsecError(e) => Some(e.as_ref()),
+            NostroError::MnemonicError(e) => Some(e.as_ref()),
+            NostroError::UnknownCommand => None,
+        }
+    }
+}
+
+impl std::fmt::Display for NostroError {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            NostroError::DecryptionError(e) => write!(f, "Failed to decrypt: {}", e),
+            NostroError::EncryptionError(e) => write!(f, "Failed to encrypt: {}", e),
+            NostroError::DecodingError(e) => write!(f, "Failed to decode: {}", e),
+            NostroError::NsecError(e) => write!(f, "Failed to decode nsec: {}", e),
+            NostroError::MnemonicError(e) => write!(f, "Failed to parse mnemonic: {}", e),
+            NostroError::UnknownCommand => write!(f, "Unknown command"),
         }
     }
 }
 
 impl UserKeys {
-    pub fn new(private_key: &str) -> Result<Self, UserError> {
+    pub fn new(private_key: &str) -> Result<Self, NostroError> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
-            let bech32_decoded = bech32::decode(&private_key);
-            if let Err(_) = bech32_decoded {
-                return Err(UserError::NsecError);
-            }
-            let (hrp, data) = bech32_decoded.unwrap();
+            let (hrp, data) = bech32::decode(&private_key)
+                .map_err(|e| NostroError::DecodingError(Box::new(e)))?;
             if hrp.to_string() != "nsec" {
-                return Err(UserError::NsecError);
+                return Err(NostroError::NsecError(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid nsec prefix",
+                ))));
             }
-            let secret_key = SecretKey::from_slice(&data);
-            if let Err(_) = secret_key {
-                return Err(UserError::DecryptionError);
-            }
-            return Self::create_user_keys(secret_key.unwrap(), false);
+            let secret_key = SecretKey::from_slice(&data)
+                .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
+            return Self::create_user_keys(secret_key, false);
         }
 
         // Decode the private key as hex
-        let decoded_private_key = hex::decode(private_key);
-        if let Err(_) = decoded_private_key {
-            return Err(UserError::DecodingError);
-        }
-        let secret_key = SecretKey::from_slice(&decoded_private_key.unwrap());
-        if let Err(_) = secret_key {
-            return Err(UserError::DecryptionError);
-        }
-
+        let decoded_private_key =
+            hex::decode(private_key).map_err(|e| NostroError::DecodingError(Box::new(e)))?;
+        let secret_key = SecretKey::from_slice(&decoded_private_key)
+            .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
         // Create and return UserKeys
-        Self::create_user_keys(secret_key.unwrap(), false)
+        Self::create_user_keys(secret_key, false)
     }
 
-    fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Result<UserKeys, UserError> {
+    fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Result<UserKeys, NostroError> {
         let secp = Secp256k1::new();
         let keypair = KeyPair::from_secret_key(&secp, &secret_key);
         Ok(UserKeys {
@@ -81,36 +109,29 @@ impl UserKeys {
         })
     }
 
-    pub fn new_extractable(private_key: &str) -> Result<Self, UserError> {
+    pub fn new_extractable(private_key: &str) -> Result<Self, NostroError> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
-            let bech32_decoded = bech32::decode(&private_key);
-            if let Err(_) = bech32_decoded {
-                return Err(UserError::NsecError);
-            }
-            let (hrp, data) = bech32_decoded.unwrap();
+            let (hrp, data) = bech32::decode(&private_key)
+                .map_err(|e| NostroError::DecodingError(Box::new(e)))?;
             if hrp.to_string() != "nsec" {
-                return Err(UserError::NsecError);
+                return Err(NostroError::NsecError(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid nsec prefix",
+                ))));
             }
-            let secret_key = SecretKey::from_slice(&data);
-            if let Err(_) = secret_key {
-                return Err(UserError::DecryptionError);
-            }
-            return Self::create_user_keys(secret_key.unwrap(), true);
+            let secret_key = SecretKey::from_slice(&data)
+                .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
+            return Self::create_user_keys(secret_key, true);
         }
 
         // Decode the private key as hex
-        let decoded_private_key = hex::decode(private_key);
-        if let Err(_) = decoded_private_key {
-            return Err(UserError::DecodingError);
-        }
-        let secret_key = SecretKey::from_slice(&decoded_private_key.unwrap());
-        if let Err(_) = secret_key {
-            return Err(UserError::DecryptionError);
-        }
-
+        let decoded_private_key =
+            hex::decode(private_key).map_err(|e| NostroError::DecodingError(Box::new(e)))?;
+        let secret_key = SecretKey::from_slice(&decoded_private_key)
+            .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
         // Create and return UserKeys
-        Self::create_user_keys(secret_key.unwrap(), true)
+        Self::create_user_keys(secret_key, true)
     }
 
     pub fn generate() -> Self {
@@ -163,7 +184,7 @@ impl UserKeys {
         &self,
         plaintext: String,
         pubkey: String,
-    ) -> Result<String, UserError> {
+    ) -> Result<String, NostroError> {
         nip_04_encrypt(self.keypair, plaintext, pubkey)
     }
 
@@ -171,7 +192,7 @@ impl UserKeys {
         &self,
         cyphertext: String,
         pubkey: String,
-    ) -> Result<String, UserError> {
+    ) -> Result<String, NostroError> {
         nip_04_decrypt(self.keypair, cyphertext, pubkey)
     }
 
@@ -179,7 +200,7 @@ impl UserKeys {
         &self,
         plaintext: String,
         pubkey: String,
-    ) -> Result<String, UserError> {
+    ) -> Result<String, NostroError> {
         nip_44_encrypt(self.keypair, plaintext, pubkey)
     }
 
@@ -187,7 +208,7 @@ impl UserKeys {
         &self,
         cyphertext: String,
         pubkey: String,
-    ) -> Result<String, UserError> {
+    ) -> Result<String, NostroError> {
         nip_44_decrypt(self.keypair, cyphertext, pubkey)
     }
 
@@ -195,7 +216,7 @@ impl UserKeys {
         &self,
         mut note: Note,
         pubkey: String,
-    ) -> Result<SignedNote, UserError> {
+    ) -> Result<SignedNote, NostroError> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_04_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -204,12 +225,11 @@ impl UserKeys {
         Ok(signed_note)
     }
 
-    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> Result<String, UserError> {
+    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> Result<String, NostroError> {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
 
-        let plaintext = nip_04_decrypt(self.keypair, cyphertext, public_key_string)
-            .map_err(|_| UserError::DecryptionError)?;
+        let plaintext = nip_04_decrypt(self.keypair, cyphertext, public_key_string)?;
         Ok(plaintext)
     }
 
@@ -217,7 +237,7 @@ impl UserKeys {
         &self,
         mut note: Note,
         pubkey: String,
-    ) -> Result<SignedNote, UserError> {
+    ) -> Result<SignedNote, NostroError> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_44_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -226,7 +246,7 @@ impl UserKeys {
         Ok(signed_note)
     }
 
-    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> Result<String, UserError> {
+    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> Result<String, NostroError> {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
         let plaintext = nip_44_decrypt(self.keypair, cyphertext, public_key_string)?;
@@ -268,11 +288,14 @@ impl UserKeys {
         mnemonic.word_iter().collect::<Vec<&str>>().join(" ")
     }
 
-    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> Result<Self, UserError> {
+    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> Result<Self, NostroError> {
         let english_parse = bip39::Mnemonic::parse_in(Language::English, mnemonic);
         let spanish_parse = bip39::Mnemonic::parse_in(Language::Spanish, mnemonic);
         if english_parse.is_err() && spanish_parse.is_err() {
-            return Err(UserError::MnemonicError);
+            return Err(NostroError::MnemonicError(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid mnemonic",
+            ))));
         }
         let mnemonic = if english_parse.is_ok() {
             english_parse.unwrap()

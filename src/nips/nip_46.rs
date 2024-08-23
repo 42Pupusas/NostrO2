@@ -1,6 +1,6 @@
 use crate::{
     notes::{Note, SignedNote},
-    userkeys::{UserError, UserKeys},
+    userkeys::{NostroError, UserKeys},
 };
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +89,7 @@ impl Nip46Request {
         &self,
         client_keys: &UserKeys,
         user_keys: String,
-    ) -> Result<SignedNote, UserError> {
+    ) -> Result<SignedNote, NostroError> {
         let stringified_request = serde_json::to_string(&self).unwrap();
         let request_note = Note::new(&client_keys.get_public_key(), 24133, &stringified_request);
         client_keys.sign_nip_04_encrypted(request_note, user_keys)
@@ -98,12 +98,15 @@ impl Nip46Request {
     fn decrypt_request(
         signed_note: &SignedNote,
         user_keys: &UserKeys,
-    ) -> Result<Nip46Request, UserError> {
+    ) -> Result<Nip46Request, NostroError> {
         let nip_04_decrypted_note_request = user_keys.decrypt_nip_04_content(signed_note);
         let nip_44_decrypted_note_request = user_keys.decrypt_nip_44_content(signed_note);
 
         if nip_04_decrypted_note_request.is_err() && nip_44_decrypted_note_request.is_err() {
-            return Err(UserError::DecryptionError);
+            return Err(NostroError::DecryptionError(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Could not decrypt note",
+            ))));
         }
 
         if nip_04_decrypted_note_request.is_ok() {
@@ -118,7 +121,7 @@ impl Nip46Request {
     pub fn get_request_command(
         signed_note: &SignedNote,
         user_keys: &UserKeys,
-    ) -> Result<Nip46Commands, UserError> {
+    ) -> Result<Nip46Commands, NostroError> {
         let command_pubkey = signed_note.get_pubkey().to_string();
         let request_note = Self::decrypt_request(signed_note, user_keys)?;
         let command_id = request_note.id;
@@ -159,7 +162,7 @@ impl Nip46Request {
                 request_note.params[1].to_string(),
                 request_note.params[0].to_string(),
             )),
-            _ => Err(UserError::UnknownCommand),
+            _ => Err(NostroError::UnknownCommand),
         }
     }
 

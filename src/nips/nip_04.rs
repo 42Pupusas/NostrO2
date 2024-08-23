@@ -1,4 +1,4 @@
-use crate::{utils::get_shared_point, userkeys::UserError};
+use crate::{utils::get_shared_point, userkeys::NostroError};
 use base64::{engine::general_purpose, Engine as _};
 use libaes::Cipher;
 use secp256k1::KeyPair;
@@ -7,7 +7,7 @@ pub fn nip_04_encrypt(
     private_keypair: KeyPair,
     plaintext: String,
     public_key_string: String,
-) -> Result<String, UserError> {
+) -> Result<String, NostroError> {
     let shared_secret = get_shared_point(private_keypair, public_key_string)?;
     let iv = rand::random::<[u8; 16]>();
     let mut cipher = Cipher::new_256(&shared_secret);
@@ -22,7 +22,7 @@ pub fn nip_04_decrypt(
     private_keypair: KeyPair,
     cyphertext: String,
     public_key_string: String,
-) -> Result<String, UserError> {
+) -> Result<String, NostroError> {
     let shared_secret = get_shared_point(private_keypair, public_key_string)?;
     let mut parts = cyphertext.split('?');
     let base_64_cyphertext = parts.next().unwrap();
