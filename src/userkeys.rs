@@ -1,12 +1,13 @@
-use std::fmt::Formatter;
-
 use bip39::Language;
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
-use crate::nips::{
-    nip_04::{nip_04_decrypt, nip_04_encrypt},
-    nip_44::{nip_44_decrypt, nip_44_encrypt},
+use crate::{
+    errors::NostroError,
+    nips::{
+        nip_04::{nip_04_decrypt, nip_04_encrypt},
+        nip_44::{nip_44_decrypt, nip_44_encrypt},
+    },
 };
 
 use super::notes::{Note, SignedNote};
@@ -16,62 +17,6 @@ use bech32::{Bech32, Hrp};
 pub struct UserKeys {
     keypair: KeyPair,
     extractable: bool,
-}
-
-#[derive(Debug)]
-pub enum NostroError {
-    DecryptionError(Box<dyn std::error::Error + Send>),
-    EncryptionError(Box<dyn std::error::Error + Send>),
-    DecodingError(Box<dyn std::error::Error + Send>),
-    NsecError(Box<dyn std::error::Error + Send>),
-    MnemonicError(Box<dyn std::error::Error + Send>),
-    UnknownCommand,
-}
-
-impl std::error::Error for NostroError {
-    fn description(&self) -> &str {
-        match self {
-            NostroError::DecryptionError(_) => "Failed to decrypt",
-            NostroError::EncryptionError(_) => "Failed to encrypt",
-            NostroError::DecodingError(_) => "Failed to decode",
-            NostroError::NsecError(_) => "Failed to decode nsec",
-            NostroError::MnemonicError(_) => "Failed to parse mnemonic",
-            NostroError::UnknownCommand => "Unknown command",
-        }
-    }
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        match self {
-            NostroError::DecryptionError(e) => Some(e.as_ref()),
-            NostroError::EncryptionError(e) => Some(e.as_ref()),
-            NostroError::DecodingError(e) => Some(e.as_ref()),
-            NostroError::NsecError(e) => Some(e.as_ref()),
-            NostroError::MnemonicError(e) => Some(e.as_ref()),
-            NostroError::UnknownCommand => None,
-        }
-    }
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            NostroError::DecryptionError(e) => Some(e.as_ref()),
-            NostroError::EncryptionError(e) => Some(e.as_ref()),
-            NostroError::DecodingError(e) => Some(e.as_ref()),
-            NostroError::NsecError(e) => Some(e.as_ref()),
-            NostroError::MnemonicError(e) => Some(e.as_ref()),
-            NostroError::UnknownCommand => None,
-        }
-    }
-}
-
-impl std::fmt::Display for NostroError {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        match self {
-            NostroError::DecryptionError(e) => write!(f, "Failed to decrypt: {}", e),
-            NostroError::EncryptionError(e) => write!(f, "Failed to encrypt: {}", e),
-            NostroError::DecodingError(e) => write!(f, "Failed to decode: {}", e),
-            NostroError::NsecError(e) => write!(f, "Failed to decode nsec: {}", e),
-            NostroError::MnemonicError(e) => write!(f, "Failed to parse mnemonic: {}", e),
-            NostroError::UnknownCommand => write!(f, "Unknown command"),
-        }
-    }
 }
 
 impl UserKeys {

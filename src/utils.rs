@@ -10,7 +10,7 @@ use secp256k1::{ecdh::shared_secret_point, KeyPair, Parity, PublicKey, SecretKey
 #[cfg(target_arch = "wasm32")]
 use rustls_pki_types::UnixTime;
 
-use crate::userkeys::NostroError;
+use crate::errors::NostroError;
 
 pub fn new_keys() -> SecretKey {
     let mut rng = thread_rng();

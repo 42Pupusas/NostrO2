@@ -1,6 +1,7 @@
 use crate::{
+    errors::NostroError,
     notes::{Note, SignedNote},
-    userkeys::{NostroError, UserKeys},
+    userkeys::UserKeys,
 };
 use serde::{Deserialize, Serialize};
 

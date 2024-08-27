@@ -1,4 +1,4 @@
-use crate::{utils::get_shared_point, userkeys::NostroError};
+use crate::{errors::NostroError, utils::get_shared_point};
 use base64::{engine::general_purpose, Engine as _};
 use libaes::Cipher;
 use secp256k1::KeyPair;

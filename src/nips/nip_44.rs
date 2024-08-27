@@ -7,7 +7,7 @@ use rand::{rngs::OsRng, RngCore};
 use secp256k1::KeyPair;
 use sha2::Sha256;
 
-use crate::userkeys::NostroError;
+use crate::errors::NostroError;
 use crate::utils::get_shared_point;
 
 pub fn nip_44_encrypt(

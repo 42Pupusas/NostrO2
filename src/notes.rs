@@ -1,8 +1,8 @@
-use std::fmt::{Display, Formatter};
 use super::utils::get_unix_timestamp;
 use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt::{Display, Formatter};
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -141,7 +141,8 @@ impl SignedNote {
     pub fn get_note_id(&self) -> String {
         let hrp = bech32::Hrp::parse("note").expect("valid hrp");
         let note_data = self.id.as_bytes();
-        let string = bech32::encode::<bech32::Bech32>(hrp, &note_data).expect("failed to encode string");
+        let string =
+            bech32::encode::<bech32::Bech32>(hrp, &note_data).expect("failed to encode string");
         string
     }
 
@@ -199,7 +200,10 @@ impl SignedNote {
 
         match signature_of_signed_note.verify(&message_of_signed_note, &public_key_of_signed_note) {
             Ok(()) => return true,
-            _ => return false,
+            _ => {
+                println!("Failed to verify signature.");
+                return false;
+            }
         };
     }
 
@@ -225,7 +229,10 @@ impl SignedNote {
 
         match &new_id == &*self.id {
             true => return true,
-            _ => return false,
+            _ => {
+                println!("{} != {}", &new_id, &self.id);
+                return false;
+            }
         }
     }
 
