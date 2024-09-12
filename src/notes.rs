@@ -104,7 +104,7 @@ impl Display for Note {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct SignedNote {
     // id is a crypto representation of the the kind, tags, pukey and content
     id: String,
@@ -124,11 +124,7 @@ impl SignedNote {
             pubkey: note.pubkey.to_string(),
             created_at: note.created_at,
             kind: note.kind,
-            tags: note
-                .tags
-                .iter()
-                .map(|inner| inner.iter().map(|x| x.to_string()).collect())
-                .collect(),
+            tags: note.tags,
             content: note.content.to_string(),
             sig,
         }
@@ -188,23 +184,33 @@ impl SignedNote {
     fn verify_signature(&self) -> bool {
         let signature_of_signed_note = Signature::from_slice(
             &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
-        )
-        .expect("Failed to instantiate Signature from byte array.");
+        );
         let message_of_signed_note =
-            Message::from_slice(&hex::decode(&*self.id).expect("Failed to decode signed_note id."))
-                .expect("Failed to instantiate Message from byte array.");
+            Message::from_slice(&hex::decode(&*self.id).expect("Failed to decode signed_note id."));
         let public_key_of_signed_note = XOnlyPublicKey::from_slice(
             &hex::decode(&*self.pubkey).expect("Failed to decode signed_note public"),
-        )
-        .expect("Failed to instantiate XOnlyPublicKey from byte array.");
+        );
 
-        match signature_of_signed_note.verify(&message_of_signed_note, &public_key_of_signed_note) {
-            Ok(()) => return true,
-            _ => {
-                println!("Failed to verify signature.");
+        if let (
+            Ok(signature_of_signed_note),
+            Ok(message_of_signed_note),
+            Ok(public_key_of_signed_note),
+        ) = (
+            signature_of_signed_note,
+            message_of_signed_note,
+            public_key_of_signed_note,
+        ) {
+            if signature_of_signed_note
+                .verify(&message_of_signed_note, &public_key_of_signed_note)
+                .is_ok()
+            {
+                return true;
+            } else {
                 return false;
             }
-        };
+        } else {
+            return false;
+        }
     }
 
     fn verify_content(&self) -> bool {

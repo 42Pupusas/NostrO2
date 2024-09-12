@@ -112,7 +112,7 @@ mod tests {
         let signednote = keypair.sign_nostr_event(note);
 
         relay_connection.send_note(signednote).await.unwrap();
-        while let Ok(event) = relay_connection.read_relay_events().await {
+        while let Ok(event) = relay_connection.relay_event_reader().recv().await {
             match event {
                 RelayEvents::OK(_event, _id, success, _notice) => {
                     assert_eq!(success, true);
@@ -126,15 +126,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn fetch_events() {
+        use nostro2::relays::NostrFilter;
+
         let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
 
-
         let mut counter = 0;
+        let subscription = NostrFilter::default().new_limit(10).subscribe();
         let events = relay_connection
-            .subscribe_until_eose(json!({
-                "kinds": [1],
-                "limit": 10,
-            }))
+            .subscribe_until_eose(&subscription)
             .await
             .unwrap();
         for event in events {
@@ -152,9 +151,10 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn use_relay_on_threads() {
+        use nostro2::relays::NostrFilter;
         use tokio::select;
 
-        let relay_connection = Arc::new(NostrRelay::new("wss://relay.arrakis.lat").await.unwrap());
+        let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
 
         let relay_clone2 = relay_connection.clone();
 
@@ -179,13 +179,9 @@ mod tests {
         let handle = tokio::spawn(async move {
             let mut counter = 0;
             println!("THREAD 1");
-            relay_clone
-                .subscribe(json!({
-                    "kinds": [20042],
-                }))
-                .await
-                .unwrap();
-            while let Ok(event) = relay_clone.read_relay_events().await {
+            let subscription = NostrFilter::default().new_kind(20042).subscribe();
+            relay_clone.subscribe(&subscription).await.unwrap();
+            while let Ok(event) = relay_clone.relay_event_reader().recv().await {
                 match event {
                     RelayEvents::EVENT(_event, _id, _signed_note) => {
                         println!("EVENT 1 {}", _signed_note.get_kind());

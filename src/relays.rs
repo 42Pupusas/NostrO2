@@ -2,6 +2,7 @@ use crate::errors::NostroError;
 
 use super::notes::SignedNote;
 use super::utils::new_keys;
+use async_channel::Receiver;
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
@@ -9,19 +10,24 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, Value};
 
-#[cfg(not(target_arch = "wasm32"))]
-use tokio::net::TcpStream;
+use url::Url;
 
 #[cfg(not(target_arch = "wasm32"))]
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::{net::TcpStream, spawn as new_thread};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::{
+    connect_async, tungstenite::Message as WebSocketMessage, MaybeTlsStream, WebSocketStream,
+};
 
 #[cfg(target_arch = "wasm32")]
-use tokio_tungstenite_wasm::{connect, Message, WebSocketStream as WasmWebSocketStream};
+use tokio_tungstenite_wasm::{connect, Message as WebSocketMessage, WebSocketStream};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local as new_thread;
 
-use url::Url;
+#[cfg(not(target_arch = "wasm32"))]
+type NostrWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+#[cfg(target_arch = "wasm32")]
+type NostrWebSocketStream = WebSocketStream;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub enum RelayEvents {
@@ -30,7 +36,6 @@ pub enum RelayEvents {
     OK(String, String, bool, String),
     NOTICE(String, String),
 }
-
 
 impl RelayEvents {
     pub fn from_str(s: &str) -> Result<Self, NostroError> {
@@ -50,16 +55,11 @@ impl RelayEvents {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NostrRelay {
     url: String,
-    #[cfg(not(target_arch = "wasm32"))]
-    websocket_writer: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    websocket_reader: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
-    #[cfg(target_arch = "wasm32")]
-    websocket_writer: Arc<Mutex<SplitSink<WasmWebSocketStream, Message>>>,
-    #[cfg(target_arch = "wasm32")]
-    websocket_reader: Arc<Mutex<SplitStream<WasmWebSocketStream>>>,
+    reader_rx: async_channel::Receiver<RelayEvents>,
+    writer_tx: async_channel::Sender<WebSocketMessage>,
 }
 
 impl NostrRelay {
@@ -81,75 +81,86 @@ impl NostrRelay {
             .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
 
         let (websocket_writer, websocket_reader) = websocket.split();
-
-        let websocket_writer = Arc::new(Mutex::new(websocket_writer));
-        let websocket_reader = Arc::new(Mutex::new(websocket_reader));
-
-        Ok(NostrRelay {
+        let (writer_tx, writer_rx) = async_channel::unbounded::<WebSocketMessage>();
+        let (reader_tx, reader_rx) = async_channel::unbounded::<RelayEvents>();
+        let new_relay = NostrRelay {
             url: relay_string.to_string(),
-            websocket_writer,
-            websocket_reader,
-        })
-    }
+            reader_rx,
+            writer_tx,
+        };
 
+        new_thread(
+            new_relay
+                .clone()
+                .websocket_reader_handler(reader_tx, websocket_reader),
+        );
+        new_thread(
+            new_relay
+                .clone()
+                .websocket_writer_handler(writer_rx, websocket_writer),
+        );
+
+        Ok(new_relay)
+    }
+    async fn websocket_writer_handler(
+        self,
+        writer_rx: Receiver<WebSocketMessage>,
+        mut ws_writer: SplitSink<NostrWebSocketStream, WebSocketMessage>,
+    ) {
+        while let Ok(message) = writer_rx.recv().await {
+            if let Err(_e) = ws_writer.send(message).await {}
+        }
+        let _ = self.close().await;
+    }
+    async fn websocket_reader_handler(
+        self,
+        reader_tx: async_channel::Sender<RelayEvents>,
+        mut ws_reader: SplitStream<NostrWebSocketStream>,
+    ) {
+        while let Some(Ok(message)) = ws_reader.next().await {
+            let message = message.to_string();
+            match RelayEvents::from_str(&message) {
+                Ok(event) => {
+                    let _ = reader_tx.send(event).await;
+                }
+                Err(e) => {
+                    println!("{}", e);
+                    println!("{}", message);
+                }
+            }
+        }
+        let _ = self.close().await;
+    }
     pub async fn subscribe(&self, filter: &NostrSubscription) -> Result<String, NostroError> {
-        self.websocket_writer
-            .lock()
-            .await
+        self.writer_tx
             .send(filter.nostr_message())
             .await
-            .map_err(|_| NostroError::SubscriptionError("Could not subscribe".into()))?;
-
+            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
         Ok(filter.id())
     }
-
     pub async fn unsubscribe(&self, id: String) -> Result<(), NostroError> {
         let subscription = json!(["CLOSE", id]).to_string();
-        self.websocket_writer
-            .lock()
-            .await
-            .send(Message::Text(subscription))
-            .await
-            .map_err(|_| NostroError::SubscriptionError("Could not unsubscribe".into()))?;
-
-        Ok(())
-    }
-
-    pub async fn send_note(&self, note: SignedNote) -> Result<(), NostroError> {
-        let note = json!(["EVENT", note]);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let message = Message::Text(note.to_string());
-
-        #[cfg(target_arch = "wasm32")]
-        let message = Message::Text(note.to_string());
-
-        self.websocket_writer
-            .lock()
-            .await
+        let message = WebSocketMessage::Text(subscription);
+        self.writer_tx
             .send(message)
             .await
-            .map_err(|_| NostroError::SendError("Could not send note".into()))?;
-
+            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
         Ok(())
     }
-
-    pub async fn read_relay_events(&self) -> Result<RelayEvents, NostroError> {
-        if let Some(message) = self.websocket_reader.lock().await.next().await {
-            match message {
-                Ok(message) => {
-                    let message = message.to_string();
-                    RelayEvents::from_str(&message)
-                }
-                Err(_) => Err(NostroError::ReadError("Could not read message".into())),
-            }
-        } else {
-            Err(NostroError::ReadError("Could not read message".into()))
-        }
+    pub async fn send_note(&self, note: SignedNote) -> Result<(), NostroError> {
+        let note = json!(["EVENT", note]);
+        let message = WebSocketMessage::Text(note.to_string());
+        self.writer_tx
+            .send(message)
+            .await
+            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+        Ok(())
     }
-
+    pub fn relay_event_reader(&self) -> Receiver<RelayEvents> {
+        self.reader_rx.clone()
+    }
     pub async fn close(&self) {
-        let _ = self.websocket_writer.lock().await.close().await;
+        let _ = self.writer_tx.send(WebSocketMessage::Close(None)).await;
     }
     pub async fn subscribe_until_eose(
         &self,
@@ -158,8 +169,7 @@ impl NostrRelay {
         let id = self.subscribe(filter).await?;
         let mut events = Vec::new();
 
-        loop {
-            let event = self.read_relay_events().await?;
+        while let Ok(event) = self.relay_event_reader().recv().await {
             events.push(event.clone());
 
             match event {
@@ -220,63 +230,73 @@ impl NostrFilter {
     pub fn subscribe(&self) -> NostrSubscription {
         NostrSubscription::new(self.clone())
     }
-    pub fn new_author(&mut self, author: &str) {
+    pub fn new_author(mut self, author: &str) -> Self {
         if let Some(authors) = &mut self.authors {
             authors.push(author.to_string());
         } else {
             self.authors = Some(vec![author.to_string()]);
         }
+        self
     }
-    pub fn new_authors(&mut self, authors: Vec<String>) {
+    pub fn new_authors(mut self, authors: Vec<String>) -> Self {
         if let Some(old_authors) = &mut self.authors {
             old_authors.extend(authors);
         } else {
             self.authors = Some(authors);
         }
+        self
     }
-    pub fn new_id(&mut self, id: &str) {
+    pub fn new_id(mut self, id: &str) -> Self {
         if let Some(ids) = &mut self.ids {
             ids.push(id.to_string());
         } else {
             self.ids = Some(vec![id.to_string()]);
         }
+        self
     }
-    pub fn new_ids(&mut self, ids: Vec<String>) {
+    pub fn new_ids(mut self, ids: Vec<String>) -> Self {
         if let Some(old_ids) = &mut self.ids {
             old_ids.extend(ids);
         } else {
             self.ids = Some(ids);
         }
+        self
     }
-    pub fn new_kind(&mut self, kind: u32) {
+    pub fn new_kind(mut self, kind: u32) -> Self {
         if let Some(kinds) = &mut self.kinds {
             kinds.push(kind);
         } else {
             self.kinds = Some(vec![kind]);
         }
+        self
     }
-    pub fn new_kinds(&mut self, kinds: Vec<u32>) {
+    pub fn new_kinds(mut self, kinds: Vec<u32>) -> Self {
         if let Some(old_kinds) = &mut self.kinds {
             old_kinds.extend(kinds);
         } else {
             self.kinds = Some(kinds);
         }
+        self
     }
-    pub fn new_since(&mut self, since: u64) {
+    pub fn new_since(mut self, since: u64) -> Self {
         self.since = Some(since);
+        self
     }
-    pub fn new_until(&mut self, until: u64) {
+    pub fn new_until(mut self, until: u64) -> Self {
         self.until = Some(until);
+        self
     }
-    pub fn new_limit(&mut self, limit: u32) {
+    pub fn new_limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
+        self
     }
-    pub fn new_tag(&mut self, key: &str, value: Vec<String>) {
+    pub fn new_tag(mut self, key: &str, value: Vec<String>) -> Self {
         if let Some(tags) = &mut self.tags {
             tags.push((key.to_string(), value));
         } else {
             self.tags = Some(vec![(key.to_string(), value)]);
         }
+        self
     }
 }
 
@@ -294,9 +314,9 @@ impl NostrSubscription {
         }
     }
 
-    pub fn nostr_message(&self) -> Message {
+    pub fn nostr_message(&self) -> WebSocketMessage {
         let subscription = json!(["REQ", self.id, self.filters.json()]).to_string();
-        Message::Text(subscription)
+        WebSocketMessage::Text(subscription)
     }
 
     pub fn id(&self) -> String {
