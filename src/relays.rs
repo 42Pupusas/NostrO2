@@ -1,5 +1,3 @@
-use crate::errors::NostroError;
-
 use super::notes::SignedNote;
 use super::utils::new_keys;
 use async_channel::Receiver;
@@ -8,7 +6,7 @@ use futures_util::{
     SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{from_str, json, Value};
+use serde_json::{json, Value};
 
 use url::Url;
 
@@ -31,27 +29,35 @@ type NostrWebSocketStream = WebSocketStream;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub enum RelayEvents {
-    EVENT(String, String, SignedNote),
-    EOSE(String, String),
-    OK(String, String, bool, String),
-    NOTICE(String, String),
+    EVENT(String, SignedNote),
+    EOSE(String),
+    OK(String, bool, String),
+    NOTICE(String),
+    PING,
 }
 
-impl RelayEvents {
-    pub fn from_str(s: &str) -> Result<Self, NostroError> {
-        if let Ok((event, id, signed_note)) = from_str::<(String, String, SignedNote)>(s) {
-            Ok(RelayEvents::EVENT(event, id, signed_note))
-        } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
-            Ok(RelayEvents::EOSE(event, notice))
-        } else if let Ok((event, id, success, notice)) =
-            from_str::<(String, String, bool, String)>(s)
+impl TryFrom<String> for RelayEvents {
+    type Error = anyhow::Error;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if let Ok((_, sub_id, note)) = serde_json::from_str::<(String, String, SignedNote)>(&value)
         {
-            Ok(RelayEvents::OK(event, id, success, notice))
-        } else if let Ok((event, notice)) = from_str::<(String, String)>(s) {
-            Ok(RelayEvents::NOTICE(event, notice))
-        } else {
-            Err(NostroError::ParseError)
+            return Ok(RelayEvents::EVENT(sub_id, note));
         }
+        if let Ok((_, sub_id)) = serde_json::from_str::<(String, String)>(&value) {
+            return Ok(RelayEvents::EOSE(sub_id));
+        }
+        if let Ok((_, sub_id, ok, msg)) =
+            serde_json::from_str::<(String, String, bool, String)>(&value)
+        {
+            return Ok(RelayEvents::OK(sub_id, ok, msg));
+        }
+        if let Ok((_, msg)) = serde_json::from_str::<(String, String)>(&value) {
+            return Ok(RelayEvents::NOTICE(msg));
+        }
+        if let Ok(_) = serde_json::from_str::<&[u8]>(&value) {
+            return Ok(RelayEvents::PING);
+        }
+        Err(anyhow::anyhow!("Could not parse event"))
     }
 }
 
@@ -66,19 +72,15 @@ impl NostrRelay {
     pub fn url(&self) -> String {
         self.url.clone()
     }
-    pub async fn new(relay_string: &str) -> Result<Self, NostroError> {
-        let relay_url =
-            Url::parse(relay_string).map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+    pub async fn new(relay_string: &str) -> anyhow::Result<Self> {
+        let relay_url = Url::parse(relay_string)?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let (websocket, _response) = connect_async(relay_url)
-            .await
-            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+        let (websocket, _response) = connect_async(relay_url).await?;
 
         #[cfg(target_arch = "wasm32")]
         let websocket = connect(relay_url)
-            .await
-            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+            .await?;
 
         let (websocket_writer, websocket_reader) = websocket.split();
         let (writer_tx, writer_rx) = async_channel::unbounded::<WebSocketMessage>();
@@ -119,41 +121,26 @@ impl NostrRelay {
     ) {
         while let Some(Ok(message)) = ws_reader.next().await {
             let message = message.to_string();
-            match RelayEvents::from_str(&message) {
-                Ok(event) => {
-                    let _ = reader_tx.send(event).await;
-                }
-                Err(e) => {
-                    println!("{}", e);
-                    println!("{}", message);
-                }
+            if let Ok(event) = RelayEvents::try_from(message) {
+                let _ = reader_tx.send(event).await;
             }
         }
         let _ = self.close().await;
     }
-    pub async fn subscribe(&self, filter: &NostrSubscription) -> Result<String, NostroError> {
-        self.writer_tx
-            .send(filter.nostr_message())
-            .await
-            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+    pub async fn subscribe(&self, filter: &NostrSubscription) -> anyhow::Result<String> {
+        self.writer_tx.send(filter.nostr_message()).await?;
         Ok(filter.id())
     }
-    pub async fn unsubscribe(&self, id: String) -> Result<(), NostroError> {
+    pub async fn unsubscribe(&self, id: String) -> anyhow::Result<()> {
         let subscription = json!(["CLOSE", id]).to_string();
         let message = WebSocketMessage::Text(subscription);
-        self.writer_tx
-            .send(message)
-            .await
-            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+        self.writer_tx.send(message).await?;
         Ok(())
     }
-    pub async fn send_note(&self, note: SignedNote) -> Result<(), NostroError> {
+    pub async fn send_note(&self, note: SignedNote) -> anyhow::Result<()> {
         let note = json!(["EVENT", note]);
         let message = WebSocketMessage::Text(note.to_string());
-        self.writer_tx
-            .send(message)
-            .await
-            .map_err(|e| NostroError::ConnectionError(Box::new(e)))?;
+        self.writer_tx.send(message).await?;
         Ok(())
     }
     pub fn relay_event_reader(&self) -> Receiver<RelayEvents> {
@@ -165,7 +152,7 @@ impl NostrRelay {
     pub async fn subscribe_until_eose(
         &self,
         filter: &NostrSubscription,
-    ) -> Result<Vec<RelayEvents>, NostroError> {
+    ) -> anyhow::Result<Vec<RelayEvents>> {
         let id = self.subscribe(filter).await?;
         let mut events = Vec::new();
 
@@ -173,7 +160,7 @@ impl NostrRelay {
             events.push(event.clone());
 
             match event {
-                RelayEvents::EOSE(_, _) => {
+                RelayEvents::EOSE(_) => {
                     self.unsubscribe(id).await?;
                     break;
                 }

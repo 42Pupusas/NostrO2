@@ -1,4 +1,4 @@
-use crate::{errors::NostroError, utils::get_shared_point};
+use crate::utils::get_shared_point;
 use base64::{engine::general_purpose, Engine as _};
 use libaes::Cipher;
 use secp256k1::KeyPair;
@@ -7,7 +7,7 @@ pub fn nip_04_encrypt(
     private_keypair: KeyPair,
     plaintext: String,
     public_key_string: String,
-) -> Result<String, NostroError> {
+) -> anyhow::Result<String> {
     let shared_secret = get_shared_point(private_keypair, public_key_string)?;
     let iv = rand::random::<[u8; 16]>();
     let mut cipher = Cipher::new_256(&shared_secret);
@@ -22,21 +22,17 @@ pub fn nip_04_decrypt(
     private_keypair: KeyPair,
     cyphertext: String,
     public_key_string: String,
-) -> Result<String, NostroError> {
+) -> anyhow::Result<String> {
     let shared_secret = get_shared_point(private_keypair, public_key_string)?;
     let mut parts = cyphertext.split('?');
-    let base_64_cyphertext = parts.next().unwrap();
-    let base_64_iv = &parts.next().unwrap()[3..]; // skip "iv="
-    let cyphertext = general_purpose::STANDARD
-        .decode(base_64_cyphertext.as_bytes())
-        .unwrap();
-    let iv = general_purpose::STANDARD
-        .decode(base_64_iv.as_bytes())
-        .unwrap();
+    let base_64_cyphertext = parts.next().ok_or(anyhow::anyhow!("No cyphertext"))?;
+    let base_64_iv = &parts.next().ok_or(anyhow::anyhow!("No iv"))?[3..]; // skip "iv="
+    let cyphertext = general_purpose::STANDARD.decode(base_64_cyphertext.as_bytes())?;
+    let iv = general_purpose::STANDARD.decode(base_64_iv.as_bytes())?;
     let mut cipher = Cipher::new_256(&shared_secret);
     cipher.set_auto_padding(true);
     let plaintext = cipher.cbc_decrypt(&iv, &cyphertext);
-    Ok(String::from_utf8(plaintext).unwrap())
+    Ok(String::from_utf8(plaintext)?)
 }
 
 #[cfg(test)]

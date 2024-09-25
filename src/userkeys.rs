@@ -2,12 +2,9 @@ use bip39::Language;
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    errors::NostroError,
-    nips::{
-        nip_04::{nip_04_decrypt, nip_04_encrypt},
-        nip_44::{nip_44_decrypt, nip_44_encrypt},
-    },
+use crate::nips::{
+    nip_04::{nip_04_decrypt, nip_04_encrypt},
+    nip_44::{nip_44_decrypt, nip_44_encrypt},
 };
 
 use super::notes::{Note, SignedNote};
@@ -20,73 +17,59 @@ pub struct UserKeys {
 }
 
 impl UserKeys {
-    pub fn new(private_key: &str) -> Result<Self, NostroError> {
+    pub fn new(private_key: &str) -> anyhow::Result<Self> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
-            let (hrp, data) = bech32::decode(&private_key)
-                .map_err(|e| NostroError::DecodingError(Box::new(e)))?;
+            let (hrp, data) = bech32::decode(&private_key)?;
             if hrp.to_string() != "nsec" {
-                return Err(NostroError::NsecError(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid nsec prefix",
-                ))));
+                anyhow::bail!("Invalid nsec prefix");
             }
-            let secret_key = SecretKey::from_slice(&data)
-                .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
-            return Self::create_user_keys(secret_key, false);
+            let secret_key = SecretKey::from_slice(&data)?;
+            return Ok(Self::create_user_keys(secret_key, false));
         }
 
         // Decode the private key as hex
-        let decoded_private_key =
-            hex::decode(private_key).map_err(|e| NostroError::DecodingError(Box::new(e)))?;
-        let secret_key = SecretKey::from_slice(&decoded_private_key)
-            .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
+        let decoded_private_key = hex::decode(private_key)?;
+        let secret_key = SecretKey::from_slice(&decoded_private_key)?;
         // Create and return UserKeys
-        Self::create_user_keys(secret_key, false)
+        Ok(Self::create_user_keys(secret_key, false))
     }
 
-    fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Result<UserKeys, NostroError> {
+    fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Self {
         let secp = Secp256k1::new();
         let keypair = KeyPair::from_secret_key(&secp, &secret_key);
-        Ok(UserKeys {
+        Self {
             keypair,
             extractable,
-        })
+        }
     }
 
-    pub fn new_extractable(private_key: &str) -> Result<Self, NostroError> {
+    pub fn new_extractable(private_key: &str) -> anyhow::Result<Self> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
-            let (hrp, data) = bech32::decode(&private_key)
-                .map_err(|e| NostroError::DecodingError(Box::new(e)))?;
+            let (hrp, data) = bech32::decode(&private_key)?;
             if hrp.to_string() != "nsec" {
-                return Err(NostroError::NsecError(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid nsec prefix",
-                ))));
+                anyhow::bail!("Invalid nsec prefix");
             }
-            let secret_key = SecretKey::from_slice(&data)
-                .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
-            return Self::create_user_keys(secret_key, true);
+            let secret_key = SecretKey::from_slice(&data)?;
+            return Ok(Self::create_user_keys(secret_key, true));
         }
 
         // Decode the private key as hex
-        let decoded_private_key =
-            hex::decode(private_key).map_err(|e| NostroError::DecodingError(Box::new(e)))?;
-        let secret_key = SecretKey::from_slice(&decoded_private_key)
-            .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
+        let decoded_private_key = hex::decode(private_key)?;
+        let secret_key = SecretKey::from_slice(&decoded_private_key)?;
         // Create and return UserKeys
-        Self::create_user_keys(secret_key, true)
+        Ok(Self::create_user_keys(secret_key, true))
     }
 
     pub fn generate() -> Self {
         let new_secret_key = crate::utils::new_keys();
-        Self::create_user_keys(new_secret_key, false).unwrap()
+        Self::create_user_keys(new_secret_key, false)
     }
 
     pub fn generate_extractable() -> Self {
         let new_secret_key = crate::utils::new_keys();
-        Self::create_user_keys(new_secret_key, true).unwrap()
+        Self::create_user_keys(new_secret_key, true)
     }
 
     pub fn get_public_key(&self) -> String {
@@ -129,7 +112,7 @@ impl UserKeys {
         &self,
         plaintext: String,
         pubkey: String,
-    ) -> Result<String, NostroError> {
+    ) -> anyhow::Result<String> {
         nip_04_encrypt(self.keypair, plaintext, pubkey)
     }
 
@@ -137,7 +120,7 @@ impl UserKeys {
         &self,
         cyphertext: String,
         pubkey: String,
-    ) -> Result<String, NostroError> {
+    ) -> anyhow::Result<String> {
         nip_04_decrypt(self.keypair, cyphertext, pubkey)
     }
 
@@ -145,7 +128,7 @@ impl UserKeys {
         &self,
         plaintext: String,
         pubkey: String,
-    ) -> Result<String, NostroError> {
+    ) -> anyhow::Result<String> {
         nip_44_encrypt(self.keypair, plaintext, pubkey)
     }
 
@@ -153,7 +136,7 @@ impl UserKeys {
         &self,
         cyphertext: String,
         pubkey: String,
-    ) -> Result<String, NostroError> {
+    ) -> anyhow::Result<String> {
         nip_44_decrypt(self.keypair, cyphertext, pubkey)
     }
 
@@ -161,7 +144,7 @@ impl UserKeys {
         &self,
         mut note: Note,
         pubkey: String,
-    ) -> Result<SignedNote, NostroError> {
+    ) -> anyhow::Result<SignedNote> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_04_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -170,7 +153,7 @@ impl UserKeys {
         Ok(signed_note)
     }
 
-    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> Result<String, NostroError> {
+    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> anyhow::Result<String> {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
 
@@ -182,7 +165,7 @@ impl UserKeys {
         &self,
         mut note: Note,
         pubkey: String,
-    ) -> Result<SignedNote, NostroError> {
+    ) -> anyhow::Result<SignedNote> {
         note.add_pubkey_tag(&pubkey);
         let encrypted_content = nip_44_encrypt(self.keypair, note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
@@ -191,7 +174,7 @@ impl UserKeys {
         Ok(signed_note)
     }
 
-    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> Result<String, NostroError> {
+    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> anyhow::Result<String> {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
         let plaintext = nip_44_decrypt(self.keypair, cyphertext, public_key_string)?;
@@ -233,14 +216,11 @@ impl UserKeys {
         mnemonic.word_iter().collect::<Vec<&str>>().join(" ")
     }
 
-    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> Result<Self, NostroError> {
+    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> anyhow::Result<Self> {
         let english_parse = bip39::Mnemonic::parse_in(Language::English, mnemonic);
         let spanish_parse = bip39::Mnemonic::parse_in(Language::Spanish, mnemonic);
         if english_parse.is_err() && spanish_parse.is_err() {
-            return Err(NostroError::MnemonicError(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid mnemonic",
-            ))));
+            anyhow::bail!("Invalid mnemonic phrase");
         }
         let mnemonic = if english_parse.is_ok() {
             english_parse.unwrap()
@@ -253,14 +233,8 @@ impl UserKeys {
             .map(|b| format!("{:02x}", b))
             .collect::<String>();
         match extractable {
-            true => Self::create_user_keys(
-                SecretKey::from_slice(&hex::decode(secret_key).unwrap()).unwrap(),
-                true,
-            ),
-            false => Self::create_user_keys(
-                SecretKey::from_slice(&hex::decode(secret_key).unwrap()).unwrap(),
-                false,
-            ),
+            true => Ok(Self::new_extractable(&secret_key)?),
+            false => Ok(Self::new(&secret_key)?),
         }
     }
 }

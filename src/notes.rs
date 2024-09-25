@@ -259,3 +259,9 @@ impl Display for SignedNote {
         )
     }
 }
+impl TryFrom<String> for SignedNote {
+    type Error = serde_json::Error;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        serde_json::from_str(&value)
+    }
+}

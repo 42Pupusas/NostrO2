@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
@@ -33,6 +33,7 @@ cbc = { version = "0.1.2", features = ["alloc"] }
 aes = "0.8.4"
 libaes = "0.7.0"
 async-channel = "2.3.1"
+anyhow = "1.0.89"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.36.0", features = ["test-util", "macros", "net"] }

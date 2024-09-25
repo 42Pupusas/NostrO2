@@ -9,9 +9,9 @@ The library provides class-based functionality through 3 basic types: UserKeys, 
 ### Notes
 
 The main data structures of Nostr, as defined by [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md). 
-Implementations are split between Notes and SignedNotes, 
-to allow for easy interoperability with external applications like NIP-07. Both structures have full `serde` 
-serialization features and provide ready-to-send outputs for relay messages.
+Implementations are split between Notes and SignedNotes, to allow for easy interoperability with external 
+applications like NIP-07. Both structures have full `serde`  serialization features and provide 
+ready-to-send outputs for relay messages.
 
 ### UserKeys
 
@@ -90,6 +90,6 @@ You can also add `nostro2` to your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-nostro2 = "0.1.14"
+nostro2 = "0.1.27"
 ```
 

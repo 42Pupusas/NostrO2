@@ -7,21 +7,18 @@ use rand::{rngs::OsRng, RngCore};
 use secp256k1::KeyPair;
 use sha2::Sha256;
 
-use crate::errors::NostroError;
 use crate::utils::get_shared_point;
 
 pub fn nip_44_encrypt(
     private_key: KeyPair,
     plaintext: String,
     public_key_string: String,
-) -> Result<String, NostroError> {
+) -> anyhow::Result<String> {
     let shared_secret = get_shared_point(private_key, public_key_string)?;
     let conversation_key = derive_conversation_key(&shared_secret, b"nip44-v2")?;
     let nonce = generate_nonce();
-    let cypher_text = encrypt(plaintext.as_bytes(), &conversation_key, &nonce)
-        .map_err(|e| NostroError::EncryptionError(Box::new(e)))?;
-    let mac = calculate_mac(&cypher_text, &conversation_key)
-        .map_err(|e| NostroError::EncryptionError(Box::new(e)))?;
+    let cypher_text = encrypt(plaintext.as_bytes(), &conversation_key, &nonce)?;
+    let mac = calculate_mac(&cypher_text, &conversation_key)?;
     let encoded_params = base64_encode_params(b"1", &nonce, &cypher_text, &mac);
     Ok(encoded_params)
 }
@@ -30,17 +27,13 @@ pub fn nip_44_decrypt(
     private_key: KeyPair,
     cyphertext: String,
     public_key_string: String,
-) -> Result<String, NostroError> {
+) -> anyhow::Result<String> {
     let shared_secret = get_shared_point(private_key, public_key_string)?;
     let conversation_key = derive_conversation_key(&shared_secret, b"nip44-v2")?;
-    let decoded = general_purpose::STANDARD
-        .decode(cyphertext.as_bytes())
-        .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
-    let (_version, nonce, ciphertext, _mac) =
-        extract_components(&decoded).map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
-    let decrypted = decrypt(&ciphertext, &conversation_key, &nonce)
-        .map_err(|e| NostroError::DecryptionError(Box::new(e)))?;
-    Ok(String::from_utf8(decrypted).map_err(|e| NostroError::DecryptionError(Box::new(e)))?)
+    let decoded = general_purpose::STANDARD.decode(cyphertext.as_bytes())?;
+    let (_version, nonce, ciphertext, _mac) = extract_components(&decoded)?;
+    let decrypted = decrypt(&ciphertext, &conversation_key, &nonce)?;
+    Ok(String::from_utf8(decrypted)?)
 }
 
 fn encrypt(content: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -83,18 +76,11 @@ fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, std::
     Ok(decrypted[2..2 + plaintext_length].to_vec())
 }
 
-fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> Result<Vec<u8>, NostroError> {
+fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> anyhow::Result<Vec<u8>> {
     let hkdf = Hkdf::<Sha256>::new(Some(salt), shared_secret);
     let mut okm = [0u8; 32]; // Output Keying Material (OKM)
-    let conversation_key = hkdf.expand(&[], &mut okm);
-
-    match conversation_key {
-        Ok(_) => Ok(okm.to_vec()),
-        Err(e) => {
-            let err = std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string());
-            Err(NostroError::DecodingError(Box::new(err)))
-        }
-    }
+    hkdf.expand(&[], &mut okm).map_err(|e| anyhow::anyhow!(e))?;
+    Ok(okm.to_vec())
 }
 
 fn extract_components(

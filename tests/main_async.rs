@@ -1,6 +1,5 @@
 extern crate nostro2;
 use nostro2::relays::{NostrRelay, RelayEvents};
-use serde_json::json;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::wasm_bindgen;
@@ -25,7 +24,6 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     use nostro2::{notes::Note, userkeys::UserKeys, utils::new_keys};
-    use std::sync::Arc;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_futures::spawn_local;
@@ -114,7 +112,7 @@ mod tests {
         relay_connection.send_note(signednote).await.unwrap();
         while let Ok(event) = relay_connection.relay_event_reader().recv().await {
             match event {
-                RelayEvents::OK(_event, _id, success, _notice) => {
+                RelayEvents::OK(_id, success, _notice) => {
                     assert_eq!(success, true);
                     break;
                 }
@@ -138,7 +136,7 @@ mod tests {
             .unwrap();
         for event in events {
             match event {
-                RelayEvents::EVENT(_event, _id, _signed_note) => {
+                RelayEvents::EVENT(_id, _signed_note) => {
                     counter += 1;
                     println!("EVENT {}", _signed_note.get_kind());
                 }
@@ -183,7 +181,7 @@ mod tests {
             relay_clone.subscribe(&subscription).await.unwrap();
             while let Ok(event) = relay_clone.relay_event_reader().recv().await {
                 match event {
-                    RelayEvents::EVENT(_event, _id, _signed_note) => {
+                    RelayEvents::EVENT(_id, _signed_note) => {
                         println!("EVENT 1 {}", _signed_note.get_kind());
                         counter += 1;
                         if counter == 3 {
