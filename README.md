@@ -18,60 +18,62 @@ ready-to-send outputs for relay messages.
 Can be created from a private key `str` and will allow you to sign Nostr Notes.
 
 ```rust
-    let new_user = UserKeys::new("<64-bit hex string>");
+    let new_user = UserKeys::new("<64-bit hex string>").expect("Failed to create user keys");
     let mut unsigned_note = Note::new(
-        user_key_pair.get_public_key().to_string(),
+        &user_key_pair.get_public_key(),
         1,
         "Hello World"
     );
     unsigned_note.tag_note("t", "test");
     let signed_note = user_key_pair.sign_nostr_event(unsigned_note); // -> SignedNote
-    // A note object can also be parsed by a NIP 07 client
+```
+
+### Subscriptions
+
+Create a new `NostrFilter` using the default constructor and then add filters to it.
+Filters correspond to the object described by [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md).
+Using the subscribe() method, you can create a new `NostrSubscription` that can be sent to a relay.
+
+```rust
+let subscription = 
+    NostrFilter::default().new_kinds(
+        vec![0, 1]
+    )
+    .subscribe();
+
+println!("Subscribe to relay with id: {}", subscription.id());
 ```
 
 ### NostrRelay
 
-Ready-to-go connection to a relay. WebSocket protocols are handled across reference
-counted threads to allow you to handle multiple relays with ease. `RelayEvents` provide 
+Ready-to-go connection to a relay. The `NostrRelay` object can be cloned across thread safely.
+The relay_event_reader() method returns a `Receiver<RelayEvent>` that can be used to listen to relay events.
+THis can also be cloned across threads. `RelayEvents` provide 
 easy pattern-matching for relay/client communication and error-handling.
 
-### Subscriptions
-
-You can pass any JSON filter to the `subscribe` function within a `NostrRelay`, 
-following the filter protocol in NIP-01.
-
 ```rust
-    // Open a connection
-    let ws_connection = NostrRelay::new("relay.roadrunner.lat").await.expect("Failed to connect");
+let relay = NostrRelay::new("wss://relay.illuminodes.com").await.expect("Failed to create relay");
 
-    // Subscribe to a filter
-    ws_connection
-        .subscribe(json!({"kinds":[1],"limit":1}))
-        .await
-        .expect("Failed to subscribe to relay!");
-
-    // Send notes in an async manner
-    ws_connection.send_note(signed_note).await.expect("Unable to send note");
-
-    // Read the responses from the relay
-    loop {
-        if let Some(Ok(relay_msg)) = ws_connection.read_from_relay().await {
-            match relay_msg {
-                RelayEvents::EVENT(_event, _id, signed_note) => {
-                    println!("Message received: {:?}", &signed_note);
-
-                    // Extract the signed note info
-                    let content = signed_note.get_content();
-                    let specific_tags = signed_note.get_tags_by_id("a"); 
-                },
-                RelayEvents::OK(_event, id, success, _msg) => {
-                    println!("Message received: {} {}", id, success);
-                },
-                RelayEvents::EOSE(_event, _sub) => println!("No more events"),
-                RelayEvents::NOTICE(_event, notice) => println!("Relay says: {}", notice),
-            }
+let subscription = 
+    NostrFilter::default().new_kinds(
+        vec![0, 1, 4]
+    )
+    .subscribe();
+relay.subscribe(&subscription).await.expect("Failed to subscribe to relay");
+while let Ok(event) = reader_relay.relay_event_reader().recv().await {
+    match event {
+        RelayEvent::EVENT(sub_id, signed_note) => {
+            println!("Received note: {:?}", signed_note);
+        },
+        RelayEvent::EOSE(sub_id) => {
+            println!("End of events for subscription: {:?}", sub_id);
+        },
+        _ => {
+            println!("Other Relay events {:?}", event);
         }
     }
+}
+
 ```
 
 ### Nostr Authentication
