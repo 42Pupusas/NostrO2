@@ -55,7 +55,6 @@ mod tests {
             public_key_string.clone(),
         )
         .unwrap();
-        println!("cyphertext: {}", cyphertext);
         let decrypted = nip_04_decrypt(private_keypair, cyphertext, public_key_string).unwrap();
         assert_eq!(decrypted, plaintext);
     }
@@ -72,7 +71,7 @@ mod tests {
         let keypair = KeyPair::from_seckey_slice(&secp, &my_keys.get_secret_key()).expect("");
         let plaintext =
             nip_04_decrypt(keypair, cyphertext.to_string(), public_key.to_string()).unwrap();
-        println!("plaintext: {}", plaintext);
+        assert_eq!(plaintext, "{\"id\":\"2fm12v\",\"method\":\"connect\",\"params\":[\"62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba\",\"\",\"sign_event:1985,sign_event:3,sign_event:30000\"]}");
     }
 
     #[test]
@@ -99,6 +98,6 @@ mod tests {
         )
         .expect("");
         let respnse = Nip46Request::get_request_command(&signed_note, &my_keys);
-        println!("response: {:?}", respnse);
+        assert!(respnse.is_ok());
     }
 }

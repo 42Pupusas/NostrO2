@@ -204,7 +204,7 @@ impl UserKeys {
         }
         let secret_key = self.keypair.secret_key().secret_bytes();
         let mnemonic = bip39::Mnemonic::from_entropy(&secret_key).unwrap();
-        mnemonic.word_iter().collect::<Vec<&str>>().join(" ")
+        mnemonic.words().collect::<Vec<&str>>().join(" ")
     }
 
     pub fn get_mnemonic_spanish(&self) -> String {
@@ -213,7 +213,7 @@ impl UserKeys {
         }
         let secret_key = self.keypair.secret_key().secret_bytes();
         let mnemonic = bip39::Mnemonic::from_entropy_in(Language::Spanish, &secret_key).unwrap();
-        mnemonic.word_iter().collect::<Vec<&str>>().join(" ")
+        mnemonic.words().collect::<Vec<&str>>().join(" ")
     }
 
     pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> anyhow::Result<Self> {

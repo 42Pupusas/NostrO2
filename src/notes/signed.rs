@@ -1,108 +1,7 @@
-use super::utils::get_unix_timestamp;
 use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
-
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct Note {
-    pub pubkey: String,
-    pub created_at: u64,
-    pub kind: u32,
-    pub tags: Vec<Vec<String>>,
-    pub content: String,
-}
-
-impl Note {
-    pub fn new(pubkey: &str, kind: u32, content: &str) -> Self {
-        Note {
-            pubkey: pubkey.to_string(),
-            created_at: get_unix_timestamp(),
-            kind,
-            tags: Vec::new(),
-            content: content.to_string(),
-        }
-    }
-
-    pub fn add_tag(&mut self, tag_type: &str, tag: &str) {
-        if tag_type == "p" || tag_type == "e" {
-        } else {
-            if let Some(index) = self
-                .tags
-                .iter()
-                .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
-            {
-                // Tag type exists, push the tag to the corresponding inner array.
-                self.tags[index].push(tag.to_string());
-            } else {
-                // Tag type doesn't exist, create a new inner array and push it to the outer array.
-                let mut new_inner = vec![tag_type.to_string()];
-                new_inner.push(tag.to_string());
-                self.tags.push(new_inner);
-            }
-        }
-    }
-
-    pub fn add_pubkey_tag(&mut self, pubkey: &str) {
-        let tag_type = "p";
-        if let Some(index) = self
-            .tags
-            .iter()
-            .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
-        {
-            // Tag type exists, push the tag to the corresponding inner array.
-            self.tags[index].push(pubkey.to_string());
-        } else {
-            // Tag type doesn't exist, create a new inner array and push it to the outer array.
-            let mut new_inner = vec![tag_type.to_string()];
-            new_inner.push(pubkey.to_string());
-            self.tags.push(new_inner);
-        }
-    }
-
-    pub fn add_event_tag(&mut self, event_id: &str) {
-        let tag_type = "e";
-        if let Some(index) = self
-            .tags
-            .iter()
-            .position(|inner| inner.get(0) == Some(&tag_type.to_string()))
-        {
-            // Tag type exists, push the tag to the corresponding inner array.
-            self.tags[index].push(event_id.to_string());
-        } else {
-            // Tag type doesn't exist, create a new inner array and push it to the outer array.
-            let mut new_inner = vec![tag_type.to_string()];
-            new_inner.push(event_id.to_string());
-            self.tags.push(new_inner);
-        }
-    }
-
-    pub fn serialize_for_nostr(&self) -> String {
-        // Directly use the custom Serialize implementation
-        let serialized_data = (
-            0,
-            &*self.pubkey,
-            self.created_at,
-            self.kind,
-            &self.tags,
-            &*self.content,
-        );
-
-        let json_str = serde_json::to_string(&serialized_data).unwrap();
-
-        json_str
-    }
-}
-
-impl Display for Note {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string_pretty(self).expect("Failed to serialize Note.")
-        )
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct SignedNote {
@@ -118,7 +17,7 @@ pub struct SignedNote {
 }
 
 impl SignedNote {
-    pub fn new(note: Note, id: String, sig: String) -> Self {
+    pub fn new(note: super::Note, id: String, sig: String) -> Self {
         SignedNote {
             id,
             pubkey: note.pubkey.to_string(),
@@ -129,11 +28,9 @@ impl SignedNote {
             sig,
         }
     }
-
-    pub fn get_id(&self) -> &str {
-        &*self.id
+    pub fn get_id(&self) -> String {
+        self.id.clone()
     }
-
     pub fn get_note_id(&self) -> String {
         let hrp = bech32::Hrp::parse("note").expect("valid hrp");
         let note_data = self.id.as_bytes();
@@ -141,23 +38,18 @@ impl SignedNote {
             bech32::encode::<bech32::Bech32>(hrp, &note_data).expect("failed to encode string");
         string
     }
-
-    pub fn get_pubkey(&self) -> &str {
-        &*self.pubkey
+    pub fn get_pubkey(&self) -> String {
+        self.pubkey.clone()
     }
-
     pub fn get_created_at(&self) -> u64 {
         self.created_at
     }
-
     pub fn get_kind(&self) -> u32 {
         self.kind
     }
-
     pub fn get_tags(&self) -> Vec<Vec<String>> {
         self.tags.clone()
     }
-
     pub fn get_tags_by_id(&self, key: &str) -> Option<Vec<String>> {
         let mut tags = Vec::new();
         if let Some(index) = self
@@ -172,15 +64,12 @@ impl SignedNote {
         }
         None
     }
-
-    pub fn get_content(&self) -> &str {
-        &*self.content
+    pub fn get_content(&self) -> String {
+        self.content.clone()
     }
-
-    pub fn get_sig(&self) -> &str {
-        &*self.sig
+    pub fn get_sig(&self) -> String {
+        self.sig.clone()
     }
-
     fn verify_signature(&self) -> bool {
         let signature_of_signed_note = Signature::from_slice(
             &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
@@ -212,10 +101,9 @@ impl SignedNote {
             return false;
         }
     }
-
     fn verify_content(&self) -> bool {
         //let new_note = Note { signed_note.get_pubkey().to_string(), signed_note.get_kind(), signed_note.get_content() };
-        let copied_note = Note {
+        let copied_note = super::Note {
             pubkey: self.pubkey.to_string(),
             created_at: self.created_at,
             kind: self.kind,
@@ -241,7 +129,6 @@ impl SignedNote {
             }
         }
     }
-
     pub fn verify(&self) -> bool {
         if self.verify_signature() && self.verify_content() {
             return true;
@@ -263,5 +150,46 @@ impl TryFrom<String> for SignedNote {
     type Error = serde_json::Error;
     fn try_from(value: String) -> Result<Self, Self::Error> {
         serde_json::from_str(&value)
+    }
+}
+impl Into<String> for SignedNote {
+    fn into(self) -> String {
+        serde_json::to_string(&self).unwrap()
+    }
+}
+impl TryFrom<&str> for SignedNote {
+    type Error = serde_json::Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        serde_json::from_str(&value)
+    }
+}
+impl TryFrom<serde_json::Value> for SignedNote {
+    type Error = serde_json::Error;
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value)
+    }
+}
+impl TryFrom<&serde_json::Value> for SignedNote {
+    type Error = serde_json::Error;
+    fn try_from(value: &serde_json::Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value.clone())
+    }
+}
+impl Into<serde_json::Value> for SignedNote {
+    fn into(self) -> serde_json::Value {
+        serde_json::to_value(&self).unwrap()
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl TryFrom<wasm_bindgen::JsValue> for SignedNote {
+    type Error = wasm_bindgen::JsError;
+    fn try_from(value: wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
+        Ok(serde_wasm_bindgen::from_value(value)?)
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl Into<wasm_bindgen::JsValue> for SignedNote {
+    fn into(self) -> wasm_bindgen::JsValue {
+        serde_wasm_bindgen::to_value(&self).unwrap()
     }
 }

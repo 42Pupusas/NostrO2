@@ -326,11 +326,9 @@ mod tests {
     fn test_nip46_sign_event() {
         // Client the user wants to log in to secureely
         let client_keys = UserKeys::generate();
-        println!("Client key {}", client_keys.get_public_key());
 
         // the user keys on the remote signer
         let user_keys = UserKeys::generate();
-        println!("User key {}", user_keys.get_public_key());
 
         // client builds this note to be signed
         let note_request = Note::new(&user_keys.get_public_key(), 42, "sing_me_please");

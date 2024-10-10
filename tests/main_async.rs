@@ -34,8 +34,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(target_arch = "wasm32")]
-    use serde_json::json;
 
     #[cfg(target_arch = "wasm32")]
     use crate::tests::nostro2::utils::new_keys;
@@ -43,9 +41,9 @@ mod tests {
     use nostro2::notes::Note;
     #[cfg(target_arch = "wasm32")]
     use nostro2::userkeys::UserKeys;
-
     #[cfg(target_arch = "wasm32")]
-    use tokio_tungstenite_wasm::Message;
+    use crate::tests::nostro2::relays::NostrFilter;
+   
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen]
@@ -56,23 +54,18 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen_test]
     fn pass_threads() {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio::sync::Mutex;
-
         let websocket_thread = async {
             let nostr_relay = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
 
-            let relay_arc = Arc::new(nostr_relay);
+            let relay_arc = nostr_relay.clone();
 
             let writer_half = relay_arc.clone();
             let write_thread = async move {
-                let filter = json!({
-                    "kinds": [20042],
-                });
-                writer_half.subscribe(filter).await.unwrap();
+                let filter = NostrFilter::default().new_kind(20042).subscribe();
+                writer_half.subscribe(&filter).await.unwrap();
                 let user_keys = hex::encode(&new_keys()[..]);
                 let keypair = UserKeys::new(&user_keys).unwrap();
-                for i in 0..100 {
+                for _ in 0..100 {
                     let note = Note::new(&keypair.get_public_key(), 20042, "Hello, World!");
                     let signednote = keypair.sign_nostr_event(note);
                     writer_half.send_note(signednote).await.unwrap();
@@ -82,9 +75,9 @@ mod tests {
 
             let reader_half = relay_arc.clone();
             let read_thread = async move {
-                while let Ok(event) = reader_half.read_relay_events().await {
+                while let Ok(event) = reader_half.relay_event_reader().recv().await {
                     match event {
-                        RelayEvents::EVENT(_event, _id, _signed_note) => {
+                        RelayEvents::EVENT(_id, _signed_note) => {
                             console_log!("EVENT {}", _signed_note.get_kind());
                         }
                         _ => {}

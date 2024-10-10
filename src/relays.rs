@@ -1,31 +1,26 @@
 use super::notes::SignedNote;
 use super::utils::new_keys;
 use async_channel::Receiver;
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use url::Url;
 
 #[cfg(not(target_arch = "wasm32"))]
-use tokio::{net::TcpStream, spawn as new_thread};
+use tokio::spawn as new_thread;
 #[cfg(not(target_arch = "wasm32"))]
-use tokio_tungstenite::{
-    connect_async, tungstenite::Message as WebSocketMessage, MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message as WebSocketMessage};
 
 #[cfg(target_arch = "wasm32")]
-use tokio_tungstenite_wasm::{connect, Message as WebSocketMessage, WebSocketStream};
+use tokio_tungstenite_wasm::{connect, Message as WebSocketMessage};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local as new_thread;
 
-#[cfg(not(target_arch = "wasm32"))]
-type NostrWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-#[cfg(target_arch = "wasm32")]
-type NostrWebSocketStream = WebSocketStream;
+// #[cfg(not(target_arch = "wasm32"))]
+// type NostrWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+// #[cfg(target_arch = "wasm32")]
+// type NostrWebSocketStream = WebSocketStream;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub enum RelayEvents {
@@ -35,7 +30,6 @@ pub enum RelayEvents {
     NOTICE(String),
     PING,
 }
-
 impl TryFrom<String> for RelayEvents {
     type Error = anyhow::Error;
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -79,10 +73,9 @@ impl NostrRelay {
         let (websocket, _response) = connect_async(relay_url).await?;
 
         #[cfg(target_arch = "wasm32")]
-        let websocket = connect(relay_url)
-            .await?;
+        let websocket = connect(relay_url).await?;
 
-        let (websocket_writer, websocket_reader) = websocket.split();
+        let (mut websocket_writer, mut websocket_reader) = websocket.split();
         let (writer_tx, writer_rx) = async_channel::unbounded::<WebSocketMessage>();
         let (reader_tx, reader_rx) = async_channel::unbounded::<RelayEvents>();
         let new_relay = NostrRelay {
@@ -91,41 +84,34 @@ impl NostrRelay {
             writer_tx,
         };
 
-        new_thread(
-            new_relay
-                .clone()
-                .websocket_reader_handler(reader_tx, websocket_reader),
-        );
-        new_thread(
-            new_relay
-                .clone()
-                .websocket_writer_handler(writer_rx, websocket_writer),
-        );
-
-        Ok(new_relay)
-    }
-    async fn websocket_writer_handler(
-        self,
-        writer_rx: Receiver<WebSocketMessage>,
-        mut ws_writer: SplitSink<NostrWebSocketStream, WebSocketMessage>,
-    ) {
-        while let Ok(message) = writer_rx.recv().await {
-            if let Err(_e) = ws_writer.send(message).await {}
-        }
-        let _ = self.close().await;
-    }
-    async fn websocket_reader_handler(
-        self,
-        reader_tx: async_channel::Sender<RelayEvents>,
-        mut ws_reader: SplitStream<NostrWebSocketStream>,
-    ) {
-        while let Some(Ok(message)) = ws_reader.next().await {
-            let message = message.to_string();
-            if let Ok(event) = RelayEvents::try_from(message) {
-                let _ = reader_tx.send(event).await;
+        new_thread(async move {
+            loop {
+                tokio::select! {
+                    reader = websocket_reader.next() => {
+                        match reader {
+                            None => break,
+                            Some(Err(_e)) => break,
+                            Some(Ok(message)) => {
+                                let message = message.to_string();
+                                if let Ok(event) = RelayEvents::try_from(message) {
+                                    let _ = reader_tx.send(event).await;
+                                }
+                            },
+                        }
+                    },
+                    writer = writer_rx.recv() => {
+                        match writer {
+                            Err(_e) => break,
+                            Ok(WebSocketMessage::Close(_)) => break,
+                            Ok(writer) => {
+                                if let Err(_e) = websocket_writer.send(writer).await {}
+                            }
+                        }
+                    }
+                }
             }
-        }
-        let _ = self.close().await;
+        });
+        Ok(new_relay)
     }
     pub async fn subscribe(&self, filter: &NostrSubscription) -> anyhow::Result<String> {
         self.writer_tx.send(filter.nostr_message()).await?;
@@ -146,8 +132,8 @@ impl NostrRelay {
     pub fn relay_event_reader(&self) -> Receiver<RelayEvents> {
         self.reader_rx.clone()
     }
-    pub async fn close(&self) {
-        let _ = self.writer_tx.send(WebSocketMessage::Close(None)).await;
+    pub async fn close(self) {
+        self.writer_tx.close();
     }
     pub async fn subscribe_until_eose(
         &self,
@@ -308,5 +294,32 @@ impl NostrSubscription {
 
     pub fn id(&self) -> String {
         self.id.clone()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notes::Note;
+    use crate::userkeys::UserKeys;
+
+    #[tokio::test]
+    async fn test_close() {
+        let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
+
+        let user_keys = hex::encode(&new_keys()[..]);
+        let keypair = UserKeys::new(&user_keys).unwrap();
+
+        let note = Note::new(&keypair.get_public_key(), 1, "Hello, World!");
+
+        let signednote = keypair.sign_nostr_event(note);
+
+        assert!(relay_connection.send_note(signednote).await.is_ok());
+        relay_connection.clone().close().await;
+
+        let note = Note::new(&keypair.get_public_key(), 1, "Hello, World 2!");
+        let signednote = keypair.sign_nostr_event(note);
+        assert!(relay_connection.send_note(signednote).await.is_err());
     }
 }
