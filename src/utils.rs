@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use web_time::SystemTime;
 
 use rand::{thread_rng, Rng};
-use secp256k1::{ecdh::shared_secret_point, KeyPair, Parity, PublicKey, SecretKey, XOnlyPublicKey};
+use secp256k1::{ecdh::shared_secret_point, Keypair, Parity, PublicKey, SecretKey, XOnlyPublicKey};
 
 #[cfg(target_arch = "wasm32")]
 use rustls_pki_types::UnixTime;
@@ -35,7 +35,7 @@ pub fn get_unix_timestamp() -> u64 {
 }
 
 pub fn get_shared_point(
-    private_keypair: KeyPair,
+    private_keypair: Keypair,
     public_key_string: String,
 ) -> anyhow::Result<[u8; 32]> {
     let hex_pk = hex::decode(public_key_string)?;

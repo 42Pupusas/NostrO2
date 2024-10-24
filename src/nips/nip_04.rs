@@ -1,10 +1,10 @@
 use crate::utils::get_shared_point;
 use base64::{engine::general_purpose, Engine as _};
 use libaes::Cipher;
-use secp256k1::KeyPair;
+use secp256k1::Keypair;
 
 pub fn nip_04_encrypt(
-    private_keypair: KeyPair,
+    private_keypair: Keypair,
     plaintext: String,
     public_key_string: String,
 ) -> anyhow::Result<String> {
@@ -19,7 +19,7 @@ pub fn nip_04_encrypt(
 }
 
 pub fn nip_04_decrypt(
-    private_keypair: KeyPair,
+    private_keypair: Keypair,
     cyphertext: String,
     public_key_string: String,
 ) -> anyhow::Result<String> {
@@ -45,7 +45,7 @@ mod tests {
     fn test_nip_04() {
         let secp = secp256k1::Secp256k1::new();
         let new_key = crate::utils::new_keys();
-        let private_keypair = KeyPair::from_secret_key(&secp, &new_key);
+        let private_keypair = Keypair::from_secret_key(&secp, &new_key);
         let plaintext = "Hello, world!".to_string();
         let public_key_string =
             hex::encode(new_key.keypair(&secp).x_only_public_key().0.serialize());
@@ -68,7 +68,7 @@ mod tests {
         )
         .expect("");
         let secp = secp256k1::Secp256k1::new();
-        let keypair = KeyPair::from_seckey_slice(&secp, &my_keys.get_secret_key()).expect("");
+        let keypair = Keypair::from_seckey_slice(&secp, &my_keys.get_secret_key()).expect("");
         let plaintext =
             nip_04_decrypt(keypair, cyphertext.to_string(), public_key.to_string()).unwrap();
         assert_eq!(plaintext, "{\"id\":\"2fm12v\",\"method\":\"connect\",\"params\":[\"62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba\",\"\",\"sign_event:1985,sign_event:3,sign_event:30000\"]}");

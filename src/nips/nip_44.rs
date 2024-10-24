@@ -4,13 +4,13 @@ use chacha20::ChaCha20;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
-use secp256k1::KeyPair;
+use secp256k1::Keypair;
 use sha2::Sha256;
 
 use crate::utils::get_shared_point;
 
 pub fn nip_44_encrypt(
-    private_key: KeyPair,
+    private_key: Keypair,
     plaintext: String,
     public_key_string: String,
 ) -> anyhow::Result<String> {
@@ -24,7 +24,7 @@ pub fn nip_44_encrypt(
 }
 
 pub fn nip_44_decrypt(
-    private_key: KeyPair,
+    private_key: Keypair,
     cyphertext: String,
     public_key_string: String,
 ) -> anyhow::Result<String> {
@@ -160,7 +160,7 @@ mod tests {
     fn test_nip_44() {
         let secp = Secp256k1::new();
         let new_key = new_keys();
-        let private_keypair = KeyPair::from_secret_key(&secp, &new_key);
+        let private_keypair = Keypair::from_secret_key(&secp, &new_key);
         let plaintext = "Hello, world!".to_string();
         let public_key_string =
             hex::encode(new_key.keypair(&secp).x_only_public_key().0.serialize());

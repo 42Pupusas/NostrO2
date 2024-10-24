@@ -1,5 +1,5 @@
 use bip39::Language;
-use secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
+use secp256k1::{Keypair, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
 use crate::nips::{
@@ -12,7 +12,7 @@ use bech32::{Bech32, Hrp};
 
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct UserKeys {
-    keypair: KeyPair,
+    keypair: Keypair,
     extractable: bool,
 }
 
@@ -37,7 +37,7 @@ impl UserKeys {
 
     fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Self {
         let secp = Secp256k1::new();
-        let keypair = KeyPair::from_secret_key(&secp, &secret_key);
+        let keypair = Keypair::from_secret_key(&secp, &secret_key);
         Self {
             keypair,
             extractable,
@@ -92,11 +92,11 @@ impl UserKeys {
         let mut hasher = Sha256::new();
         hasher.update(note_hash);
         let hash_result = hasher.finalize();
-        let id_message = Message::from_slice(&hash_result).unwrap();
+        let id_bytes: &[u8] = hash_result.as_slice();
         let id = hex::encode(hash_result);
         let secp = Secp256k1::new();
         let sig = secp
-            .sign_schnorr_no_aux_rand(&id_message, &self.keypair)
+            .sign_schnorr_no_aux_rand(id_bytes, &self.keypair)
             .to_string();
         (id, sig)
     }
@@ -319,6 +319,29 @@ mod tests {
 
     #[test]
     fn test_encryption() {
+        let user_keys = UserKeys::generate();
+        let client_keys = UserKeys::generate();
+        let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
+        let signed_note = user_keys
+            .sign_nip_04_encrypted(note_request, client_keys.get_public_key())
+            .unwrap();
+        let decrypted = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
+        assert_eq!(decrypted, "test");
+
+        let nip_44_note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
+        let signed_nip_44_note = user_keys
+            .sign_nip_44_encrypted(nip_44_note_request, client_keys.get_public_key())
+            .expect("");
+        let decrypted_nip_44 = client_keys
+            .decrypt_nip_44_content(&signed_nip_44_note)
+            .expect("");
+        assert_eq!(decrypted_nip_44, "test");
+    }
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test;
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn test_encryption_wasm() {
         let user_keys = UserKeys::generate();
         let client_keys = UserKeys::generate();
         let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");

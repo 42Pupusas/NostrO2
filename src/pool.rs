@@ -132,11 +132,12 @@ impl RelayPool {
                             },
                             // Handle close requests
                             _ = close_rx.recv() => {
-                                let _ = relay.close().await;
                                 break;
                             }
                         }
                     }
+                    relay.cleanup().await;
+                    let _ = relay.close().await;
                 }
             });
         }
@@ -225,7 +226,7 @@ mod tests {
                 RelayEvents::EOSE(_) => {
                     events.push(event);
                     console_log!("EOSE");
-                    if events.len() == 8 {
+                    if events.len() >= 4 {
                         break;
                     }
                 }

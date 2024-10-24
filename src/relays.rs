@@ -66,11 +66,18 @@ impl NostrRelay {
     pub fn url(&self) -> String {
         self.url.clone()
     }
+    pub async fn cleanup(&self) {
+        // Clean up resources here
+        let _ = self.reader_rx.close();
+        // Close the writer channel gracefully if needed
+        let _ = self.writer_tx.close();
+        // Perform other cleanup tasks as necessary
+    }
     pub async fn new(relay_string: &str) -> anyhow::Result<Self> {
         let relay_url = Url::parse(relay_string)?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let (websocket, _response) = connect_async(relay_url).await?;
+        let (websocket, _response) = connect_async(relay_url.to_string()).await?;
 
         #[cfg(target_arch = "wasm32")]
         let websocket = connect(relay_url).await?;
@@ -84,13 +91,18 @@ impl NostrRelay {
             writer_tx,
         };
 
+        let relay_clone = new_relay.clone();
         new_thread(async move {
             loop {
                 tokio::select! {
                     reader = websocket_reader.next() => {
                         match reader {
                             None => break,
-                            Some(Err(_e)) => break,
+                            Some(Err(_e)) => {
+                                // Connection error occurred, clean up
+                                relay_clone.cleanup().await; // Cleanup resources
+                                break
+                            },
                             Some(Ok(message)) => {
                                 let message = message.to_string();
                                 if let Ok(event) = RelayEvents::try_from(message) {
@@ -102,9 +114,17 @@ impl NostrRelay {
                     writer = writer_rx.recv() => {
                         match writer {
                             Err(_e) => break,
-                            Ok(WebSocketMessage::Close(_)) => break,
+                            Ok(WebSocketMessage::Close(_)) => {
+                                // Close message received, clean up
+                                relay_clone.cleanup().await; // Cleanup resources
+                                break;
+                            },
                             Ok(writer) => {
-                                if let Err(_e) = websocket_writer.send(writer).await {}
+                                if let Err(_e) = websocket_writer.send(writer).await {
+                                    // Error sending, clean up
+                                    relay_clone.cleanup().await; // Cleanup resources
+                                    break;
+                                }
                             }
                         }
                     }
@@ -305,11 +325,11 @@ mod tests {
     use crate::userkeys::UserKeys;
 
     #[tokio::test]
-    async fn test_close() {
-        let relay_connection = NostrRelay::new("wss://relay.arrakis.lat").await.unwrap();
+    async fn test_close() -> Result<(), anyhow::Error>  {
+        let relay_connection = NostrRelay::new("wss://relay.illuminodes.com").await?;
 
         let user_keys = hex::encode(&new_keys()[..]);
-        let keypair = UserKeys::new(&user_keys).unwrap();
+        let keypair = UserKeys::new(&user_keys)?;
 
         let note = Note::new(&keypair.get_public_key(), 1, "Hello, World!");
 
@@ -321,5 +341,6 @@ mod tests {
         let note = Note::new(&keypair.get_public_key(), 1, "Hello, World 2!");
         let signednote = keypair.sign_nostr_event(note);
         assert!(relay_connection.send_note(signednote).await.is_err());
+        Ok(())
     }
 }

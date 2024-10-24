@@ -1,4 +1,4 @@
-use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey};
+use secp256k1::{schnorr::Signature, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
@@ -74,8 +74,7 @@ impl SignedNote {
         let signature_of_signed_note = Signature::from_slice(
             &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
         );
-        let message_of_signed_note =
-            Message::from_slice(&hex::decode(&*self.id).expect("Failed to decode signed_note id."));
+        let message_of_signed_note = &hex::decode(&*self.id);
         let public_key_of_signed_note = XOnlyPublicKey::from_slice(
             &hex::decode(&*self.pubkey).expect("Failed to decode signed_note public"),
         );
