@@ -1,13 +1,12 @@
 use bip39::Language;
-use secp256k1::{Keypair, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
-use crate::nips::{
-    nip_04::{nip_04_decrypt, nip_04_encrypt},
-    nip_44::{nip_44_decrypt, nip_44_encrypt},
-};
+use rand::{thread_rng, Rng};
+use secp256k1::{Keypair, Secp256k1, SecretKey};
 
-use super::notes::{Note, SignedNote};
+use crate::nips::{Nip04, Nip44};
+
+use crate::notes::{Note, SignedNote};
 use bech32::{Bech32, Hrp};
 
 #[derive(Debug, PartialEq, Clone, Eq)]
@@ -17,6 +16,29 @@ pub struct UserKeys {
 }
 
 impl UserKeys {
+    fn new_secp256k1_secret_key() -> SecretKey {
+        let mut rng = thread_rng();
+        // Generate a random 256-bit integer as the private key
+        let private_key: [u8; 32] = rng.gen();
+        // Convert the private key to a secp256k1 SecretKey object
+        let secret_key = SecretKey::from_slice(&private_key).unwrap();
+        // Return the private key in hexadecimal format
+        secret_key
+    }
+    pub fn get_shared_point(&self, public_key_string: &String) -> anyhow::Result<[u8; 32]> {
+        let hex_pk = hex::decode(public_key_string)?;
+        let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
+        let public_key = secp256k1::PublicKey::from_x_only_public_key(
+            x_only_public_key,
+            secp256k1::Parity::Even,
+        );
+        let mut ssp = secp256k1::ecdh::shared_secret_point(&public_key, &self.keypair.secret_key())
+            .as_slice()
+            .to_owned();
+        ssp.resize(32, 0); // toss the Y part
+        Ok(ssp.try_into().unwrap())
+    }
+
     pub fn new(private_key: &str) -> anyhow::Result<Self> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
@@ -63,12 +85,12 @@ impl UserKeys {
     }
 
     pub fn generate() -> Self {
-        let new_secret_key = crate::utils::new_keys();
+        let new_secret_key = Self::new_secp256k1_secret_key();
         Self::create_user_keys(new_secret_key, false)
     }
 
     pub fn generate_extractable() -> Self {
-        let new_secret_key = crate::utils::new_keys();
+        let new_secret_key = Self::new_secp256k1_secret_key();
         Self::create_user_keys(new_secret_key, true)
     }
 
@@ -113,7 +135,8 @@ impl UserKeys {
         plaintext: String,
         pubkey: String,
     ) -> anyhow::Result<String> {
-        nip_04_encrypt(self.keypair, plaintext, pubkey)
+        let nip_04 = Nip04::new(self.clone(), pubkey);
+        nip_04.encrypt(plaintext)
     }
 
     pub fn decrypt_nip_04_plaintext(
@@ -121,7 +144,8 @@ impl UserKeys {
         cyphertext: String,
         pubkey: String,
     ) -> anyhow::Result<String> {
-        nip_04_decrypt(self.keypair, cyphertext, pubkey)
+        let nip_04 = Nip04::new(self.clone(), pubkey);
+        nip_04.decrypt(cyphertext)
     }
 
     pub fn encrypt_nip_44_plaintext(
@@ -129,7 +153,8 @@ impl UserKeys {
         plaintext: String,
         pubkey: String,
     ) -> anyhow::Result<String> {
-        nip_44_encrypt(self.keypair, plaintext, pubkey)
+        let nip_44 = Nip44::new(self.clone(), pubkey);
+        nip_44.nip_44_encrypt(plaintext)
     }
 
     pub fn decrypt_nip_44_plaintext(
@@ -137,7 +162,8 @@ impl UserKeys {
         cyphertext: String,
         pubkey: String,
     ) -> anyhow::Result<String> {
-        nip_44_decrypt(self.keypair, cyphertext, pubkey)
+        let nip_44 = Nip44::new(self.clone(), pubkey);
+        nip_44.nip_44_decrypt(cyphertext)
     }
 
     pub fn sign_nip_04_encrypted(
@@ -146,7 +172,7 @@ impl UserKeys {
         pubkey: String,
     ) -> anyhow::Result<SignedNote> {
         note.add_pubkey_tag(&pubkey);
-        let encrypted_content = nip_04_encrypt(self.keypair, note.content.to_string(), pubkey)?;
+        let encrypted_content = self.encrypt_nip_04_plaintext(note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
         let (id, sig) = self.hash_id_and_sign(&note);
         let signed_note = SignedNote::new(note, id, sig);
@@ -157,7 +183,7 @@ impl UserKeys {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
 
-        let plaintext = nip_04_decrypt(self.keypair, cyphertext, public_key_string)?;
+        let plaintext = self.decrypt_nip_04_plaintext(cyphertext, public_key_string)?;
         Ok(plaintext)
     }
 
@@ -167,7 +193,7 @@ impl UserKeys {
         pubkey: String,
     ) -> anyhow::Result<SignedNote> {
         note.add_pubkey_tag(&pubkey);
-        let encrypted_content = nip_44_encrypt(self.keypair, note.content.to_string(), pubkey)?;
+        let encrypted_content = self.encrypt_nip_44_plaintext(note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
         let (id, sig) = self.hash_id_and_sign(&note);
         let signed_note = SignedNote::new(note, id, sig);
@@ -177,7 +203,7 @@ impl UserKeys {
     pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> anyhow::Result<String> {
         let cyphertext = signed_note.get_content().to_string();
         let public_key_string = signed_note.get_pubkey().to_string();
-        let plaintext = nip_44_decrypt(self.keypair, cyphertext, public_key_string)?;
+        let plaintext = self.decrypt_nip_44_plaintext(cyphertext, public_key_string)?;
         Ok(plaintext)
     }
 

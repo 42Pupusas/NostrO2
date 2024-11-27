@@ -1,4 +1,3 @@
-use crate::utils::get_unix_timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
@@ -15,7 +14,7 @@ impl Note {
     pub fn new(pubkey: &str, kind: u32, content: &str) -> Self {
         Note {
             pubkey: pubkey.to_string(),
-            created_at: get_unix_timestamp(),
+            created_at: chrono::Utc::now().timestamp() as u64,
             kind,
             tags: Vec::new(),
             content: content.to_string(),

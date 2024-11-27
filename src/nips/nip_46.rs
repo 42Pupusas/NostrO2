@@ -51,7 +51,7 @@ pub struct Nip46Request {
 
 impl Nip46Request {
     pub fn ping_request(client_keys: &UserKeys, user_keys: String) -> SignedNote {
-        let random_id = format!("nostro2-{}", crate::utils::get_unix_timestamp());
+        let random_id = format!("nostro2-{}", chrono::Utc::now().timestamp());
         let ping_params = vec!["ping".to_string()];
         let self_try = Self {
             id: random_id,
@@ -62,7 +62,7 @@ impl Nip46Request {
     }
 
     pub fn sign_event_request(note_request: Note, client_keys: &UserKeys) -> SignedNote {
-        let random_id = format!("nostro2-{}", crate::utils::get_unix_timestamp());
+        let random_id = format!("nostro2-{}", chrono::Utc::now().timestamp());
         let note_params = vec![note_request.to_string()];
         let self_try = Self {
             id: random_id,
@@ -75,7 +75,7 @@ impl Nip46Request {
     }
 
     pub fn get_public_key_request(client_keys: &UserKeys, user_keys: String) -> SignedNote {
-        let random_id = format!("nostro2-{}", crate::utils::get_unix_timestamp());
+        let random_id = format!("nostro2-{}", chrono::Utc::now().timestamp());
         let ping_params = vec!["get_public_key".to_string()];
         let self_try = Self {
             id: random_id,
@@ -353,30 +353,4 @@ mod tests {
         assert_eq!(response_note.get_content(), "sing_me_please");
     }
 
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::*;
-
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-
-    #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen_test]
-    fn test_nip46_ping_request_wasm() {
-        let user_keys = UserKeys::generate();
-        let client_keys = UserKeys::generate();
-        let ping_request = Nip46Request::ping_request(&client_keys, user_keys.get_public_key());
-        assert_eq!(ping_request.get_kind(), 24133);
-
-        let nip46_command = Nip46Request::get_request_command(&ping_request, &user_keys);
-        if let Ok(Nip46Commands::Ping(pubkey, _id)) = &nip46_command {
-            assert_eq!(pubkey, &client_keys.get_public_key());
-        } else {
-            panic!("Not a ping command");
-        }
-        let signed_note = Nip46Request::respond_to_command(&user_keys, nip46_command.unwrap());
-        assert_eq!(signed_note.verify(), true);
-        let decrypted_note = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
-        let parsed_response = serde_json::from_str::<Nip46Response>(&decrypted_note).unwrap();
-        assert_eq!(parsed_response.result, "pong");
-    }
 }
