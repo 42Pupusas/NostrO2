@@ -26,7 +26,7 @@ impl UserKeys {
         secret_key
     }
     pub fn get_shared_point(&self, public_key_string: &String) -> anyhow::Result<[u8; 32]> {
-        let hex_pk = hex::decode(public_key_string)?;
+        let hex_pk = Self::hex_decode(public_key_string);
         let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
         let public_key = secp256k1::PublicKey::from_x_only_public_key(
             x_only_public_key,
@@ -38,7 +38,16 @@ impl UserKeys {
         ssp.resize(32, 0); // toss the Y part
         Ok(ssp.try_into().unwrap())
     }
-
+    fn hex_decode(hex_string: &str) -> Vec<u8> {
+        hex_string
+            .as_bytes()
+            .chunks(2)
+            .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
+            .collect()
+    }
+    fn hex_encode(bytes: Vec<u8>) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
     pub fn new(private_key: &str) -> anyhow::Result<Self> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
@@ -51,7 +60,7 @@ impl UserKeys {
         }
 
         // Decode the private key as hex
-        let decoded_private_key = hex::decode(private_key)?;
+        let decoded_private_key = Self::hex_decode(&private_key.to_string());
         let secret_key = SecretKey::from_slice(&decoded_private_key)?;
         // Create and return UserKeys
         Ok(Self::create_user_keys(secret_key, false))
@@ -78,7 +87,7 @@ impl UserKeys {
         }
 
         // Decode the private key as hex
-        let decoded_private_key = hex::decode(private_key)?;
+        let decoded_private_key = Self::hex_decode(&private_key.to_string());
         let secret_key = SecretKey::from_slice(&decoded_private_key)?;
         // Create and return UserKeys
         Ok(Self::create_user_keys(secret_key, true))
@@ -115,7 +124,7 @@ impl UserKeys {
         hasher.update(note_hash);
         let hash_result = hasher.finalize();
         let id_bytes: &[u8] = hash_result.as_slice();
-        let id = hex::encode(hash_result);
+        let id = Self::hex_encode(hash_result.to_vec());
         let secp = Secp256k1::new();
         let sig = secp
             .sign_schnorr_no_aux_rand(id_bytes, &self.keypair)

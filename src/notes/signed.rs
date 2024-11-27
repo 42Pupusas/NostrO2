@@ -70,18 +70,24 @@ impl SignedNote {
     pub fn get_sig(&self) -> String {
         self.sig.clone()
     }
+    fn hex_decode(hex_string: &str) -> Vec<u8> {
+        hex_string
+            .as_bytes()
+            .chunks(2)
+            .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
+            .collect()
+    }
+    fn hex_encode(bytes: Vec<u8>) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
     fn verify_signature(&self) -> bool {
-        let signature_of_signed_note = Signature::from_slice(
-            &hex::decode(&*self.sig).expect("Failed to decode signed_note signature."),
-        );
-        let message_of_signed_note = &hex::decode(&*self.id);
-        let public_key_of_signed_note = XOnlyPublicKey::from_slice(
-            &hex::decode(&*self.pubkey).expect("Failed to decode signed_note public"),
-        );
+        let signature_of_signed_note = Signature::from_slice(&Self::hex_decode(&self.sig));
+        let message_of_signed_note = &Self::hex_decode(&self.id);
+        let public_key_of_signed_note = XOnlyPublicKey::from_slice(&Self::hex_decode(&self.pubkey));
 
         if let (
             Ok(signature_of_signed_note),
-            Ok(message_of_signed_note),
+            message_of_signed_note,
             Ok(public_key_of_signed_note),
         ) = (
             signature_of_signed_note,
@@ -118,7 +124,7 @@ impl SignedNote {
 
         // Hex Encod the hash
         let hash_result = hasher.finalize();
-        let new_id = hex::encode(hash_result);
+        let new_id = Self::hex_encode(hash_result.to_vec());
 
         match &new_id == &*self.id {
             true => return true,

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use crate::notes::SignedNote;
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum RelayEventTag {
     EVENT,
     OK,
@@ -13,16 +13,38 @@ pub enum RelayEventTag {
     REQ,
 }
 // FROM RELAY TO CLIENT 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NoteEvent(pub RelayEventTag, pub String, pub SignedNote);
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OkEvent(pub RelayEventTag, pub String, pub bool, pub String);
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EndOfSubscriptionEvent(pub RelayEventTag, pub String);
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SubscriptionClosedEvent(pub RelayEventTag, pub String);
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NoticeEvent(pub RelayEventTag, pub String);
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum RelayEvent {
+    NewNote(NoteEvent),
+    SentOk(OkEvent),
+    EndOfSubscription(EndOfSubscriptionEvent),
+    ClosedSubscription(SubscriptionClosedEvent),
+    Notice(NoticeEvent),
+}
+impl TryFrom<String> for RelayEvent {
+    type Error = serde_json::Error;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        serde_json::from_str(&value)
+    }
+}
+impl TryFrom<&String> for RelayEvent {
+    type Error = serde_json::Error;
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        serde_json::from_str(value)
+    }
+}
 
 // FROM CLIENT TO RELAY
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,18 +69,3 @@ impl Into<String> for CloseEvent {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(untagged)]
-pub enum RelayEvent {
-    NewNote(NoteEvent),
-    SentOk(OkEvent),
-    EndOfSubscription(EndOfSubscriptionEvent),
-    ClosedSubscription(SubscriptionClosedEvent),
-    Notice(NoticeEvent),
-}
-impl TryFrom<String> for RelayEvent {
-    type Error = serde_json::Error;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        serde_json::from_str(&value)
-    }
-}

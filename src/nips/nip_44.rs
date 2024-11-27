@@ -19,10 +19,7 @@ impl Nip44 {
             peer_pubkey,
         }
     }
-    pub fn nip_44_encrypt(
-        &self,
-        plaintext: String,
-    ) -> anyhow::Result<String> {
+    pub fn nip_44_encrypt(&self, plaintext: String) -> anyhow::Result<String> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let conversation_key = Self::derive_conversation_key(&shared_secret, b"nip44-v2")?;
         let nonce = Self::generate_nonce();
@@ -32,10 +29,7 @@ impl Nip44 {
         Ok(encoded_params)
     }
 
-    pub fn nip_44_decrypt(
-        &self,
-        cyphertext: String,
-    ) -> anyhow::Result<String> {
+    pub fn nip_44_decrypt(&self, cyphertext: String) -> anyhow::Result<String> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let conversation_key = Self::derive_conversation_key(&shared_secret, b"nip44-v2")?;
         let decoded = general_purpose::STANDARD.decode(cyphertext.as_bytes())?;
@@ -44,74 +38,56 @@ impl Nip44 {
         Ok(String::from_utf8(decrypted)?)
     }
 
-    fn encrypt(content: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    fn encrypt(content: &[u8], key: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
         let mut cipher = ChaCha20::new(key.into(), nonce.into());
-        let mut padded_content = Self::pad_string(content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        let mut padded_content = Self::pad_string(content).map_err(|e| anyhow::anyhow!(e))?;
         cipher.apply_keystream(&mut padded_content);
 
         Ok(padded_content)
     }
 
-    fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
         if key.len() != 32 || nonce.len() != 12 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid key or nonce length",
-            ));
+            Err(anyhow::anyhow!("Invalid key or nonce length"))?;
         }
 
-        let mut cipher = ChaCha20::new_from_slices(key, nonce)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+        let mut cipher = ChaCha20::new_from_slices(key, nonce).map_err(|e| anyhow::anyhow!(e))?;
         let mut decrypted = ciphertext.to_vec();
         cipher.apply_keystream(&mut decrypted);
         // Extract the plaintext length
         if decrypted.len() < 2 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid ciphertext length",
-            ));
+            Err(anyhow::anyhow!("Invalid decrypted length"))?;
         }
         let plaintext_length = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
 
         // Validate and extract the plaintext
         if plaintext_length > decrypted.len() - 2 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid plaintext length",
-            ));
+            Err(anyhow::anyhow!("Invalid plaintext length"))?;
         }
         Ok(decrypted[2..2 + plaintext_length].to_vec())
     }
 
-    fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> anyhow::Result<[u8; 32]> {
         let hkdf = Hkdf::<Sha256>::new(Some(salt), shared_secret);
         let mut okm = [0u8; 32]; // Output Keying Material (OKM)
         hkdf.expand(&[], &mut okm).map_err(|e| anyhow::anyhow!(e))?;
-        Ok(okm.to_vec())
+        Ok(okm)
     }
 
     fn extract_components(
         decoded: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), std::io::Error> {
-        // Define the sizes of the components
-        const VERSION_SIZE: usize = 1; // Size of version in bytes
-        const NONCE_SIZE: usize = 12; // Size of nonce in bytes
-        const MAC_SIZE: usize = 32; // Size of MAC in bytes
-
-        // Calculate minimum size and check if the decoded data is long enough
+    ) -> anyhow::Result<(&[u8], &[u8], &[u8], &[u8])> {
+        const VERSION_SIZE: usize = 1;
+        const NONCE_SIZE: usize = 12;
+        const MAC_SIZE: usize = 32;
+        // Ensure the length of the decoded data is sufficient
         if decoded.len() < VERSION_SIZE + NONCE_SIZE + MAC_SIZE {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Decoded data too short",
-            ));
+            Err(anyhow::anyhow!("Decoded data too short"))?;
         }
-
-        let version = decoded[0..VERSION_SIZE].to_vec();
-        let nonce = decoded[VERSION_SIZE..VERSION_SIZE + NONCE_SIZE].to_vec();
-        let mac_start = decoded.len() - MAC_SIZE; // MAC is the last 16 bytes
-        let mac = decoded[mac_start..].to_vec();
-        let ciphertext = decoded[VERSION_SIZE + NONCE_SIZE..mac_start].to_vec();
+        let version = &decoded[0..VERSION_SIZE];
+        let nonce = &decoded[VERSION_SIZE..VERSION_SIZE + NONCE_SIZE];
+        let mac = &decoded[decoded.len() - MAC_SIZE..];
+        let ciphertext = &decoded[VERSION_SIZE + NONCE_SIZE..decoded.len() - MAC_SIZE];
 
         Ok((version, nonce, ciphertext, mac))
     }
@@ -122,23 +98,21 @@ impl Nip44 {
         nonce
     }
 
-    fn calculate_mac(data: &[u8], key: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    fn calculate_mac(data: &[u8], key: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).map_err(|e| anyhow::anyhow!(e))?;
         mac.update(data);
         Ok(mac.finalize().into_bytes().to_vec())
     }
-
     fn base64_encode_params(version: &[u8], nonce: &[u8], ciphertext: &[u8], mac: &[u8]) -> String {
-        let mut data = Vec::new();
-        data.extend_from_slice(version);
-        data.extend_from_slice(nonce);
-        data.extend_from_slice(ciphertext);
-        data.extend_from_slice(mac);
-        let encoded: String = general_purpose::STANDARD.encode(data);
-        encoded
-    }
+        let mut encoded_data =
+            Vec::with_capacity(version.len() + nonce.len() + ciphertext.len() + mac.len());
+        encoded_data.extend_from_slice(version);
+        encoded_data.extend_from_slice(nonce);
+        encoded_data.extend_from_slice(ciphertext);
+        encoded_data.extend_from_slice(mac);
 
+        general_purpose::STANDARD.encode(&encoded_data)
+    }
     fn pad_string(plaintext: &[u8]) -> Result<Vec<u8>, String> {
         if plaintext.is_empty() || plaintext.len() > 65535 {
             return Err("Plaintext length must be between 1 and 65535 bytes".to_string());
