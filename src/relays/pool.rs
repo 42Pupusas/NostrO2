@@ -32,27 +32,36 @@ impl RelayPool {
         note_writer: UnboundedSender<(String, SignedNote)>,
         event_writer: UnboundedSender<RelayEvent>,
         mut outgoing_chan: UnboundedReceiver<WebSocketMessage>,
-    ) {
+    ) -> Result<(), ()> {
         loop {
             tokio::select! {
-                Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next() => {
-                    match RelayEvent::try_from(event) {
-                        Ok(RelayEvent::NewNote(NoteEvent(_, _, signed_note))) => {
-                            let mut notes = notes.lock().await;
-                            if notes.insert(signed_note.clone()) {
-                                if let Err(e) = note_writer.send((relay.url.clone().to_string(), signed_note.clone())) {
+                Some(Ok(event)) = relay.reader.next() => {
+                    if let WebSocketMessage::Close(_) = event {
+                        error!("Relay closed connection");
+                        drop(relay);
+                        break;
+                    }
+                    if let WebSocketMessage::Text(event) = event {
+                        match RelayEvent::try_from(event) {
+                            Ok(RelayEvent::NewNote(NoteEvent(_, _, signed_note))) => {
+                                let mut notes = notes.lock().await;
+                                if notes.insert(signed_note.clone()) {
+                                    if let Err(e) = note_writer.send((relay.url.clone().to_string(), signed_note.clone())) {
+                                        error!("{:?}", e);
+                                        drop(relay);
+                                        break;
+                                    }
+                                }
+                            }
+                            Ok(event) => {
+                                if let Err(e) = event_writer.send(event) {
                                     error!("{:?}", e);
+                                    drop(relay);
                                     break;
                                 }
                             }
+                            _ => (),
                         }
-                        Ok(event) => {
-                            if let Err(e) = event_writer.send(event) {
-                                error!("{:?}", e);
-                                break;
-                            }
-                        }
-                        _ => (),
                     }
                 }
                 Some(out) = outgoing_chan.recv() => {
@@ -61,9 +70,12 @@ impl RelayPool {
                         break;
                     }
                 }
-                else => break,
+                else => {
+                    drop(relay);
+                    break},
             }
         }
+        Err(())
     }
     pub async fn new(urls: Vec<String>) -> anyhow::Result<Self> {
         let (note_tx, note_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -90,8 +102,8 @@ impl RelayPool {
         #[cfg(target_arch = "wasm32")]
         use wasm_bindgen_futures::spawn_local as new_task;
         new_task(async move {
-            loop {
-                futures_util::future::select_all(tasks.iter_mut()).await;
+            if let Err(e) = futures_util::future::select_ok(tasks.iter_mut()).await {
+                error!("{:?}", e);
             }
         });
         Ok(Self {
