@@ -28,7 +28,6 @@ impl Nip44 {
         let encoded_params = Self::base64_encode_params(b"1", &nonce, &cypher_text, &mac);
         Ok(encoded_params)
     }
-
     pub fn nip_44_decrypt(&self, cyphertext: String) -> anyhow::Result<String> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let conversation_key = Self::derive_conversation_key(&shared_secret, b"nip44-v2")?;
@@ -37,7 +36,6 @@ impl Nip44 {
         let decrypted = Self::decrypt(&ciphertext, &conversation_key, &nonce)?;
         Ok(String::from_utf8(decrypted)?)
     }
-
     fn encrypt(content: &[u8], key: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
         let mut cipher = ChaCha20::new(key.into(), nonce.into());
         let mut padded_content = Self::pad_string(content).map_err(|e| anyhow::anyhow!(e))?;
@@ -45,12 +43,10 @@ impl Nip44 {
 
         Ok(padded_content)
     }
-
     fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
         if key.len() != 32 || nonce.len() != 12 {
             Err(anyhow::anyhow!("Invalid key or nonce length"))?;
         }
-
         let mut cipher = ChaCha20::new_from_slices(key, nonce).map_err(|e| anyhow::anyhow!(e))?;
         let mut decrypted = ciphertext.to_vec();
         cipher.apply_keystream(&mut decrypted);
@@ -59,21 +55,18 @@ impl Nip44 {
             Err(anyhow::anyhow!("Invalid decrypted length"))?;
         }
         let plaintext_length = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
-
         // Validate and extract the plaintext
         if plaintext_length > decrypted.len() - 2 {
             Err(anyhow::anyhow!("Invalid plaintext length"))?;
         }
         Ok(decrypted[2..2 + plaintext_length].to_vec())
     }
-
     fn derive_conversation_key(shared_secret: &[u8], salt: &[u8]) -> anyhow::Result<[u8; 32]> {
         let hkdf = Hkdf::<Sha256>::new(Some(salt), shared_secret);
         let mut okm = [0u8; 32]; // Output Keying Material (OKM)
         hkdf.expand(&[], &mut okm).map_err(|e| anyhow::anyhow!(e))?;
         Ok(okm)
     }
-
     fn extract_components(
         decoded: &[u8],
     ) -> anyhow::Result<(&[u8], &[u8], &[u8], &[u8])> {

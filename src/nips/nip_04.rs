@@ -30,7 +30,7 @@ impl Nip04 {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let mut parts = cyphertext.split('?');
         let base_64_cyphertext = parts.next().ok_or(anyhow::anyhow!("No cyphertext"))?;
-        let base_64_iv = &parts.next().ok_or(anyhow::anyhow!("No iv"))?[3..]; // skip "iv="
+        let base_64_iv = &parts.next().ok_or(anyhow::anyhow!("No IV"))?[3..]; // skip "iv="
         let cyphertext = general_purpose::STANDARD.decode(base_64_cyphertext.as_bytes())?;
         let iv = general_purpose::STANDARD.decode(base_64_iv.as_bytes())?;
         let mut cipher = Cipher::new_256(&shared_secret);

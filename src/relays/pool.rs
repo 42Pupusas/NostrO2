@@ -20,7 +20,7 @@ use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use tokio_tungstenite_wasm::Message as WebSocketMessage;
 
 pub struct RelayPool {
-    pub note_channel: UnboundedReceiver<SignedNote>,
+    pub note_channel: UnboundedReceiver<(String, SignedNote)>,
     pub event_channel: UnboundedReceiver<RelayEvent>,
     pub outgoing_channels: Vec<UnboundedSender<WebSocketMessage>>,
 }
@@ -29,7 +29,7 @@ impl RelayPool {
     async fn process_relay_events(
         notes: Arc<Mutex<HashSet<SignedNote>>>,
         mut relay: NostrRelay,
-        note_writer: UnboundedSender<SignedNote>,
+        note_writer: UnboundedSender<(String, SignedNote)>,
         event_writer: UnboundedSender<RelayEvent>,
         mut outgoing_chan: UnboundedReceiver<WebSocketMessage>,
     ) {
@@ -40,7 +40,7 @@ impl RelayPool {
                         Ok(RelayEvent::NewNote(NoteEvent(_, _, signed_note))) => {
                             let mut notes = notes.lock().await;
                             if notes.insert(signed_note.clone()) {
-                                if let Err(e) = note_writer.send(signed_note.clone()) {
+                                if let Err(e) = note_writer.send((relay.url.clone().to_string(), signed_note.clone())) {
                                     error!("{:?}", e);
                                     break;
                                 }
@@ -70,6 +70,7 @@ impl RelayPool {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let unique_notes = Arc::new(Mutex::new(HashSet::<SignedNote>::new()));
         let mut outgoing_channels = vec![];
+        let mut tasks = vec![];
         for relay_url in urls {
             if let Ok(relay) = NostrRelay::new(&relay_url).await {
                 let outgoing_chan = tokio::sync::mpsc::unbounded_channel();
@@ -81,12 +82,18 @@ impl RelayPool {
                     event_tx.clone(),
                     outgoing_chan.1,
                 );
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::task::spawn(future);
-                #[cfg(target_arch = "wasm32")]
-                wasm_bindgen_futures::spawn_local(future);
+                tasks.push(Box::pin(future));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        use tokio::task::spawn as new_task;
+        #[cfg(target_arch = "wasm32")]
+        use wasm_bindgen_futures::spawn_local as new_task;
+        new_task(async move {
+            loop {
+                futures_util::future::select_all(tasks.iter_mut()).await;
+            }
+        });
         Ok(Self {
             note_channel: note_rx,
             event_channel: event_rx,
@@ -135,10 +142,14 @@ impl RelayPool {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
+    use tracing::debug;
+    use tracing_test::traced_test;
+
     use super::*;
     use crate::relays::{EndOfSubscriptionEvent, NostrSubscription};
 
     #[tokio::test]
+    #[traced_test]
     async fn test_relay_pool() {
         let mut pool = RelayPool::new(vec![
             "wss://relay.arrakis.lat".to_string(),
@@ -154,23 +165,28 @@ mod tests {
         .expect("Failed to create pool");
         let filter = NostrSubscription {
             kinds: Some(vec![1]),
-            limit: Some(100),
+            limit: Some(10),
             ..Default::default()
         }
         .relay_subscription();
         pool.subscribe(filter).expect("Failed to subscribe");
         let mut events = vec![];
+        tokio::task::spawn(async move {
+            while let Some(event) = pool.note_channel.recv().await {
+                debug!("NN {}", event.0);
+            }
+        });
         while let Some(event) = pool.event_channel.recv().await {
             if let RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, subscription_id)) = event
             {
                 events.push(subscription_id);
-                println!("EOSE");
-                if events.len() == 4 {
+                debug!("EOSE");
+                if events.len() == 5 {
                     break;
                 }
             }
         }
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5);
     }
 }
 
@@ -198,24 +214,27 @@ mod tests {
         .expect("Failed to create pool");
         let filter = NostrSubscription {
             kinds: Some(vec![1]),
-            limit: Some(100),
+            limit: Some(10),
             ..Default::default()
         }
         .relay_subscription();
         pool.subscribe(filter).expect("Failed to subscribe");
         let mut events = vec![];
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some(event) = pool.note_channel.recv().await {
+                console_log!("NN {}", event.0);
+            }
+        });
         while let Some(event) = pool.event_channel.recv().await {
-            match event {
-                RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, subscription_id)) => {
-                    events.push(subscription_id);
-                    console_log!("EOSE");
-                    if events.len() == 4 {
-                        break;
-                    }
+            if let RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, subscription_id)) = event
+            {
+                events.push(subscription_id);
+                console_log!("EOSE");
+                if events.len() == 8 {
+                    break;
                 }
-                _ => (),
             }
         }
-        assert_eq!(events.len(), 4);
+        assert!(events.len() > 5);
     }
 }

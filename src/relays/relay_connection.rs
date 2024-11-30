@@ -106,6 +106,9 @@ mod tests {
         let mut finished = String::new();
         while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
             match RelayEvent::try_from(event) {
+                Ok(RelayEvent::NewNote(NoteEvent(_, _, _))) => {
+                    debug!("New note");
+                }
                 Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, id))) => {
                     debug!("End of subscription: {}", id);
                     finished = id;
@@ -216,16 +219,8 @@ mod tests {
             ..Default::default()
         }
         .relay_subscription();
-        relay
-            .writer
-            .send(WebSocketMessage::Text(
-                SendNoteEvent(RelayEventTag::EVENT, signed_note).into(),
-            ))
-            .await?;
-        relay
-            .writer
-            .send(WebSocketMessage::Text(filter.into()))
-            .await?;
+        relay.send_note(signed_note.clone()).await?;
+        relay.subscribe(filter).await?;
         let mut collected_notes = vec![];
         while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
             match RelayEvent::try_from(event) {
@@ -234,6 +229,9 @@ mod tests {
                 }
                 Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, _))) => {
                     break;
+                }
+                Err(_e) => {
+                    // break;
                 }
                 _ => (),
             }

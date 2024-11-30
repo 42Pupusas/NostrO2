@@ -16,38 +16,6 @@ pub struct UserKeys {
 }
 
 impl UserKeys {
-    fn new_secp256k1_secret_key() -> SecretKey {
-        let mut rng = thread_rng();
-        // Generate a random 256-bit integer as the private key
-        let private_key: [u8; 32] = rng.gen();
-        // Convert the private key to a secp256k1 SecretKey object
-        let secret_key = SecretKey::from_slice(&private_key).unwrap();
-        // Return the private key in hexadecimal format
-        secret_key
-    }
-    pub fn get_shared_point(&self, public_key_string: &String) -> anyhow::Result<[u8; 32]> {
-        let hex_pk = Self::hex_decode(public_key_string);
-        let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
-        let public_key = secp256k1::PublicKey::from_x_only_public_key(
-            x_only_public_key,
-            secp256k1::Parity::Even,
-        );
-        let mut ssp = secp256k1::ecdh::shared_secret_point(&public_key, &self.keypair.secret_key())
-            .as_slice()
-            .to_owned();
-        ssp.resize(32, 0); // toss the Y part
-        Ok(ssp.try_into().unwrap())
-    }
-    fn hex_decode(hex_string: &str) -> Vec<u8> {
-        hex_string
-            .as_bytes()
-            .chunks(2)
-            .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
-            .collect()
-    }
-    fn hex_encode(bytes: Vec<u8>) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
-    }
     pub fn new(private_key: &str) -> anyhow::Result<Self> {
         // Check if the private key starts with "nsec"
         if private_key.starts_with("nsec") {
@@ -65,7 +33,6 @@ impl UserKeys {
         // Create and return UserKeys
         Ok(Self::create_user_keys(secret_key, false))
     }
-
     fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Self {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &secret_key);
@@ -139,6 +106,19 @@ impl UserKeys {
         signed_note
     }
 
+    pub fn get_shared_point(&self, public_key_string: &String) -> anyhow::Result<[u8; 32]> {
+        let hex_pk = Self::hex_decode(public_key_string);
+        let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
+        let public_key = secp256k1::PublicKey::from_x_only_public_key(
+            x_only_public_key,
+            secp256k1::Parity::Even,
+        );
+        let mut ssp = secp256k1::ecdh::shared_secret_point(&public_key, &self.keypair.secret_key())
+            .as_slice()
+            .to_owned();
+        ssp.resize(32, 0); // toss the Y part
+        Ok(ssp.try_into().unwrap())
+    }
     pub fn encrypt_nip_04_plaintext(
         &self,
         plaintext: String,
@@ -271,6 +251,25 @@ impl UserKeys {
             true => Ok(Self::new_extractable(&secret_key)?),
             false => Ok(Self::new(&secret_key)?),
         }
+    }
+    fn new_secp256k1_secret_key() -> SecretKey {
+        let mut rng = thread_rng();
+        // Generate a random 256-bit integer as the private key
+        let private_key: [u8; 32] = rng.gen();
+        // Convert the private key to a secp256k1 SecretKey object
+        let secret_key = SecretKey::from_slice(&private_key).unwrap();
+        // Return the private key in hexadecimal format
+        secret_key
+    }
+    fn hex_decode(hex_string: &str) -> Vec<u8> {
+        hex_string
+            .as_bytes()
+            .chunks(2)
+            .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
+            .collect()
+    }
+    fn hex_encode(bytes: Vec<u8>) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }
 
