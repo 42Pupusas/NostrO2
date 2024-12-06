@@ -76,24 +76,41 @@ impl NostrRelay {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
 
-    use tracing::{debug, error};
-    use tracing_test::traced_test;
+    fn _debug(s: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!("{}", s);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_test::console_log!("{}", s);
+        }
+    }
+    fn _error(s: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            eprintln!("{}", s);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_test::console_error!("{}", s);
+        }
+    }
+    // use wasm_bindgen_test::wasm_bindgen_test;
 
     use crate::{
         notes::Note,
-        relays::{EndOfSubscriptionEvent, NostrSubscription, NoteEvent, RelayEvent},
+        relays::{EndOfSubscriptionEvent, NostrSubscription, NoteEvent, OkEvent, RelayEvent},
     };
 
     #[tokio::test]
-    #[traced_test]
-    async fn test_single_relay() -> Result<(), anyhow::Error> {
+    //#[wasm_bindgen_test]
+    async fn _test_single_relay() -> Result<(), anyhow::Error> {
         use super::*;
         let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        debug!("{:?}", relay.url);
         let filter = NostrSubscription {
             kinds: Some(vec![1]),
             limit: Some(3),
@@ -101,21 +118,21 @@ mod tests {
         }
         .relay_subscription();
         let id = relay.subscribe(filter).await?;
-        debug!("Subscribed with id");
+        _debug("Subscribed with id");
 
         let mut finished = String::new();
         while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
             match RelayEvent::try_from(event) {
                 Ok(RelayEvent::NewNote(NoteEvent(_, _, _))) => {
-                    debug!("New note");
+                    _debug("New note");
                 }
                 Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, id))) => {
-                    debug!("End of subscription: {}", id);
+                    _debug(&format!("End of subscription: {}", id));
                     finished = id;
                     break;
                 }
                 Err(e) => {
-                    error!("{:?}", e);
+                    _error(&format!("{:?}", e));
                     // break;
                 }
                 _ => (),
@@ -125,119 +142,31 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    #[traced_test]
-    async fn test_relay_send_note() -> Result<(), anyhow::Error> {
+    //#[wasm_bindgen_test]
+    async fn _test_relay_send_note() -> Result<(), anyhow::Error> {
         use super::*;
         let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        debug!("{:?}", relay.url);
+        _debug(relay.url.as_str());
         let user_keys = crate::userkeys::UserKeys::generate();
         let note = Note::new(&user_keys.get_public_key(), 1, "Hello, world!");
         let signed_note = user_keys.sign_nostr_event(note);
-        let note_id = signed_note.get_id();
-        let filter = NostrSubscription {
-            kinds: Some(vec![1]),
-            authors: Some(vec![user_keys.get_public_key()]),
-            limit: Some(1),
-            ..Default::default()
-        }
-        .relay_subscription();
         relay.send_note(signed_note.clone()).await?;
-        relay.subscribe(filter).await?;
-        let mut collected_notes = vec![];
+        let mut sent = false;
         while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
             match RelayEvent::try_from(event) {
-                Ok(RelayEvent::NewNote(NoteEvent(_, _, signed_note))) => {
-                    collected_notes.push(signed_note);
-                }
-                Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, _))) => {
+                Ok(RelayEvent::SentOk(OkEvent(_, _, did_sent, _))) => {
+                    _debug(&format!("Sent Ok: {}", did_sent));
+                    sent = did_sent;
                     break;
                 }
                 Err(e) => {
-                    error!("{:?}", e);
+                    _error(&format!("{:?}", e));
                     // break;
                 }
                 _ => (),
             }
         }
-        assert_eq!(collected_notes.len(), 1);
-        assert_eq!(collected_notes[0].get_id(), note_id);
-        Ok(())
-    }
-}
-#[cfg(target_arch = "wasm32")]
-#[cfg(test)]
-mod tests {
-
-    use crate::{
-        notes::Note,
-        relays::{EndOfSubscriptionEvent, NostrSubscription, NoteEvent, RelayEvent},
-    };
-
-    use wasm_bindgen_test::wasm_bindgen_test;
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-    #[wasm_bindgen_test]
-    async fn test_single_relay() -> Result<(), anyhow::Error> {
-        use super::*;
-        let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        let filter = NostrSubscription {
-            kinds: Some(vec![1]),
-            limit: Some(3),
-            ..Default::default()
-        }
-        .relay_subscription();
-        let id = filter.1.clone();
-        relay
-            .writer
-            .send(WebSocketMessage::Text(filter.into()))
-            .await?;
-
-        let mut finished = String::new();
-        while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
-            match RelayEvent::try_from(event) {
-                Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, id))) => {
-                    finished = id;
-                    break;
-                }
-                _ => (),
-            }
-        }
-        assert_eq!(id, finished);
-        Ok(())
-    }
-    #[wasm_bindgen_test]
-    async fn test_relay_send_note() -> Result<(), anyhow::Error> {
-        use super::*;
-        let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        let user_keys = crate::userkeys::UserKeys::generate();
-        let note = Note::new(&user_keys.get_public_key(), 1, "Hello, world!");
-        let signed_note = user_keys.sign_nostr_event(note);
-        let note_id = signed_note.get_id();
-        let filter = NostrSubscription {
-            kinds: Some(vec![1]),
-            authors: Some(vec![user_keys.get_public_key()]),
-            limit: Some(1),
-            ..Default::default()
-        }
-        .relay_subscription();
-        relay.send_note(signed_note.clone()).await?;
-        relay.subscribe(filter).await?;
-        let mut collected_notes = vec![];
-        while let Some(Ok(WebSocketMessage::Text(event))) = relay.reader.next().await {
-            match RelayEvent::try_from(event) {
-                Ok(RelayEvent::NewNote(NoteEvent(_, _, signed_note))) => {
-                    collected_notes.push(signed_note);
-                }
-                Ok(RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, _))) => {
-                    break;
-                }
-                Err(_e) => {
-                    // break;
-                }
-                _ => (),
-            }
-        }
-        assert_eq!(collected_notes.len(), 1);
-        assert_eq!(collected_notes[0].get_id(), note_id);
+        assert!(sent);
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.1.34"
+version = "0.1.35"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
@@ -14,10 +14,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Error handling
-anyhow = "1.0.93"
+anyhow = "1.0.94"
 
 # JSON
-serde = { version = "1.0.133", features = ["derive"] }
+serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 
 # Logging
@@ -46,23 +46,24 @@ chrono = "0.4.38"
 
 # Native platform TCP
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.41.0", features = ["macros", "rt", "sync"] }
+tokio = { version = "1.42.0", features = ["macros", "rt", "sync"] }
 tokio-tungstenite = { version = "0.24.0", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23.19", features = ["ring", "std", "tls12"], default-features = false }
 
 # Web Browser TCp
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ring = { version = "0.17.8", features = ["wasm32_unknown_unknown_js"] }
-tokio = { version = "1.41.0", features = ["macros", "sync"] }
+tokio = { version = "1.42.0", features = ["macros", "sync"] }
 tokio-tungstenite-wasm = { version = "0.3.1", features = ["rustls-tls-webpki-roots"] }
 serde-wasm-bindgen = "0.6.5"
-wasm-bindgen-futures = "0.4.45"
 wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"
 
 # Dependiecies for testing only
 [dev-dependencies]
 tokio = { version = "1.41.0", features = ["test-util", "macros", "rt", "sync"] }
 wasm-bindgen-test = "0.3.45"
+wasm-bindgen-futures = "0.4.45"
 tracing-test = "0.2.5"
 
 
