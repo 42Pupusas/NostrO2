@@ -3,17 +3,18 @@ use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
+use secp256k1::rand::rngs::OsRng;
+use secp256k1::rand::RngCore;
 use sha2::Sha256;
 
-use crate::userkeys::UserKeys;
+use crate::keypair::NostrKeypair;
 
 pub struct Nip44 {
-    private_key: UserKeys,
+    private_key: NostrKeypair,
     peer_pubkey: String,
 }
 impl Nip44 {
-    pub fn new(private_key: UserKeys, peer_pubkey: String) -> Self {
+    pub fn new(private_key: NostrKeypair, peer_pubkey: String) -> Self {
         Nip44 {
             private_key,
             peer_pubkey,
@@ -87,7 +88,7 @@ impl Nip44 {
 
     fn generate_nonce() -> [u8; 12] {
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        OsRng.try_fill_bytes(&mut nonce).unwrap();
         nonce
     }
 
@@ -132,15 +133,15 @@ mod tests {
 
     #[test]
     fn test_nip_44() {
-        let user_keys_1 = crate::userkeys::UserKeys::generate_extractable();
-        let user_keys_2 = crate::userkeys::UserKeys::generate_extractable();
+        let user_keys_1 = crate::keypair::NostrKeypair::generate(true);
+        let user_keys_2 = crate::keypair::NostrKeypair::generate(true);
         let nip_44_1 = Nip44 {
             private_key: user_keys_1.clone(),
-            peer_pubkey: user_keys_2.get_public_key(),
+            peer_pubkey: user_keys_2.public_key(),
         };
         let nip_44_2 = Nip44 {
             private_key: user_keys_2,
-            peer_pubkey: user_keys_1.get_public_key(),
+            peer_pubkey: user_keys_1.public_key(),
         };
         let plaintext = "Hello, World!".to_string();
         let cyphertext = nip_44_1.nip_44_encrypt(plaintext.clone()).unwrap();

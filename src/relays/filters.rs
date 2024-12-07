@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use secp256k1::rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 
 use super::SubscribeEvent;
@@ -49,7 +50,8 @@ impl NostrSubscription {
         }
     }
     pub fn relay_subscription(&self) -> super::SubscribeEvent {
-        let random_id = format!("{:x}", rand::random::<u64>());
+        let random_bits: [u8; 16] = thread_rng().gen();
+        let random_id = random_bits.iter().map(|b| format!("{:02x}", b)).collect::<String>();
         SubscribeEvent(
             super::RelayEventTag::REQ,
             random_id,

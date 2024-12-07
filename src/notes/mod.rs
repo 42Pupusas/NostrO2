@@ -1,4 +1,5 @@
-mod signed;
-mod unsigned;
-pub use signed::SignedNote;
-pub use unsigned::Note;
+mod note;
+mod tags;
+pub use note::*;
+pub use tags::*;
+

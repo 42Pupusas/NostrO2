@@ -1,15 +1,16 @@
 use base64::{engine::general_purpose, Engine as _};
 use libaes::Cipher;
+use secp256k1::rand::{thread_rng, Rng};
 
-use crate::userkeys::UserKeys;
+use crate::keypair::NostrKeypair;
 
 pub struct Nip04 {
-    private_key: UserKeys,
+    private_key: NostrKeypair,
     peer_pubkey: String,
 }
 
 impl Nip04 {
-    pub fn new(private_key: UserKeys, peer_pubkey: String) -> Self {
+    pub fn new(private_key: NostrKeypair, peer_pubkey: String) -> Self {
         Nip04 {
             private_key,
             peer_pubkey,
@@ -17,7 +18,7 @@ impl Nip04 {
     }
     pub fn encrypt(&self, plaintext: String) -> anyhow::Result<String> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
-        let iv = rand::random::<[u8; 16]>();
+        let iv = thread_rng().gen::<[u8; 16]>();
         let mut cipher = Cipher::new_256(&shared_secret);
         cipher.set_auto_padding(true);
         let cyphertext = cipher.cbc_encrypt(&iv, plaintext.as_bytes());
@@ -42,7 +43,7 @@ impl Nip04 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{nips::nip_46::Nip46Request, notes::SignedNote, userkeys::UserKeys};
+    use crate::{nips::nip_46::Nip46Request, notes::NostrNote, keypair::NostrKeypair};
 
     use super::*;
 
@@ -50,7 +51,7 @@ mod tests {
     fn second_test() {
         let cyphertext = "PXvfOGMyeWnkWIuuUEEvM8VvliPmf6OGiBT7SFXoWPloW9Cm+DURd9hf0mUrc6puB4jMfMYonJ+gsIKJJ1xx3nTtf9DW8IGylCl9o1LDOjZi71G3rqoJELptQxaQTr4iVACOpOC8/lVyBQtMXwcg9FkONbbbLJXxVXXPzFmXcSQfByD/+iIak68AlKnxJp9abHJwLIlgOeR+D49VCObnVT6LRKeYbRBJ0i2e+RVA0fA=?iv=t+eLXPQHfnaFfslDoi7mzg==";
         let public_key = "62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba";
-        let my_keys = UserKeys::new_extractable(
+        let my_keys = NostrKeypair::new_extractable(
             "341fe1a3b23d0f1660a70e0395fcd7d09a73ff041a4a2cf4d0760b721eb14c55",
         )
         .expect("");
@@ -82,8 +83,8 @@ mod tests {
     "sig": "9a712ba5ac6d4069f7e6a0029e739ea6754d43b5ee4d19e35123e3e1e15e939ad767e025d6cf3643dfbb0787913092d81999544b2d6de29a12590219b5b190cb"
     }
         "#;
-        let signed_note = serde_json::from_str::<SignedNote>(note_str).unwrap();
-        let my_keys = UserKeys::new_extractable(
+        let signed_note = serde_json::from_str::<NostrNote>(note_str).unwrap();
+        let my_keys = NostrKeypair::new_extractable(
             "341fe1a3b23d0f1660a70e0395fcd7d09a73ff041a4a2cf4d0760b721eb14c55",
         )
         .expect("");

@@ -1,111 +1,84 @@
-use bip39::Language;
-use sha2::{Digest, Sha256};
-
-use rand::{thread_rng, Rng};
-use secp256k1::{Keypair, Secp256k1, SecretKey};
-
-use crate::nips::{Nip04, Nip44};
-
-use crate::notes::{Note, SignedNote};
 use bech32::{Bech32, Hrp};
+use bip39::Language;
+
+use secp256k1::{rand::rngs::OsRng, Keypair, Secp256k1};
+
+use crate::{nips::{Nip04, Nip44}, notes::NostrNote};
 
 #[derive(Debug, PartialEq, Clone, Eq)]
-pub struct UserKeys {
+pub struct NostrKeypair {
     keypair: Keypair,
     extractable: bool,
 }
 
-impl UserKeys {
+impl NostrKeypair {
     pub fn new(private_key: &str) -> anyhow::Result<Self> {
-        // Check if the private key starts with "nsec"
-        if private_key.starts_with("nsec") {
-            let (hrp, data) = bech32::decode(&private_key)?;
-            if hrp.to_string() != "nsec" {
-                anyhow::bail!("Invalid nsec prefix");
+        let secp = Secp256k1::signing_only();
+        let keypair = match private_key.starts_with("nsec") {
+            true => {
+                let (hrp, data) = bech32::decode(&private_key)?;
+                if hrp.to_string() != "nsec" {
+                    anyhow::bail!("Invalid nsec prefix");
+                }
+                Keypair::from_seckey_slice(&secp, &data)
+                    .map_err(|_| anyhow::anyhow!("Invalid private key"))?
             }
-            let secret_key = SecretKey::from_slice(&data)?;
-            return Ok(Self::create_user_keys(secret_key, false));
-        }
-
-        // Decode the private key as hex
-        let decoded_private_key = Self::hex_decode(&private_key.to_string());
-        let secret_key = SecretKey::from_slice(&decoded_private_key)?;
-        // Create and return UserKeys
-        Ok(Self::create_user_keys(secret_key, false))
+            false => Keypair::from_seckey_str(&secp, &private_key)
+                .map_err(|_| anyhow::anyhow!("Invalid private key"))?,
+        };
+        Ok(Self {
+            keypair,
+            extractable: false,
+        })
     }
-    fn create_user_keys(secret_key: SecretKey, extractable: bool) -> Self {
-        let secp = Secp256k1::new();
-        let keypair = Keypair::from_secret_key(&secp, &secret_key);
+    pub fn new_extractable(private_key: &str) -> anyhow::Result<Self> {
+        let secp = Secp256k1::signing_only();
+        let keypair = match private_key.starts_with("nsec") {
+            true => {
+                let (hrp, data) = bech32::decode(&private_key)?;
+                if hrp.to_string() != "nsec" {
+                    anyhow::bail!("Invalid nsec prefix");
+                }
+                Keypair::from_seckey_slice(&secp, &data)
+                    .map_err(|_| anyhow::anyhow!("Invalid private key"))?
+            }
+            false => Keypair::from_seckey_str(&secp, &private_key)
+                .map_err(|_| anyhow::anyhow!("Invalid private key"))?,
+        };
+        Ok(Self {
+            keypair,
+            extractable: false,
+        })
+    }
+    pub fn generate(extractable: bool) -> Self {
+        let keypair = Keypair::new(&Secp256k1::signing_only(), &mut OsRng);
         Self {
             keypair,
             extractable,
         }
     }
-
-    pub fn new_extractable(private_key: &str) -> anyhow::Result<Self> {
-        // Check if the private key starts with "nsec"
-        if private_key.starts_with("nsec") {
-            let (hrp, data) = bech32::decode(&private_key)?;
-            if hrp.to_string() != "nsec" {
-                anyhow::bail!("Invalid nsec prefix");
-            }
-            let secret_key = SecretKey::from_slice(&data)?;
-            return Ok(Self::create_user_keys(secret_key, true));
-        }
-
-        // Decode the private key as hex
-        let decoded_private_key = Self::hex_decode(&private_key.to_string());
-        let secret_key = SecretKey::from_slice(&decoded_private_key)?;
-        // Create and return UserKeys
-        Ok(Self::create_user_keys(secret_key, true))
-    }
-
-    pub fn generate() -> Self {
-        let new_secret_key = Self::new_secp256k1_secret_key();
-        Self::create_user_keys(new_secret_key, false)
-    }
-
-    pub fn generate_extractable() -> Self {
-        let new_secret_key = Self::new_secp256k1_secret_key();
-        Self::create_user_keys(new_secret_key, true)
-    }
-
-    pub fn get_public_key(&self) -> String {
+    pub fn public_key(&self) -> String {
         return self.keypair.public_key().x_only_public_key().0.to_string();
     }
-
-    pub fn get_raw_public_key(&self) -> [u8; 32] {
+    pub fn public_key_slice(&self) -> [u8; 32] {
         return self.keypair.public_key().x_only_public_key().0.serialize();
     }
-
-    pub fn get_npub(&self) -> String {
+    pub fn npub(&self) -> String {
         let hrp = Hrp::parse("npub").expect("valid hrp");
         let pk_data = self.keypair.public_key().x_only_public_key().0.serialize();
         let string = bech32::encode::<Bech32>(hrp, &pk_data).expect("failed to encode string");
         string
     }
 
-    fn hash_id_and_sign(&self, note: &Note) -> (String, String) {
-        let note_hash = note.serialize_for_nostr();
-        let mut hasher = Sha256::new();
-        hasher.update(note_hash);
-        let hash_result = hasher.finalize();
-        let id_bytes: &[u8] = hash_result.as_slice();
-        let id = Self::hex_encode(hash_result.to_vec());
-        let secp = Secp256k1::new();
-        let sig = secp
-            .sign_schnorr_no_aux_rand(id_bytes, &self.keypair)
-            .to_string();
-        (id, sig)
+    pub fn sign_nostr_event(&self, note: &mut NostrNote) {
+        if note.serialize_id().is_ok() {
+            let secp = Secp256k1::signing_only();
+            let sig = secp
+                .sign_schnorr_no_aux_rand(note.id_bytes().as_ref().unwrap(), &self.keypair)
+                .to_string();
+            note.sig = Some(sig);
+        }
     }
-
-    pub fn sign_nostr_event(&self, note: Note) -> SignedNote {
-        // Serialize the event as JSON
-        let (id, sig) = self.hash_id_and_sign(&note);
-        let signed_note = SignedNote::new(note, id, sig);
-        signed_note
-    }
-
     pub fn get_shared_point(&self, public_key_string: &String) -> anyhow::Result<[u8; 32]> {
         let hex_pk = Self::hex_decode(public_key_string);
         let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
@@ -145,7 +118,6 @@ impl UserKeys {
         let nip_44 = Nip44::new(self.clone(), pubkey);
         nip_44.nip_44_encrypt(plaintext)
     }
-
     pub fn decrypt_nip_44_plaintext(
         &self,
         cyphertext: String,
@@ -154,55 +126,47 @@ impl UserKeys {
         let nip_44 = Nip44::new(self.clone(), pubkey);
         nip_44.nip_44_decrypt(cyphertext)
     }
-
     pub fn sign_nip_04_encrypted(
         &self,
-        mut note: Note,
+        note: &mut NostrNote,
         pubkey: String,
-    ) -> anyhow::Result<SignedNote> {
-        note.add_pubkey_tag(&pubkey);
+    ) -> anyhow::Result<()> {
+        note.tags.add_pubkey_tag(&pubkey);
         let encrypted_content = self.encrypt_nip_04_plaintext(note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
-        let (id, sig) = self.hash_id_and_sign(&note);
-        let signed_note = SignedNote::new(note, id, sig);
-        Ok(signed_note)
+        self.sign_nostr_event(note);
+        Ok(())
     }
-
-    pub fn decrypt_nip_04_content(&self, signed_note: &SignedNote) -> anyhow::Result<String> {
-        let cyphertext = signed_note.get_content().to_string();
-        let public_key_string = signed_note.get_pubkey().to_string();
+    pub fn decrypt_nip_04_content(&self, signed_note: &NostrNote) -> anyhow::Result<String> {
+        let cyphertext = signed_note.content.to_string();
+        let public_key_string = signed_note.pubkey.to_string();
 
         let plaintext = self.decrypt_nip_04_plaintext(cyphertext, public_key_string)?;
         Ok(plaintext)
     }
-
     pub fn sign_nip_44_encrypted(
         &self,
-        mut note: Note,
+        note: &mut NostrNote,
         pubkey: String,
-    ) -> anyhow::Result<SignedNote> {
-        note.add_pubkey_tag(&pubkey);
+    ) -> anyhow::Result<()> {
+        note.tags.add_pubkey_tag(&pubkey);
         let encrypted_content = self.encrypt_nip_44_plaintext(note.content.to_string(), pubkey)?;
         note.content = encrypted_content;
-        let (id, sig) = self.hash_id_and_sign(&note);
-        let signed_note = SignedNote::new(note, id, sig);
-        Ok(signed_note)
+        self.sign_nostr_event(note);
+        Ok(())
     }
-
-    pub fn decrypt_nip_44_content(&self, signed_note: &SignedNote) -> anyhow::Result<String> {
-        let cyphertext = signed_note.get_content().to_string();
-        let public_key_string = signed_note.get_pubkey().to_string();
+    pub fn decrypt_nip_44_content(&self, signed_note: &NostrNote) -> anyhow::Result<String> {
+        let cyphertext = signed_note.content.to_string();
+        let public_key_string = signed_note.pubkey.to_string();
         let plaintext = self.decrypt_nip_44_plaintext(cyphertext, public_key_string)?;
         Ok(plaintext)
     }
-
     pub fn get_secret_key(&self) -> [u8; 32] {
         if !self.extractable {
             return [0u8; 32];
         }
         self.keypair.secret_key().secret_bytes()
     }
-
     pub fn get_nsec(&self) -> String {
         if !self.extractable {
             return String::from("Not extractable");
@@ -212,7 +176,6 @@ impl UserKeys {
         let string = bech32::encode::<Bech32>(hrp, &secret_key).expect("failed to encode string");
         string
     }
-
     pub fn get_mnemonic_phrase(&self) -> String {
         if !self.extractable {
             return String::from("Not extractable");
@@ -221,7 +184,6 @@ impl UserKeys {
         let mnemonic = bip39::Mnemonic::from_entropy(&secret_key).unwrap();
         mnemonic.words().collect::<Vec<&str>>().join(" ")
     }
-
     pub fn get_mnemonic_spanish(&self) -> String {
         if !self.extractable {
             return String::from("Not extractable");
@@ -230,7 +192,6 @@ impl UserKeys {
         let mnemonic = bip39::Mnemonic::from_entropy_in(Language::Spanish, &secret_key).unwrap();
         mnemonic.words().collect::<Vec<&str>>().join(" ")
     }
-
     pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> anyhow::Result<Self> {
         let english_parse = bip39::Mnemonic::parse_in(Language::English, mnemonic);
         let spanish_parse = bip39::Mnemonic::parse_in(Language::Spanish, mnemonic);
@@ -252,24 +213,12 @@ impl UserKeys {
             false => Ok(Self::new(&secret_key)?),
         }
     }
-    fn new_secp256k1_secret_key() -> SecretKey {
-        let mut rng = thread_rng();
-        // Generate a random 256-bit integer as the private key
-        let private_key: [u8; 32] = rng.gen();
-        // Convert the private key to a secp256k1 SecretKey object
-        let secret_key = SecretKey::from_slice(&private_key).unwrap();
-        // Return the private key in hexadecimal format
-        secret_key
-    }
     fn hex_decode(hex_string: &str) -> Vec<u8> {
         hex_string
             .as_bytes()
             .chunks(2)
             .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
             .collect()
-    }
-    fn hex_encode(bytes: Vec<u8>) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }
 
@@ -280,56 +229,56 @@ mod tests {
     #[test]
     fn test_user_keys() {
         let user_keys =
-            UserKeys::new("a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8")
+            NostrKeypair::new("a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8")
                 .unwrap();
-        let public_key = user_keys.get_public_key();
+        let public_key = user_keys.public_key();
         assert_eq!(
             public_key,
             "689403d3808274889e371cfe53c2d78eb05743a964cc60d3b2e55824e8fe740a"
         );
-        let npub = user_keys.get_npub();
+        let npub = user_keys.npub();
         assert_eq!(
             npub,
             "npub1dz2q85uqsf6g383hrnl98skh36c9wsafvnxxp5aju4vzf687ws9q7zr8df"
         );
         let nsec_key =
-            UserKeys::new("nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53")
+            NostrKeypair::new("nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53")
                 .unwrap();
-        let nsec_pubkey = nsec_key.get_public_key();
-        let nsec_npub = nsec_key.get_npub();
+        let nsec_pubkey = nsec_key.public_key();
+        let nsec_npub = nsec_key.npub();
         assert_eq!(nsec_pubkey, public_key);
         assert_eq!(nsec_npub, npub);
     }
 
     #[test]
     fn test_mnemonic() {
-        let user_keys = UserKeys::generate_extractable();
+        let user_keys = NostrKeypair::generate(true);
         let mnemonic = user_keys.get_mnemonic_phrase();
         let spanish_mnemonic = user_keys.get_mnemonic_spanish();
         assert_eq!(
-            UserKeys::parse_mnemonic(&mnemonic, false)
+            NostrKeypair::parse_mnemonic(&mnemonic, false)
                 .unwrap()
-                .get_public_key(),
-            user_keys.get_public_key()
+                .public_key(),
+            user_keys.public_key()
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&spanish_mnemonic, false)
+            NostrKeypair::parse_mnemonic(&spanish_mnemonic, false)
                 .unwrap()
-                .get_public_key(),
-            user_keys.get_public_key()
+                .public_key(),
+            user_keys.public_key()
         );
     }
 
     #[test]
     fn test_extractable() {
-        let user_keys = UserKeys::generate_extractable();
-        let safe_user_keys = UserKeys::generate();
-        let public_key = user_keys.get_public_key();
+        let user_keys = NostrKeypair::generate(true);
+        let safe_user_keys = NostrKeypair::generate(false);
+        let public_key = user_keys.public_key();
         let nsec = user_keys.get_nsec();
         let mnemonic = user_keys.get_mnemonic_phrase();
         let spanish_mnemonic = user_keys.get_mnemonic_spanish();
         assert_eq!(
-            UserKeys::new_extractable(&nsec).unwrap().get_public_key(),
+            NostrKeypair::new_extractable(&nsec).unwrap().public_key(),
             public_key
         );
         assert_eq!(safe_user_keys.get_nsec(), "Not extractable".to_string());
@@ -338,59 +287,81 @@ mod tests {
             "Not extractable".to_string()
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&mnemonic, true)
+            NostrKeypair::parse_mnemonic(&mnemonic, true)
                 .unwrap()
-                .get_public_key(),
+                .public_key(),
             public_key
         );
         assert_eq!(
-            UserKeys::parse_mnemonic(&spanish_mnemonic, true)
+            NostrKeypair::parse_mnemonic(&spanish_mnemonic, true)
                 .unwrap()
-                .get_public_key(),
+                .public_key(),
             public_key
         );
     }
 
     #[test]
     fn test_encryption() {
-        let user_keys = UserKeys::generate();
-        let client_keys = UserKeys::generate();
-        let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_note = user_keys
-            .sign_nip_04_encrypted(note_request, client_keys.get_public_key())
+        let user_keys = NostrKeypair::generate(false);
+        let client_keys = NostrKeypair::generate(false);
+        let mut note_request = NostrNote {
+            pubkey: user_keys.public_key(),
+            kind: 24133,
+            content: "test".to_string(),
+            ..Default::default()
+        };
+        user_keys
+            .sign_nip_04_encrypted(&mut note_request, client_keys.public_key())
             .unwrap();
-        let decrypted = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
+        let decrypted = client_keys.decrypt_nip_04_content(&note_request).unwrap();
         assert_eq!(decrypted, "test");
 
-        let nip_44_note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_nip_44_note = user_keys
-            .sign_nip_44_encrypted(nip_44_note_request, client_keys.get_public_key())
+        let mut nip_44_note_request = NostrNote {
+            pubkey: user_keys.public_key(),
+            kind: 24133,
+            content: "test".to_string(),
+            ..Default::default()
+        };
+        user_keys
+            .sign_nip_44_encrypted(&mut nip_44_note_request, client_keys.public_key())
             .expect("");
         let decrypted_nip_44 = client_keys
-            .decrypt_nip_44_content(&signed_nip_44_note)
+            .decrypt_nip_44_content(&nip_44_note_request)
             .expect("");
         assert_eq!(decrypted_nip_44, "test");
     }
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen_test]
     fn test_encryption_wasm() {
-        let user_keys = UserKeys::generate();
-        let client_keys = UserKeys::generate();
-        let note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_note = user_keys
-            .sign_nip_04_encrypted(note_request, client_keys.get_public_key())
+        let user_keys = NostrKeypair::generate(false);
+        let client_keys = NostrKeypair::generate(false);
+        let mut note_request = NostrNote {
+            pubkey: user_keys.public_key(),
+            kind: 24133,
+            content: "test".to_string(),
+            ..Default::default()
+        };
+        user_keys
+            .sign_nip_04_encrypted(&mut note_request, client_keys.public_key())
             .unwrap();
-        let decrypted = client_keys.decrypt_nip_04_content(&signed_note).unwrap();
+        let decrypted = client_keys.decrypt_nip_04_content(&note_request).unwrap();
         assert_eq!(decrypted, "test");
 
-        let nip_44_note_request = Note::new(&user_keys.get_public_key(), 24133, "test");
-        let signed_nip_44_note = user_keys
-            .sign_nip_44_encrypted(nip_44_note_request, client_keys.get_public_key())
+        let mut nip_44_note_request = NostrNote {
+            pubkey: user_keys.public_key(),
+            kind: 24133,
+            content: "test".to_string(),
+            ..Default::default()
+        };
+        user_keys
+            .sign_nip_44_encrypted(&mut nip_44_note_request, client_keys.public_key())
             .expect("");
         let decrypted_nip_44 = client_keys
-            .decrypt_nip_44_content(&signed_nip_44_note)
+            .decrypt_nip_44_content(&nip_44_note_request)
             .expect("");
         assert_eq!(decrypted_nip_44, "test");
     }

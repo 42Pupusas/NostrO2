@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::notes::SignedNote;
+use crate::notes::NostrNote;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -14,7 +14,7 @@ pub enum RelayEventTag {
 }
 // FROM RELAY TO CLIENT 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct NoteEvent(pub RelayEventTag, pub String, pub SignedNote);
+pub struct NoteEvent(pub RelayEventTag, pub String, pub NostrNote);
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OkEvent(pub RelayEventTag, pub String, pub bool, pub String);
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -32,6 +32,8 @@ pub enum RelayEvent {
     EndOfSubscription(EndOfSubscriptionEvent),
     ClosedSubscription(SubscriptionClosedEvent),
     Notice(NoticeEvent),
+    Ping,
+    Close(String),
 }
 impl TryFrom<String> for RelayEvent {
     type Error = serde_json::Error;
@@ -55,7 +57,7 @@ impl Into<String> for SubscribeEvent {
     }
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SendNoteEvent(pub RelayEventTag, pub SignedNote);
+pub struct SendNoteEvent(pub RelayEventTag, pub NostrNote);
 impl Into<String> for SendNoteEvent {
     fn into(self) -> String {
         serde_json::to_string(&self).unwrap()
