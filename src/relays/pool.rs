@@ -1,20 +1,45 @@
+use super::relay_connection::{NostrWriter, RelayState};
+use crate::{
+    notes::NostrNote,
+    relays::{NostrRelay, NoteEvent, RelayEvent, SubscribeEvent},
+};
+use futures_util::StreamExt;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use futures_util::StreamExt;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     RwLock,
 };
 use tracing::error;
-use crate::{
-    notes::NostrNote,
-    relays::{NostrRelay, NoteEvent, RelayEvent, SubscribeEvent},
-};
-use super::relay_connection::{NostrWriter, RelayState};
 
-pub type PoolRelayBroadcaster = Vec<NostrWriter>;
+pub type RelayBroadcasterList = Arc<RwLock<Vec<NostrWriter>>>;
+#[derive(Clone)]
+pub struct PoolRelayBroadcaster(pub RelayBroadcasterList);
+impl PoolRelayBroadcaster {
+    pub async fn broadcast_note(&self, signed_note: NostrNote) -> anyhow::Result<()> {
+        let mut writers = self.0.write().await;
+        for writer in writers.iter_mut() {
+            writer.send_note(signed_note.clone()).await?;
+        }
+        Ok(())
+    }
+    pub async fn subscribe(&self, sub: SubscribeEvent) -> anyhow::Result<()> {
+        let mut writers = self.0.write().await;
+        for writer in writers.iter_mut() {
+            writer.subscribe(sub.clone()).await?;
+        }
+        Ok(())
+    }
+    pub async fn cancel_subscription(&self, sub_id: String) -> anyhow::Result<()> {
+        let mut writers = self.0.write().await;
+        for writer in writers.iter_mut() {
+            writer.unsubscribe(sub_id.clone()).await?;
+        }
+        Ok(())
+    }
+}
 pub type PoolRelayReceiver = UnboundedReceiver<(String, RelayEvent)>;
 pub type PoolRelaySender = UnboundedSender<(String, RelayEvent)>;
 
@@ -54,13 +79,14 @@ impl NostrRelayPool {
         let (event_tx, listener) = tokio::sync::mpsc::unbounded_channel();
         let library = NoteLibrary(Arc::new(RwLock::new(HashSet::new())));
         let relay_states = RelayTable(Arc::new(RwLock::new(HashMap::new())));
-        let mut writer = vec![];
+        let writer = PoolRelayBroadcaster(Arc::new(RwLock::new(vec![])));
         let mut tasks = vec![];
         for relay_url in urls {
             if let Ok(relay) = NostrRelay::new(&relay_url).await {
                 relay_states
                     .insert(relay_url.clone(), RelayState::Connected)
                     .await;
+                let mut writer = writer.0.write().await;
                 writer.push(relay.writer.clone());
                 let future = Self::process_relay_events(
                     library.clone(),
@@ -131,45 +157,6 @@ impl NostrRelayPool {
         }
         Err(anyhow::anyhow!("Relay closed"))
     }
-    pub fn broadcaster(&self) -> PoolRelayBroadcaster {
-        self.writer.clone()
-    }
-    pub async fn broadcast_note(&mut self, signed_note: NostrNote) -> anyhow::Result<()> {
-        let mut to_remove = vec![];
-        for (num, channel) in &mut self.writer.iter_mut().enumerate() {
-            if channel.send_note(signed_note.clone()).await.is_err() {
-                to_remove.push(num);
-            }
-        }
-        for num in to_remove {
-            self.writer.remove(num);
-        }
-        Ok(())
-    }
-    pub async fn subscribe(&mut self, sub: SubscribeEvent) -> anyhow::Result<()> {
-        let mut to_remove = vec![];
-        for (num, channel) in &mut self.writer.iter_mut().enumerate() {
-            if channel.subscribe(sub.clone()).await.is_err() {
-                to_remove.push(num);
-            }
-        }
-        for num in to_remove {
-            self.writer.remove(num);
-        }
-        Ok(())
-    }
-    pub async fn cancel_subscription(&mut self, sub_id: String) -> anyhow::Result<()> {
-        let mut to_remove = vec![];
-        for (num, channel) in &mut self.writer.iter_mut().enumerate() {
-            if channel.unsubscribe(sub_id.clone()).await.is_err() {
-                to_remove.push(num);
-            }
-        }
-        for num in to_remove {
-            self.writer.remove(num);
-        }
-        Ok(())
-    }
     pub fn close(mut self) -> anyhow::Result<()> {
         self.listener.close();
         Ok(())
@@ -204,7 +191,8 @@ mod tests {
             ..Default::default()
         }
         .relay_subscription();
-        pool.subscribe(filter.clone())
+        pool.writer
+            .subscribe(filter.clone())
             .await
             .expect("Failed to subscribe");
         let mut events = vec![];

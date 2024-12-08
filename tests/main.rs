@@ -52,11 +52,11 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
-        signed_note.tags.add_tag(NostrTag::Custom("t"), "test");
+        signed_note.tags.add_custom_tag(NostrTag::Custom("t"), "test");
         signed_note.tags.add_event_tag("adsfasdfadsfadsfasdfadfs");
         signed_note.tags.add_pubkey_tag("adsfasdfadsfadsfasdfadfs");
         user_key_pair.sign_nostr_event(&mut signed_note);
-        let t_tags = signed_note.tags.find_custom_tags(NostrTag::Custom("t"));
+        let t_tags = signed_note.tags.find_tags(NostrTag::Custom("t"));
         let t_tag = t_tags.first().expect("Failed to get tag!");
         assert_eq!(t_tag, "test");
         let p_tag = signed_note

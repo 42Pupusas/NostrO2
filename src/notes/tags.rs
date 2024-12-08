@@ -6,6 +6,7 @@ use std::str::FromStr;
 pub enum NostrTag {
     Pubkey,
     Event,
+    Parameterized,
     Custom(&'static str),
 }
 impl Into<String> for NostrTag {
@@ -13,6 +14,7 @@ impl Into<String> for NostrTag {
         match self {
             NostrTag::Pubkey => "p".to_string(),
             NostrTag::Event => "e".to_string(),
+            NostrTag::Parameterized => "d".to_string(),
             NostrTag::Custom(tag_type) => tag_type.to_string(),
         }
     }
@@ -23,6 +25,7 @@ impl FromStr for NostrTag {
         match s {
             "p" => Ok(NostrTag::Pubkey),
             "e" => Ok(NostrTag::Event),
+            "d" => Ok(NostrTag::Parameterized),
             _ => Ok(NostrTag::Custom(Box::leak(s.to_string().into_boxed_str()))),
         }
     }
@@ -102,34 +105,42 @@ impl NoteTags {
             .find(|tag_list| tag_list.tag_type == NostrTag::Event)
             .and_then(|tag_list| tag_list.tags.first().cloned())
     }
-    pub fn find_pubkey_tags(&self) -> Vec<String> {
+    pub fn find_first_parameter(&self) -> Option<String> {
         self.0
             .iter()
-            .filter(|tag_list| tag_list.tag_type == NostrTag::Pubkey)
+            .find(|tag_list| tag_list.tag_type == NostrTag::Parameterized)
+            .and_then(|tag_list| tag_list.tags.first().cloned())
+    }
+    pub fn find_tags(&self, tag_type: NostrTag) -> Vec<String> 
+    {
+        self.0
+            .iter()
+            .filter(|tag_list| tag_list.tag_type == tag_type)
             .flat_map(|tag_list| tag_list.tags.iter().cloned())
             .collect()
     }
-    pub fn find_event_tags(&self) -> Vec<String> {
-        self.0
-            .iter()
-            .filter(|tag_list| tag_list.tag_type == NostrTag::Event)
-            .flat_map(|tag_list| tag_list.tags.iter().cloned())
-            .collect()
-    }
-    pub fn find_custom_tags(&self, custom_tag: NostrTag) -> Vec<String> {
-        self.0
-            .iter()
-            .filter(|tag_list| tag_list.tag_type == custom_tag)
-            .flat_map(|tag_list| tag_list.tags.iter().cloned())
-            .collect()
-    }
-    pub fn add_tag(&mut self, tag_type: NostrTag, tag: &str) {
+    pub fn add_custom_tag(&mut self, tag_type: NostrTag, tag: &str) {
         if let Some(index) = self.0.iter().position(|inner| inner.tag_type == tag_type) {
             self.0[index].tags.push(tag.to_string());
         } else {
             let new_inner = TagList {
                 tag_type,
                 tags: vec![tag.to_string()],
+            };
+            self.0.push(new_inner);
+        }
+    }
+    pub fn add_parameter_tag(&mut self, parameter: &str) {
+        if let Some(index) = self
+            .0
+            .iter()
+            .position(|inner| inner.tag_type == NostrTag::Parameterized)
+        {
+            self.0[index].tags.push(parameter.to_string());
+        } else {
+            let new_inner = TagList {
+                tag_type: NostrTag::Parameterized,
+                tags: vec![parameter.to_string()],
             };
             self.0.push(new_inner);
         }
