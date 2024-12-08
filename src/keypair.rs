@@ -47,7 +47,7 @@ impl NostrKeypair {
         };
         Ok(Self {
             keypair,
-            extractable: false,
+            extractable: true,
         })
     }
     pub fn generate(extractable: bool) -> Self {
