@@ -5,7 +5,6 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    fmt::Debug,
     sync::Arc,
 };
 use tokio::{
@@ -35,19 +34,13 @@ impl NoteLibrary {
     }
 }
 
-pub struct NostrRelayPool<T>
-where
-    T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
-{
+pub struct NostrRelayPool {
     pub relays: Vec<NostrRelay>,
     pub reader: PoolRelayReceiver,
-    pub broadcaster: Sender<T>,
+    pub broadcaster: Sender<crate::relays::WebSocketMessage>,
 }
 
-impl<T> NostrRelayPool<T>
-where
-    T: Clone + Into<crate::relays::WebSocketMessage> + Send + 'static + Debug,
-{
+impl NostrRelayPool {
     pub async fn new(urls: Vec<String>) -> anyhow::Result<Self> {
         let library = NoteLibrary::new();
         let relays = urls
@@ -82,11 +75,8 @@ where
         notes: NoteLibrary,
         relay: NostrRelay,
         event_writer: PoolRelaySender,
-        mut broadcast_rx: tokio::sync::broadcast::Receiver<T>,
-    ) -> anyhow::Result<()>
-    where
-        T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
-    {
+        mut broadcast_rx: tokio::sync::broadcast::Receiver<crate::relays::WebSocketMessage>,
+    ) -> anyhow::Result<()> {
         loop {
             if let WebsocketStatus::Closed(e) = relay.state().await {
                 tracing::error!("Relay disconnected: {}", e);
@@ -134,7 +124,10 @@ where
         relay.close().await;
         Err(anyhow::anyhow!("Relay closed"))
     }
-    pub async fn send_to_relay(&self, signed_note: T) -> anyhow::Result<()> {
+    pub async fn send_to_relay(
+        &self,
+        signed_note: crate::relays::WebSocketMessage,
+    ) -> anyhow::Result<()> {
         if let Err(e) = self.broadcaster.send(signed_note) {
             tracing::error!("Failed to send note to relay pool: {:?}", e);
         }
@@ -150,10 +143,7 @@ where
     }
 }
 
-impl<T> Drop for NostrRelayPool<T>
-where
-    T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
-{
+impl Drop for NostrRelayPool {
     fn drop(&mut self) {
         // Ensure all resources are cleaned up
         self.reader.close();
@@ -196,7 +186,7 @@ mod tests {
             ..Default::default()
         }
         .into();
-        pool.send_to_relay(filter)
+        pool.send_to_relay(filter.into())
             .await
             .expect("Failed to subscribe");
         let mut events = vec![];
@@ -249,11 +239,14 @@ mod tests {
             ..Default::default()
         }
         .into();
-        pool.send_to_relay(filter)
+        pool.send_to_relay(filter.into())
             .await
             .expect("Failed to subscribe");
         tracing::info!("Subscribed");
         let mut events = vec![];
+        pool.send_to_relay(NostrNote::default().into())
+            .await
+            .expect("Failed to subscribe");
         loop {
             if pool.reader.is_closed() {
                 println!("Closed");

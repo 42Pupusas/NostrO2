@@ -60,13 +60,10 @@ impl NostrWriter {
     pub fn new() -> Self {
         NostrWriter(Arc::new(RwLock::new(None)))
     }
-    async fn send<T>(&self, message: T) -> anyhow::Result<()>
-    where
-        T: Into<WebSocketMessage>,
-    {
+    async fn send(&self, message: crate::relays::WebSocketMessage) -> anyhow::Result<()> {
         let mut writer = self.0.write().await;
         let writer = writer.as_mut().ok_or(anyhow::anyhow!("No writer"))?;
-        writer.send(message.into()).await?;
+        writer.send(message).await?;
         Ok(())
     }
     async fn close(&self) {
@@ -135,13 +132,10 @@ impl NostrRelay {
         self.state.connected().await;
         Ok(())
     }
-    pub async fn send_to_relay<T>(&self, note: T) -> anyhow::Result<T>
-    where
-        T: Into<WebSocketMessage> + Clone,
-    {
+    pub async fn send_to_relay(&self, note: crate::relays::WebSocketMessage) -> anyhow::Result<()> {
         self.state.wait_for_open().await?;
         self.writer.send(note.clone()).await?;
-        Ok(note)
+        Ok(())
     }
     pub async fn next_relay_event(&self) -> Option<RelayEvent> {
         self.state.wait_for_open().await.ok()?;
@@ -193,7 +187,8 @@ mod tests {
             ..Default::default()
         }
         .into();
-        let id = relay.send_to_relay(filter).await?.1;
+        let id = filter.1.clone();
+        relay.send_to_relay(filter.into()).await?;
         tracing::info!("Subscribed");
 
         let mut finished = String::new();
@@ -222,7 +217,9 @@ mod tests {
             ..Default::default()
         }
         .into();
-        let id = relay.send_to_relay(filter).await?.1;
+
+        let id = filter.1.clone();
+        relay.send_to_relay(filter.into()).await?;
 
         let mut finished = String::new();
         while let Some(event) = relay.reader.read().await {
@@ -251,7 +248,7 @@ mod tests {
             ..Default::default()
         };
         user_keys.sign_nostr_event(&mut note);
-        relay.send_to_relay(note).await?;
+        relay.send_to_relay(note.into()).await?;
         let mut sent = false;
         while let Some(event) = relay.reader.read().await {
             match RelayEvent::try_from(event) {

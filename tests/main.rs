@@ -6,10 +6,7 @@ const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b
 
 #[cfg(test)]
 mod tests {
-    use nostro2::{
-        notes::{NostrNote, NostrTag},
-        relays::{NostrRelayPool, NostrSubscription, RelayEvent, SubscribeEvent},
-    };
+    use nostro2::notes::{NostrNote, NostrTag};
 
     use super::*;
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
