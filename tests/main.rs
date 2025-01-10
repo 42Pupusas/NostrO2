@@ -6,9 +6,13 @@ const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b
 
 #[cfg(test)]
 mod tests {
-    use nostro2::notes::{NostrNote, NostrTag};
+    use nostro2::{
+        notes::{NostrNote, NostrTag},
+        relays::{NostrRelayPool, NostrSubscription, RelayEvent, SubscribeEvent},
+    };
 
     use super::*;
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     // Test Private Public NostrKeypair Match
     #[test]
@@ -52,7 +56,9 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
-        signed_note.tags.add_custom_tag(NostrTag::Custom("t"), "test");
+        signed_note
+            .tags
+            .add_custom_tag(NostrTag::Custom("t"), "test");
         signed_note.tags.add_event_tag("adsfasdfadsfadsfasdfadfs");
         signed_note.tags.add_pubkey_tag("adsfasdfadsfadsfasdfadfs");
         user_key_pair.sign_nostr_event(&mut signed_note);

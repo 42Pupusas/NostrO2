@@ -1,158 +1,160 @@
 use std::sync::Arc;
 
-use crate::notes::NostrNote;
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{Notify, RwLock};
+
+use super::{
+    tcp::{NostrWebsocketWriter, WebSocketMessage},
+    NostrWebsocketReader, RelayEvent, Url,
 };
-use tokio::sync::RwLock;
-use tracing::error;
 
-use super::{CloseEvent, RelayEvent, RelayEventTag, SendNoteEvent, SubscribeEvent};
-
-#[cfg(not(target_arch = "wasm32"))]
-use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
-#[cfg(target_arch = "wasm32")]
-use tokio_tungstenite_wasm::Message as WebSocketMessage;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub type NostrWebsocketReader = SplitStream<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
->;
-#[cfg(target_arch = "wasm32")]
-pub type NostrWebsocketReader = SplitStream<tokio_tungstenite_wasm::WebSocketStream>;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub type NostrWebsocketWriter = SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    WebSocketMessage,
->;
-#[cfg(target_arch = "wasm32")]
-pub type NostrWebsocketWriter =
-    SplitSink<tokio_tungstenite_wasm::WebSocketStream, WebSocketMessage>;
-
-pub struct Url {
-    pub url: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WebsocketStatus {
+    Connecting,
+    Open,
+    Closed(String),
 }
-impl Url {
-    pub fn new(url: &str) -> anyhow::Result<Self> {
-        if url.starts_with("wss://") {
-            Ok(Url {
-                url: url.to_string(),
-            })
-        } else {
-            Err(anyhow::anyhow!("Invalid url, must start with wss://"))
+
+#[derive(Clone)]
+pub struct RelayStatus {
+    state: Arc<RwLock<WebsocketStatus>>,
+    notify: Arc<Notify>,
+}
+impl RelayStatus {
+    fn new() -> Self {
+        RelayStatus {
+            state: Arc::new(RwLock::new(WebsocketStatus::Connecting)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+    async fn connected(&self) {
+        let mut state = self.state.write().await;
+        *state = WebsocketStatus::Open;
+        self.notify.notify_waiters(); // Notify all waiting tasks
+    }
+    async fn disconnected(&self, reason: String) {
+        let mut state = self.state.write().await;
+        *state = WebsocketStatus::Closed(reason);
+        self.notify.notify_waiters(); // Notify all waiting tasks
+    }
+    pub async fn state(&self) -> WebsocketStatus {
+        self.state.read().await.clone()
+    }
+    pub async fn wait_for_open(&self) -> anyhow::Result<()> {
+        let mut state = self.state.read().await;
+        if let WebsocketStatus::Closed(reason) = &*state {
+            return Err(anyhow::anyhow!("Disconnected: {}", reason));
+        }
+        while *state != WebsocketStatus::Open {
+            drop(state); // Drop the read lock before waiting
+            self.notify.notified().await; // Wait for a notification
+            state = self.state.read().await; // Re-acquire the read lock
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct NostrWriter(Arc<RwLock<NostrWebsocketWriter>>);
+impl NostrWriter {
+    pub fn new() -> Self {
+        NostrWriter(Arc::new(RwLock::new(None)))
+    }
+    async fn send<T>(&self, message: T) -> anyhow::Result<()>
+    where
+        T: Into<WebSocketMessage>,
+    {
+        let mut writer = self.0.write().await;
+        let writer = writer.as_mut().ok_or(anyhow::anyhow!("No writer"))?;
+        writer.send(message.into()).await?;
+        Ok(())
+    }
+    async fn close(&self) {
+        let mut writer = self.0.write().await;
+        if let Some(writer) = writer.as_mut() {
+            let _ = writer.close().await;
         }
     }
 }
 
 #[derive(Clone)]
-pub enum RelayState {
-    Connected,
-    Disconnected(String),
-}
-
-#[derive(Clone)]
-pub struct NostrWriter(pub Arc<RwLock<NostrWebsocketWriter>>);
-impl NostrWriter {
-    pub async fn send(&mut self, message: WebSocketMessage) -> anyhow::Result<()> {
-        self.0.write().await.send(message).await?;
-        Ok(())
+pub struct NostrReader(Arc<RwLock<NostrWebsocketReader>>);
+impl NostrReader {
+    pub fn new() -> Self {
+        NostrReader(Arc::new(RwLock::new(None)))
     }
-    pub async fn subscribe(&mut self, filter: SubscribeEvent) -> anyhow::Result<String> {
-        let id = filter.1.clone();
-        self.send(WebSocketMessage::Text(filter.into())).await?;
-        Ok(id)
-    }
-    pub async fn unsubscribe(&mut self, id: String) -> anyhow::Result<()> {
-        let subscription: String = CloseEvent(RelayEventTag::CLOSE, id).into();
-        let message = WebSocketMessage::Text(subscription);
-        self.send(message).await?;
-        Ok(())
-    }
-    pub async fn send_note(&mut self, note: NostrNote) -> anyhow::Result<()> {
-        let note: String = SendNoteEvent(RelayEventTag::EVENT, note).into();
-        let message = WebSocketMessage::Text(note);
-        self.send(message).await?;
-        Ok(())
-    }
-}
-
-pub struct NostrRelay {
-    pub url: Url,
-    pub state: RelayState,
-    pub writer: NostrWriter,
-    pub reader: Option<NostrWebsocketReader>,
-}
-impl NostrRelay {
-    pub async fn new(relay_string: &str) -> anyhow::Result<Self> {
-        let relay_url = Url::new(relay_string)?;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let (websocket, _response) =
-            tokio_tungstenite::connect_async(relay_url.url.to_string()).await?;
-        #[cfg(target_arch = "wasm32")]
-        let websocket = tokio_tungstenite_wasm::connect(relay_url.url.to_string()).await?;
-
-        let (websocket_writer, websocket_reader) = websocket.split();
-
-        Ok(NostrRelay {
-            url: relay_url,
-            state: RelayState::Connected,
-            reader: Some(websocket_reader),
-            writer: NostrWriter(Arc::new(RwLock::new(websocket_writer))),
-        })
-    }
-    async fn parse_event(ws_message: WebSocketMessage) -> Option<RelayEvent> {
-        match ws_message {
-            WebSocketMessage::Text(text) => RelayEvent::try_from(text).ok(),
+    pub async fn read(&self) -> Option<RelayEvent> {
+        let mut reader = self.0.write().await;
+        let message = reader.as_mut()?.next().await?.ok()?;
+        match message {
+            WebSocketMessage::Text(text) => RelayEvent::try_from(text.as_str()).ok(),
             WebSocketMessage::Close(e) => RelayEvent::Close(e.unwrap().to_string()).into(),
             _ => RelayEvent::Ping.into(),
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn relay_event_stream(
-        &mut self,
-    ) -> anyhow::Result<impl futures_util::stream::Stream<Item = RelayEvent>> {
-        let reader = self.reader.take().ok_or(anyhow::anyhow!("Reader was taken already"))?;
-        Ok(reader
-            .filter_map(|message| async {
-                match message {
-                    Ok(message) => Self::parse_event(message).await,
-                    Err(e) => {
-                        error!("{:?}", e);
-                        None
-                    }
-                }
-            })
-            .boxed())
+}
+
+#[derive(Clone)]
+pub struct NostrRelay {
+    pub url: String,
+    writer: NostrWriter,
+    reader: NostrReader,
+    state: RelayStatus,
+}
+impl NostrRelay {
+    pub async fn state(&self) -> WebsocketStatus {
+        self.state.state().await.clone()
     }
-    #[cfg(target_arch = "wasm32")]
-    pub fn relay_event_stream(
-        &mut self,
-    ) -> anyhow::Result<impl futures_util::stream::Stream<Item = RelayEvent>> {
-        let reader = self.reader.take().ok_or(anyhow::anyhow!("Reader was taken already"))?;
-        Ok(reader
-            .filter_map(|message| async {
-                match message {
-                    Ok(message) => Self::parse_event(message).await,
-                    Err(e) => {
-                        error!("{:?}", e);
-                        None
-                    }
-                }
-            })
-            .boxed_local())
+    pub fn new(relay_string: &str) -> anyhow::Result<Self> {
+        Url::new(&relay_string)?;
+        let relay = NostrRelay {
+            url: relay_string.to_string(),
+            reader: NostrReader::new(),
+            writer: NostrWriter::new(),
+            state: RelayStatus::new(),
+        };
+        let relay_clone = relay.clone();
+        crate::relays::spawn_thread(async move {
+            if let Err(e) = relay_clone.connect().await {
+                relay_clone.state.disconnected(e.to_string()).await;
+            }
+        });
+        Ok(relay)
+    }
+    pub async fn connect(&self) -> anyhow::Result<()> {
+        let relay_url = Url::new(&self.url)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (websocket, _response) = tokio_tungstenite::connect_async(relay_url.url).await?;
+        #[cfg(target_arch = "wasm32")]
+        let websocket = tokio_tungstenite_wasm::connect(relay_url.url).await?;
+        let (websocket_writer, websocket_reader) = websocket.split();
+        let mut writer = self.writer.0.write().await;
+        let mut reader = self.reader.0.write().await;
+        *writer = Some(websocket_writer);
+        *reader = Some(websocket_reader);
+        self.state.connected().await;
+        Ok(())
+    }
+    pub async fn send_to_relay<T>(&self, note: T) -> anyhow::Result<T>
+    where
+        T: Into<WebSocketMessage> + Clone,
+    {
+        self.state.wait_for_open().await?;
+        self.writer.send(note.clone()).await?;
+        Ok(note)
+    }
+    pub async fn next_relay_event(&self) -> Option<RelayEvent> {
+        self.state.wait_for_open().await.ok()?;
+        self.reader.read().await
     }
     pub async fn close(self) {
-        drop(self.reader);
-        drop(self.writer);
+        self.writer.close().await;
+        drop(self);
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     fn _debug(s: &str) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -174,27 +176,30 @@ mod tests {
         }
     }
 
-    use crate::relays::{EndOfSubscriptionEvent, NostrSubscription, OkEvent};
+    use crate::{
+        notes::NostrNote,
+        relays::{NostrSubscription, SubscribeEvent},
+    };
 
     //#[tokio::test]
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn _test_single_relay() -> Result<(), anyhow::Error> {
+    //#[tracing_test::traced_test]
+    //#[wasm_bindgen_test::wasm_bindgen_test]
+    async fn _single_stress() -> Result<(), anyhow::Error> {
         use super::*;
-        let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        let filter = NostrSubscription {
+        let relay = NostrRelay::new("wss://relay.arrakis.lat")?;
+        let filter: SubscribeEvent = NostrSubscription {
             kinds: Some(vec![1]),
-            limit: Some(3),
+            limit: Some(1000),
             ..Default::default()
         }
-        .relay_subscription();
-        let id = relay.writer.subscribe(filter).await?;
-        _debug("Subscribed with id");
+        .into();
+        let id = relay.send_to_relay(filter).await?.1;
+        tracing::info!("Subscribed");
 
         let mut finished = String::new();
-        let mut ws_stream = relay.relay_event_stream()?;
-        while let Some(event) = ws_stream.next().await {
+        while let Some(event) = relay.next_relay_event().await {
             match event {
-                RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, id)) => {
+                RelayEvent::EndOfSubscription((_, id)) => {
                     _debug(&format!("End of subscription: {}", id));
                     finished = id;
                     break;
@@ -205,12 +210,40 @@ mod tests {
         assert_eq!(id, finished);
         Ok(())
     }
-    //#[tokio::test]
-    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    //#[wasm_bindgen_test::wasm_bindgen_test]
+    async fn _test_single_relay() -> Result<(), anyhow::Error> {
+        use super::*;
+        let relay = NostrRelay::new("wss://relay.arrakis.lat")?;
+        let filter: SubscribeEvent = NostrSubscription {
+            kinds: Some(vec![1]),
+            limit: Some(3),
+            ..Default::default()
+        }
+        .into();
+        let id = relay.send_to_relay(filter).await?.1;
+
+        let mut finished = String::new();
+        while let Some(event) = relay.reader.read().await {
+            match event {
+                RelayEvent::EndOfSubscription((_, id)) => {
+                    _debug(&format!("End of subscription: {}", id));
+                    finished = id;
+                    break;
+                }
+                _ => (),
+            }
+        }
+        assert_eq!(id, finished);
+        Ok(())
+    }
+    #[tokio::test]
+    // #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_relay_send_note() -> Result<(), anyhow::Error> {
         use super::*;
-        let mut relay = NostrRelay::new("wss://relay.illuminodes.com").await?;
-        _debug(relay.url.url.as_str());
+        let relay = NostrRelay::new("wss://relay.illuminodes.com")?;
+        _debug(relay.url.as_str());
         let user_keys = crate::keypair::NostrKeypair::generate(false);
         let mut note = NostrNote {
             pubkey: user_keys.public_key(),
@@ -218,11 +251,11 @@ mod tests {
             ..Default::default()
         };
         user_keys.sign_nostr_event(&mut note);
-        relay.writer.send_note(note).await?;
+        relay.send_to_relay(note).await?;
         let mut sent = false;
-        while let Some(event) = relay.relay_event_stream()?.next().await {
+        while let Some(event) = relay.reader.read().await {
             match RelayEvent::try_from(event) {
-                Ok(RelayEvent::SentOk(OkEvent(_, _, did_sent, _))) => {
+                Ok(RelayEvent::SentOk((_, _, did_sent, _))) => {
                     _debug(&format!("Sent Ok: {}", did_sent));
                     sent = did_sent;
                     break;

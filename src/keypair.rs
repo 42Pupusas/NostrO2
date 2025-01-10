@@ -3,7 +3,10 @@ use bip39::Language;
 
 use secp256k1::{rand::rngs::OsRng, Keypair, Secp256k1};
 
-use crate::{nips::{Nip04, Nip44}, notes::NostrNote};
+use crate::{
+    nips::{Nip04, Nip44},
+    notes::NostrNote,
+};
 
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct NostrKeypair {

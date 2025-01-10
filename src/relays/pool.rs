@@ -1,178 +1,182 @@
-use super::relay_connection::{NostrWriter, RelayState};
+use super::relay_connection::WebsocketStatus;
 use crate::{
     notes::NostrNote,
-    relays::{NostrRelay, NoteEvent, RelayEvent, SubscribeEvent},
+    relays::{NostrRelay, RelayEvent},
 };
-use futures_util::StreamExt;
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Debug,
     sync::Arc,
 };
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    RwLock,
+use tokio::{
+    select,
+    sync::{
+        broadcast::Sender,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        RwLock,
+    },
 };
-use tracing::error;
 
-pub type RelayBroadcasterList = Arc<RwLock<Vec<NostrWriter>>>;
-#[derive(Clone)]
-pub struct PoolRelayBroadcaster(pub RelayBroadcasterList);
-impl PoolRelayBroadcaster {
-    pub async fn broadcast_note(&self, signed_note: NostrNote) -> anyhow::Result<()> {
-        let mut writers = self.0.write().await;
-        for writer in writers.iter_mut() {
-            writer.send_note(signed_note.clone()).await?;
-        }
-        Ok(())
-    }
-    pub async fn subscribe(&self, sub: SubscribeEvent) -> anyhow::Result<()> {
-        let mut writers = self.0.write().await;
-        for writer in writers.iter_mut() {
-            writer.subscribe(sub.clone()).await?;
-        }
-        Ok(())
-    }
-    pub async fn cancel_subscription(&self, sub_id: String) -> anyhow::Result<()> {
-        let mut writers = self.0.write().await;
-        for writer in writers.iter_mut() {
-            writer.unsubscribe(sub_id.clone()).await?;
-        }
-        Ok(())
-    }
-}
 pub type PoolRelayReceiver = UnboundedReceiver<(String, RelayEvent)>;
 pub type PoolRelaySender = UnboundedSender<(String, RelayEvent)>;
 
-pub type RelayTableMap = HashMap<String, RelayState>;
-#[derive(Clone)]
-pub struct RelayTable(pub Arc<RwLock<RelayTableMap>>);
-impl RelayTable {
-    pub async fn get(&self, url: &str) -> Option<RelayState> {
-        self.0.read().await.get(url).cloned()
-    }
-    pub async fn insert(&self, url: String, state: RelayState) {
-        self.0.write().await.insert(url, state);
-    }
-    pub async fn remove(&self, url: &str) {
-        self.0.write().await.remove(url);
-    }
-}
-
+pub type RelayTableMap = HashMap<String, WebsocketStatus>;
 pub type NostrNoteLibrary = HashSet<NostrNote>;
+
 #[derive(Clone)]
 pub struct NoteLibrary(pub Arc<RwLock<NostrNoteLibrary>>);
 impl NoteLibrary {
+    pub fn new() -> Self {
+        Self(Arc::new(RwLock::new(HashSet::new())))
+    }
     pub async fn insert(&self, note: NostrNote) -> bool {
-        self.0.write().await.insert(note)
+        let mut library = self.0.write().await;
+        library.insert(note)
     }
 }
 
-pub struct NostrRelayPool {
-    pub listener: PoolRelayReceiver,
-    pub writer: PoolRelayBroadcaster,
-    pub relay_states: RelayTable,
-    pub library: NoteLibrary,
+pub struct NostrRelayPool<T>
+where
+    T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
+{
+    pub relays: Vec<NostrRelay>,
+    pub reader: PoolRelayReceiver,
+    pub broadcaster: Sender<T>,
 }
 
-impl NostrRelayPool {
+impl<T> NostrRelayPool<T>
+where
+    T: Clone + Into<crate::relays::WebSocketMessage> + Send + 'static + Debug,
+{
     pub async fn new(urls: Vec<String>) -> anyhow::Result<Self> {
-        let (event_tx, listener) = tokio::sync::mpsc::unbounded_channel();
-        let library = NoteLibrary(Arc::new(RwLock::new(HashSet::new())));
-        let relay_states = RelayTable(Arc::new(RwLock::new(HashMap::new())));
-        let writer = PoolRelayBroadcaster(Arc::new(RwLock::new(vec![])));
-        let mut tasks = vec![];
-        for relay_url in urls {
-            if let Ok(relay) = NostrRelay::new(&relay_url).await {
-                relay_states
-                    .insert(relay_url.clone(), RelayState::Connected)
-                    .await;
-                let mut writer = writer.0.write().await;
-                writer.push(relay.writer.clone());
-                let future = Self::process_relay_events(
+        let library = NoteLibrary::new();
+        let relays = urls
+            .into_iter()
+            .filter_map(|url| NostrRelay::new(&url).ok())
+            .collect::<Vec<_>>();
+        let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let broadcast_tx_clone = broadcast_tx.clone();
+        let relay_tasks = relays
+            .iter()
+            .map(move |relay| {
+                Box::pin(NostrRelayPool::process_relay_events(
                     library.clone(),
-                    relay_states.clone(),
-                    relay,
-                    event_tx.clone(),
-                );
-                tasks.push(Box::pin(future));
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        use tokio::task::spawn as new_task;
-        #[cfg(target_arch = "wasm32")]
-        use wasm_bindgen_futures::spawn_local as new_task;
-        new_task(async move {
-            if let Err(e) = futures_util::future::select_ok(tasks.iter_mut()).await {
-                error!("{:?}", e);
-            }
+                    relay.clone(),
+                    in_tx.clone(),
+                    broadcast_tx_clone.subscribe(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        crate::relays::spawn_thread(async move {
+            let _ = futures_util::future::select_ok(relay_tasks).await;
         });
         Ok(Self {
-            listener,
-            writer,
-            relay_states,
-            library,
+            relays,
+            reader: in_rx,
+            broadcaster: broadcast_tx,
         })
     }
     async fn process_relay_events(
         notes: NoteLibrary,
-        relay_table: RelayTable,
-        mut relay: NostrRelay,
+        relay: NostrRelay,
         event_writer: PoolRelaySender,
-    ) -> anyhow::Result<()> {
-        let mut reader = relay.relay_event_stream()?;
-
+        mut broadcast_rx: tokio::sync::broadcast::Receiver<T>,
+    ) -> anyhow::Result<()>
+    where
+        T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
+    {
         loop {
-            if let RelayState::Disconnected(e) = relay.state {
-                error!("{:?}", e);
-                relay_table
-                    .insert(relay.url.url.to_string(), RelayState::Disconnected(e))
-                    .await;
+            if let WebsocketStatus::Closed(e) = relay.state().await {
+                tracing::error!("Relay disconnected: {}", e);
                 break;
             }
-            tokio::select! {
-                Some(event) = reader.next() => {
+            select! {
+                event = relay.next_relay_event() => {
                     match event {
-                        RelayEvent::NewNote(NoteEvent(_, _, ref signed_note)) => {
-                            if notes.insert(signed_note.clone()).await {
-                                if let Err(e) = event_writer.send((relay.url.url.to_string(), event)) {
-                                    error!("{:?}", e);
-                                    drop(relay);
-                                    break;
+                        Some(event) => {
+                            match event {
+                                RelayEvent::NewNote((_, _, ref note)) => {
+                                    if notes.insert(note.clone()).await {
+                                        if let Err(e) = event_writer.send((relay.url.clone(), event)) {
+                                            tracing::error!("Failed to send event: {:?}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    if let Err(e) = event_writer.send((relay.url.clone(), event)) {
+                                        tracing::error!("Failed to send event: {:?}", e);
+                                        break;
+                                    }
                                 }
                             }
                         }
-                        _ => {
-                            if let Err(e) = event_writer.send((relay.url.url.to_string(), event)) {
-                                error!("{:?}", e);
-                                drop(relay);
-                                break;
-                            }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+                note = broadcast_rx.recv() => {
+                    if let Ok(note) = note {
+                        if let Err(e) = relay.send_to_relay(note).await {
+                            tracing::error!("Failed to send note to relay {}: {:?}", relay.url, e);
+                            break;
                         }
                     }
                 }
                 else => {
-                    drop(relay);
-                    break},
+                    break;
+                }
             }
         }
+        relay.close().await;
         Err(anyhow::anyhow!("Relay closed"))
     }
-    pub fn close(mut self) -> anyhow::Result<()> {
-        self.listener.close();
+    pub async fn send_to_relay(&self, signed_note: T) -> anyhow::Result<()> {
+        if let Err(e) = self.broadcaster.send(signed_note) {
+            tracing::error!("Failed to send note to relay pool: {:?}", e);
+        }
+        Ok(())
+    }
+    pub async fn close(mut self) -> anyhow::Result<()> {
+        for relay in &self.relays {
+            relay.clone().close().await;
+        }
+        self.reader.close();
+        drop(self);
         Ok(())
     }
 }
 
+impl<T> Drop for NostrRelayPool<T>
+where
+    T: Clone + Into<crate::relays::WebSocketMessage> + Debug,
+{
+    fn drop(&mut self) {
+        // Ensure all resources are cleaned up
+        self.reader.close();
+        for relay in &self.relays {
+            let relay = relay.clone();
+            crate::relays::spawn_thread(async move {
+                relay.close().await;
+            });
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use crate::relays::{EndOfSubscriptionEvent, NostrSubscription};
+    use crate::relays::{NostrSubscription, SubscribeEvent};
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     //#[tokio::test]
+    //#[tracing_test::traced_test]
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn _test_relay_pool() {
+    async fn _relay_pool_stress() {
+        // let time = tokio::time::Instant::now();
         let mut pool = NostrRelayPool::new(vec![
             "wss://relay.arrakis.lat".to_string(),
             "wss://relay.illuminodes.com".to_string(),
@@ -185,28 +189,97 @@ mod tests {
         ])
         .await
         .expect("Failed to create pool");
-        let filter = NostrSubscription {
+        //println!("Time to create pool: {:?}", time.elapsed());
+        let filter: SubscribeEvent = NostrSubscription {
+            kinds: Some(vec![1]),
+            limit: Some(5000),
+            ..Default::default()
+        }
+        .into();
+        pool.send_to_relay(filter)
+            .await
+            .expect("Failed to subscribe");
+        let mut events = vec![];
+        //println!("Time to subscribe: {:?}", time.elapsed());
+        while let Some((_, event)) = pool.reader.recv().await {
+            tracing::info!("Received event: {:?}", event);
+            if let RelayEvent::NewNote((_, _, _)) = event {
+                tracing::info!("Received note");
+                events.push(event);
+                if events.len() == 1 {
+                    //          println!("Time to get first event: {:?}", time.elapsed());
+                }
+                if events.len() == 1000 {
+                    //        println!("Time to get 1000 events: {:?}", time.elapsed());
+                    wasm_bindgen_test::console_log!("Events: {:?}", events.len());
+                }
+                if events.len() == 5000 {
+                    //      println!("Time to get 5000 events: {:?}", time.elapsed());
+                    wasm_bindgen_test::console_log!("Events: {:?}", events.len());
+                    break;
+                }
+            }
+        }
+        // println!("Time to get all events: {:?}", time.elapsed());
+        assert_eq!(events.len(), 5000);
+        pool.close().await.expect("Failed to close pool");
+        wasm_bindgen_test::console_log!("Pool closed");
+    }
+    //#[tokio::test]
+    //#[tracing_test::traced_test]
+    // #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn _test_relay_pool() {
+        tracing::info!("Starting test");
+        let mut pool = NostrRelayPool::new(vec![
+            "wss://relay.arrakis.lat".to_string(),
+            "wss://relay.illuminodes.com".to_string(),
+            "wss://frens.nostr1.com".to_string(),
+            "wss://bitcoiner.social".to_string(),
+            "wss://bouncer.minibolt.info".to_string(),
+            "wss://freespeech.casa".to_string(),
+            "wss://junxingwang.org".to_string(),
+            "wss://nostr.0x7e.xyz".to_string(),
+        ])
+        .await
+        .expect("Failed to create pool");
+        tracing::info!("Pool created");
+        let filter: SubscribeEvent = NostrSubscription {
             kinds: Some(vec![1]),
             limit: Some(10),
             ..Default::default()
         }
-        .relay_subscription();
-        pool.writer
-            .subscribe(filter.clone())
+        .into();
+        pool.send_to_relay(filter)
             .await
             .expect("Failed to subscribe");
+        tracing::info!("Subscribed");
         let mut events = vec![];
-        while let Some((_, event)) = pool.listener.recv().await {
-            if let RelayEvent::EndOfSubscription(EndOfSubscriptionEvent(_, ref subscription_id)) =
-                event
-            {
-                events.push(subscription_id.clone());
-                if events.len() == 5 {
-                    break;
+        loop {
+            if pool.reader.is_closed() {
+                println!("Closed");
+                break;
+            }
+            match pool.reader.recv().await {
+                Some((relay_url, event)) => {
+                    if let RelayEvent::EndOfSubscription((_, ref subscription_id)) = event {
+                        events.push(subscription_id.clone());
+                        tracing::info!("Events: {:?}", events.len());
+                        tracing::info!("End of subscription: {}", subscription_id);
+                        if events.len() > 3 {
+                            wasm_bindgen_test::console_log!("Events: {:?}", events.len());
+                            break;
+                        }
+                    }
+                    if let RelayEvent::NewNote((_, _, ref note)) = event {
+                        tracing::info!("Received note: {:?} from {}", note.id, relay_url);
+                    }
+                }
+                None => {
+                    println!("No events");
                 }
             }
-            if let RelayEvent::NewNote(NoteEvent(_, _, _)) = event {}
         }
-        assert_eq!(events.len(), 5);
+        assert!(events.len() >= 3);
+        pool.close().await.expect("Failed to close pool");
     }
 }

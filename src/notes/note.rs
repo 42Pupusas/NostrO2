@@ -117,7 +117,13 @@ impl NostrNote {
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }
-
+impl Into<crate::relays::WebSocketMessage> for NostrNote {
+    fn into(self) -> crate::relays::WebSocketMessage {
+        let note: String =
+            crate::relays::SendNoteEvent(crate::relays::RelayEventTag::EVENT, self).into();
+        crate::relays::WebSocketMessage::Text(note.into())
+    }
+}
 impl Display for NostrNote {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(

@@ -35,6 +35,23 @@ impl Default for NostrSubscription {
         }
     }
 }
+impl Into<crate::relays::WebSocketMessage> for NostrSubscription {
+    fn into(self) -> crate::relays::WebSocketMessage {
+        let event: SubscribeEvent = self.into();
+        crate::relays::WebSocketMessage::Text(event.into())
+    }
+}
+impl Into<SubscribeEvent> for NostrSubscription {
+    fn into(self) -> SubscribeEvent {
+        let random_bits: [u8; 16] = thread_rng().gen();
+        let random_id = random_bits.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        SubscribeEvent(
+            super::RelayEventTag::REQ,
+            random_id,
+            self.clone(),
+        )
+    }
+}
 impl NostrSubscription {
     pub fn add_tag(&mut self, tag: &str, value: &str) {
         if let Some(tags) = &mut self.tags {
@@ -48,15 +65,6 @@ impl NostrSubscription {
             tags.insert(tag.to_string(), vec![value.to_string()]);
             self.tags = Some(tags);
         }
-    }
-    pub fn relay_subscription(&self) -> super::SubscribeEvent {
-        let random_bits: [u8; 16] = thread_rng().gen();
-        let random_id = random_bits.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        SubscribeEvent(
-            super::RelayEventTag::REQ,
-            random_id,
-            self.clone(),
-        )
     }
 }
 
