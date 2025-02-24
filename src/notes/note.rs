@@ -178,27 +178,27 @@ impl Into<serde_json::Value> for NostrNote {
         serde_json::to_value(&self).unwrap()
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<web_sys::wasm_bindgen::JsValue> for NostrNote {
     type Error = web_sys::wasm_bindgen::JsError;
     fn try_from(value: web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
         Ok(serde_wasm_bindgen::from_value(value)?)
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl Into<web_sys::wasm_bindgen::JsValue> for NostrNote {
     fn into(self) -> web_sys::wasm_bindgen::JsValue {
         serde_wasm_bindgen::to_value(&self).unwrap()
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<&web_sys::wasm_bindgen::JsValue> for NostrNote {
     type Error = web_sys::wasm_bindgen::JsError;
     fn try_from(value: &web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
         Ok(serde_wasm_bindgen::from_value(value.clone())?)
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl Into<web_sys::wasm_bindgen::JsValue> for &NostrNote {
     fn into(self) -> web_sys::wasm_bindgen::JsValue {
         serde_wasm_bindgen::to_value(self).unwrap()

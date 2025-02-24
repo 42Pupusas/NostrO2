@@ -12,9 +12,6 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[features]
-wasm = []
-
 [dependencies]
 # Error handling
 anyhow = "1"

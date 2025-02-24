@@ -238,7 +238,7 @@ impl TryFrom<&String> for NostrKeypair {
         NostrKeypair::try_from(value.as_str())
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<web_sys::js_sys::ArrayBuffer> for NostrKeypair {
     type Error = anyhow::Error;
     fn try_from(value: web_sys::js_sys::ArrayBuffer) -> Result<Self, Self::Error> {
@@ -246,14 +246,14 @@ impl TryFrom<web_sys::js_sys::ArrayBuffer> for NostrKeypair {
         NostrKeypair::try_from(uint8_array)
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<web_sys::js_sys::Uint8Array> for NostrKeypair {
     type Error = anyhow::Error;
     fn try_from(value: web_sys::js_sys::Uint8Array) -> Result<Self, Self::Error> {
         value.to_vec().as_slice().try_into()
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl Into<web_sys::js_sys::Object> for NostrKeypair {
     fn into(self) -> web_sys::js_sys::Object {
         let array: web_sys::js_sys::Uint8Array = self.into();
@@ -261,7 +261,7 @@ impl Into<web_sys::js_sys::Object> for NostrKeypair {
         key_object
     }
 }
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 impl Into<web_sys::js_sys::Uint8Array> for NostrKeypair {
     fn into(self) -> web_sys::js_sys::Uint8Array {
         let key = self.keypair.secret_key().secret_bytes();
