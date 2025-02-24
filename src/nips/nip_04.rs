@@ -43,7 +43,7 @@ impl Nip04 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{nips::nip_46::Nip46Request, notes::NostrNote, keypair::NostrKeypair};
+    use crate::{keypair::NostrKeypair, nips::nip_46::Nip46Request, notes::NostrNote};
 
     use super::*;
 
@@ -51,7 +51,7 @@ mod tests {
     fn second_test() {
         let cyphertext = "PXvfOGMyeWnkWIuuUEEvM8VvliPmf6OGiBT7SFXoWPloW9Cm+DURd9hf0mUrc6puB4jMfMYonJ+gsIKJJ1xx3nTtf9DW8IGylCl9o1LDOjZi71G3rqoJELptQxaQTr4iVACOpOC8/lVyBQtMXwcg9FkONbbbLJXxVXXPzFmXcSQfByD/+iIak68AlKnxJp9abHJwLIlgOeR+D49VCObnVT6LRKeYbRBJ0i2e+RVA0fA=?iv=t+eLXPQHfnaFfslDoi7mzg==";
         let public_key = "62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba";
-        let my_keys = NostrKeypair::new_extractable(
+        let my_keys = NostrKeypair::try_from(
             "341fe1a3b23d0f1660a70e0395fcd7d09a73ff041a4a2cf4d0760b721eb14c55",
         )
         .expect("");
@@ -84,10 +84,9 @@ mod tests {
     }
         "#;
         let signed_note = serde_json::from_str::<NostrNote>(note_str).unwrap();
-        let my_keys = NostrKeypair::new_extractable(
+        let my_keys = NostrKeypair::try_from(
             "341fe1a3b23d0f1660a70e0395fcd7d09a73ff041a4a2cf4d0760b721eb14c55",
-        )
-        .expect("");
+        ).expect("");
         let respnse = Nip46Request::get_request_command(&signed_note, &my_keys);
         assert!(respnse.is_ok());
     }

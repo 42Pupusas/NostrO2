@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
@@ -12,55 +12,57 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+wasm = []
+
 [dependencies]
 # Error handling
-anyhow = "1.0.94"
+anyhow = "1"
 
 # JSON
-serde = { version = "1.0.215", features = ["derive"] }
-serde_json = "1.0.133"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Logging
-tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 # Cryptography 
-base64 = "0.22.1"
-cbc = { version = "0.1.2", features = ["alloc"] }
-chacha20 = "0.9.1"
-hkdf = "0.12.4"
-hmac = "0.12.1"
-libaes = "0.7.0"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+chacha20 = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+libaes = "0.7"
 secp256k1 = { version = "0.30.0", features = ["rand", "std", "alloc"] }
 sha2 = "0.10.8"
 
 # Key helpers
-bech32 = "0.11.0"
-bip39 = { version = "2.1.0", features = ["spanish"] }
+bech32 = "0.11"
+bip39 = { version = "2.1", features = ["spanish"] }
 
 # Miscellanea utility
-futures-util = { version = "0.3.31", features = ["sink", "std"] }
-chrono = "0.4.38"
+futures-util = { version = "0.3", features = ["sink", "std"] }
+chrono = "0.4"
 
 # Native platform TCP
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.42.0", features = ["macros", "rt", "sync", "io-util"] }
-tokio-tungstenite = { version = "0.26.1", features = ["rustls-tls-native-roots"] }
-rustls = { version = "0.23.21", features = ["ring", "std", "tls12"], default-features = false }
+tokio = { version = "1", features = ["macros", "rt", "sync", "io-util"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 
 # Web Browser TCP
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-ring = { version = "0.17.8", features = ["wasm32_unknown_unknown_js"] }
-tokio = { version = "1.42.0", features = ["macros", "sync"] }
-tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roots"] }
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 serde-wasm-bindgen = "0.6.5"
-wasm-bindgen-futures = "0.4.45"
+tokio = { version = "1", features = ["macros", "sync"] }
+tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roots"] }
+web-sys = { version = "0.3", features = ["SubtleCrypto", "CryptoKey", "Window", "Crypto", "AesKeyGenParams", "AesGcmParams",  "Navigator", "Navigator"] }
+wasm-bindgen-futures = "0.4"
 
 # Dependiecies for testing only
 [dev-dependencies]
-tokio = { version = "1.42.0", features = ["test-util", "macros", "rt", "sync"] }
-wasm-bindgen-test = "0.3.45"
-wasm-bindgen-futures = "0.4.45"
-tracing-test = "0.2.5"
-
-
+tokio = { version = "1", features = ["test-util", "macros", "rt", "sync"] }
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
+tracing-test = "0.2"

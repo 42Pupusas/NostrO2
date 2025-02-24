@@ -14,13 +14,13 @@ mod tests {
     // Test Private Public NostrKeypair Match
     #[test]
     fn test_user_key() {
-        let uk = NostrKeypair::new(PRIV).unwrap();
+        let uk = NostrKeypair::try_from(PRIV).unwrap();
         assert_eq!(PUB, uk.public_key());
     }
     // Test Private Public NostrKeypair Do Not Match
     #[test]
     fn test_not_user_key() {
-        let uk = NostrKeypair::new(PRIV).unwrap();
+        let uk = NostrKeypair::try_from(PRIV).unwrap();
         assert_ne!(
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             uk.public_key()
@@ -32,7 +32,7 @@ mod tests {
     #[test]
     fn test_create_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let user_key_pair = NostrKeypair::new(PRIV).unwrap();
+        let user_key_pair = NostrKeypair::try_from(PRIV).unwrap();
         let mut unsigned_note = NostrNote {
             pubkey: user_key_pair.public_key(),
             kind: 300,
@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn test_create_tagged_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let user_key_pair = NostrKeypair::new(PRIV).expect("Failed to create NostrKeypair!");
+        let user_key_pair = NostrKeypair::try_from(PRIV).expect("Failed to create NostrKeypair!");
         let mut signed_note = NostrNote {
             pubkey: user_key_pair.public_key(),
             kind: 300,
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_try_p_and_e_tags() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let user_key_pair = NostrKeypair::new(PRIV).expect("Failed to create NostrKeypair!");
+        let user_key_pair = NostrKeypair::try_from(PRIV).expect("Failed to create NostrKeypair!");
         let mut signed_note = NostrNote {
             pubkey: user_key_pair.public_key(),
             kind: 300,

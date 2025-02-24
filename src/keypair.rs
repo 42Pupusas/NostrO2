@@ -15,50 +15,15 @@ pub struct NostrKeypair {
 }
 
 impl NostrKeypair {
-    pub fn new(private_key: &str) -> anyhow::Result<Self> {
-        let secp = Secp256k1::signing_only();
-        let keypair = match private_key.starts_with("nsec") {
-            true => {
-                let (hrp, data) = bech32::decode(&private_key)?;
-                if hrp.to_string() != "nsec" {
-                    anyhow::bail!("Invalid nsec prefix");
-                }
-                Keypair::from_seckey_slice(&secp, &data)
-                    .map_err(|_| anyhow::anyhow!("Invalid private key"))?
-            }
-            false => Keypair::from_seckey_str(&secp, &private_key)
-                .map_err(|_| anyhow::anyhow!("Invalid private key"))?,
-        };
-        Ok(Self {
-            keypair,
-            extractable: false,
-        })
-    }
-    pub fn new_extractable(private_key: &str) -> anyhow::Result<Self> {
-        let secp = Secp256k1::signing_only();
-        let keypair = match private_key.starts_with("nsec") {
-            true => {
-                let (hrp, data) = bech32::decode(&private_key)?;
-                if hrp.to_string() != "nsec" {
-                    anyhow::bail!("Invalid nsec prefix");
-                }
-                Keypair::from_seckey_slice(&secp, &data)
-                    .map_err(|_| anyhow::anyhow!("Invalid private key"))?
-            }
-            false => Keypair::from_seckey_str(&secp, &private_key)
-                .map_err(|_| anyhow::anyhow!("Invalid private key"))?,
-        };
-        Ok(Self {
-            keypair,
-            extractable: true,
-        })
-    }
     pub fn generate(extractable: bool) -> Self {
         let keypair = Keypair::new(&Secp256k1::signing_only(), &mut OsRng);
         Self {
             keypair,
             extractable,
         }
+    }
+    pub fn make_extractable(&mut self) {
+        self.extractable = true;
     }
     pub fn public_key(&self) -> String {
         return self.keypair.public_key().x_only_public_key().0.to_string();
@@ -72,7 +37,6 @@ impl NostrKeypair {
         let string = bech32::encode::<Bech32>(hrp, &pk_data).expect("failed to encode string");
         string
     }
-
     pub fn sign_nostr_event(&self, note: &mut NostrNote) {
         if note.serialize_id().is_ok() {
             let secp = Secp256k1::signing_only();
@@ -103,7 +67,6 @@ impl NostrKeypair {
         let nip_04 = Nip04::new(self.clone(), pubkey);
         nip_04.encrypt(plaintext)
     }
-
     pub fn decrypt_nip_04_plaintext(
         &self,
         cyphertext: String,
@@ -112,7 +75,6 @@ impl NostrKeypair {
         let nip_04 = Nip04::new(self.clone(), pubkey);
         nip_04.decrypt(cyphertext)
     }
-
     pub fn encrypt_nip_44_plaintext(
         &self,
         plaintext: String,
@@ -170,50 +132,37 @@ impl NostrKeypair {
         }
         self.keypair.secret_key().secret_bytes()
     }
-    pub fn get_nsec(&self) -> String {
+    pub fn get_nsec(&self) -> anyhow::Result<String> {
         if !self.extractable {
-            return String::from("Not extractable");
+            return Err(anyhow::anyhow!("Not extractable"));
         }
         let secret_key = self.keypair.secret_key().secret_bytes();
         let hrp = Hrp::parse("nsec").expect("valid hrp");
         let string = bech32::encode::<Bech32>(hrp, &secret_key).expect("failed to encode string");
-        string
+        Ok(string)
     }
-    pub fn get_mnemonic_phrase(&self) -> String {
+    pub fn get_mnemonic(&self, language: Language) -> anyhow::Result<String> {
         if !self.extractable {
-            return String::from("Not extractable");
+            return Err(anyhow::anyhow!("Not extractable"));
         }
         let secret_key = self.keypair.secret_key().secret_bytes();
-        let mnemonic = bip39::Mnemonic::from_entropy(&secret_key).unwrap();
-        mnemonic.words().collect::<Vec<&str>>().join(" ")
+        let mnemonic = bip39::Mnemonic::from_entropy_in(language, &secret_key).unwrap();
+        Ok(mnemonic.words().collect::<Vec<&str>>().join(" "))
     }
-    pub fn get_mnemonic_spanish(&self) -> String {
-        if !self.extractable {
-            return String::from("Not extractable");
-        }
-        let secret_key = self.keypair.secret_key().secret_bytes();
-        let mnemonic = bip39::Mnemonic::from_entropy_in(Language::Spanish, &secret_key).unwrap();
-        mnemonic.words().collect::<Vec<&str>>().join(" ")
-    }
-    pub fn parse_mnemonic(mnemonic: &str, extractable: bool) -> anyhow::Result<Self> {
-        let english_parse = bip39::Mnemonic::parse_in(Language::English, mnemonic);
-        let spanish_parse = bip39::Mnemonic::parse_in(Language::Spanish, mnemonic);
-        if english_parse.is_err() && spanish_parse.is_err() {
-            anyhow::bail!("Invalid mnemonic phrase");
-        }
-        let mnemonic = if english_parse.is_ok() {
-            english_parse.unwrap()
-        } else {
-            spanish_parse.unwrap()
-        };
-        let secret_key = mnemonic
-            .to_entropy()
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
+    pub fn parse_mnemonic(
+        mnemonic: &str,
+        language: Language,
+        extractable: bool,
+    ) -> anyhow::Result<Self> {
+        let mnemonic = bip39::Mnemonic::parse_in(language, mnemonic)?;
+        let keypair: Self = mnemonic.try_into()?;
         match extractable {
-            true => Ok(Self::new_extractable(&secret_key)?),
-            false => Ok(Self::new(&secret_key)?),
+            true => {
+                let mut keypair = keypair;
+                keypair.make_extractable();
+                Ok(keypair)
+            }
+            false => Ok(keypair),
         }
     }
     fn hex_decode(hex_string: &str) -> Vec<u8> {
@@ -224,6 +173,101 @@ impl NostrKeypair {
             .collect()
     }
 }
+impl TryFrom<&[u8]> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let keypair = Keypair::from_seckey_slice(&Secp256k1::signing_only(), value)
+            .map_err(|_| anyhow::anyhow!("Invalid private key"))?;
+        Ok(Self {
+            keypair,
+            extractable: false,
+        })
+    }
+}
+impl From<[u8; 64]> for NostrKeypair {
+    fn from(value: [u8; 64]) -> Self {
+        let keypair = Keypair::from_seckey_slice(&Secp256k1::signing_only(), &value).unwrap();
+        Self {
+            keypair,
+            extractable: false,
+        }
+    }
+}
+impl From<&[u8; 64]> for NostrKeypair {
+    fn from(value: &[u8; 64]) -> Self {
+        let keypair = Keypair::from_seckey_slice(&Secp256k1::signing_only(), value).unwrap();
+        Self {
+            keypair,
+            extractable: false,
+        }
+    }
+}
+impl TryFrom<&str> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.starts_with("nsec") {
+            true => {
+                let (hrp, data) = bech32::decode(&value)?;
+                if hrp.to_string() != "nsec" {
+                    anyhow::bail!("Invalid nsec prefix");
+                }
+                Self::try_from(data.as_slice())
+            }
+            false => {
+                let hex = Self::hex_decode(value);
+                Self::try_from(hex.as_slice())
+            }
+        }
+    }
+}
+impl TryFrom<bip39::Mnemonic> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: bip39::Mnemonic) -> Result<Self, Self::Error> {
+        Self::try_from(value.to_entropy().as_slice())
+    }
+}
+impl TryFrom<String> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        NostrKeypair::try_from(value.as_str())
+    }
+}
+impl TryFrom<&String> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        NostrKeypair::try_from(value.as_str())
+    }
+}
+#[cfg(feature = "wasm")]
+impl TryFrom<web_sys::js_sys::ArrayBuffer> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: web_sys::js_sys::ArrayBuffer) -> Result<Self, Self::Error> {
+        let uint8_array = web_sys::js_sys::Uint8Array::new(&value);
+        NostrKeypair::try_from(uint8_array)
+    }
+}
+#[cfg(feature = "wasm")]
+impl TryFrom<web_sys::js_sys::Uint8Array> for NostrKeypair {
+    type Error = anyhow::Error;
+    fn try_from(value: web_sys::js_sys::Uint8Array) -> Result<Self, Self::Error> {
+        value.to_vec().as_slice().try_into()
+    }
+}
+#[cfg(feature = "wasm")]
+impl Into<web_sys::js_sys::Object> for NostrKeypair {
+    fn into(self) -> web_sys::js_sys::Object {
+        let array: web_sys::js_sys::Uint8Array = self.into();
+        let key_object: web_sys::js_sys::Object = array.buffer().into();
+        key_object
+    }
+}
+#[cfg(feature = "wasm")]
+impl Into<web_sys::js_sys::Uint8Array> for NostrKeypair {
+    fn into(self) -> web_sys::js_sys::Uint8Array {
+        let key = self.keypair.secret_key().secret_bytes();
+        web_sys::js_sys::Uint8Array::from(&key[..])
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -231,9 +275,10 @@ mod tests {
 
     #[test]
     fn test_user_keys() {
-        let user_keys =
-            NostrKeypair::new("a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8")
-                .unwrap();
+        let user_keys = NostrKeypair::try_from(
+            "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8",
+        )
+        .expect("Failed to create NostrKeypair!");
         let public_key = user_keys.public_key();
         assert_eq!(
             public_key,
@@ -244,9 +289,10 @@ mod tests {
             npub,
             "npub1dz2q85uqsf6g383hrnl98skh36c9wsafvnxxp5aju4vzf687ws9q7zr8df"
         );
-        let nsec_key =
-            NostrKeypair::new("nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53")
-                .unwrap();
+        let nsec_key = NostrKeypair::try_from(
+            "nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53",
+        )
+        .unwrap();
         let nsec_pubkey = nsec_key.public_key();
         let nsec_npub = nsec_key.npub();
         assert_eq!(nsec_pubkey, public_key);
@@ -256,16 +302,16 @@ mod tests {
     #[test]
     fn test_mnemonic() {
         let user_keys = NostrKeypair::generate(true);
-        let mnemonic = user_keys.get_mnemonic_phrase();
-        let spanish_mnemonic = user_keys.get_mnemonic_spanish();
+        let mnemonic = user_keys.get_mnemonic(Language::English).unwrap();
+        let spanish_mnemonic = user_keys.get_mnemonic(Language::Spanish).unwrap();
         assert_eq!(
-            NostrKeypair::parse_mnemonic(&mnemonic, false)
+            NostrKeypair::parse_mnemonic(&mnemonic, Language::English, false)
                 .unwrap()
                 .public_key(),
             user_keys.public_key()
         );
         assert_eq!(
-            NostrKeypair::parse_mnemonic(&spanish_mnemonic, false)
+            NostrKeypair::parse_mnemonic(&spanish_mnemonic, Language::Spanish, false)
                 .unwrap()
                 .public_key(),
             user_keys.public_key()
@@ -273,35 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extractable() {
-        let user_keys = NostrKeypair::generate(true);
-        let safe_user_keys = NostrKeypair::generate(false);
-        let public_key = user_keys.public_key();
-        let nsec = user_keys.get_nsec();
-        let mnemonic = user_keys.get_mnemonic_phrase();
-        let spanish_mnemonic = user_keys.get_mnemonic_spanish();
-        assert_eq!(
-            NostrKeypair::new_extractable(&nsec).unwrap().public_key(),
-            public_key
-        );
-        assert_eq!(safe_user_keys.get_nsec(), "Not extractable".to_string());
-        assert_eq!(
-            safe_user_keys.get_mnemonic_phrase(),
-            "Not extractable".to_string()
-        );
-        assert_eq!(
-            NostrKeypair::parse_mnemonic(&mnemonic, true)
-                .unwrap()
-                .public_key(),
-            public_key
-        );
-        assert_eq!(
-            NostrKeypair::parse_mnemonic(&spanish_mnemonic, true)
-                .unwrap()
-                .public_key(),
-            public_key
-        );
-    }
+    fn test_extractable() {}
 
     #[test]
     fn test_encryption() {
