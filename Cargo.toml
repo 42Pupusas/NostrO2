@@ -1,26 +1,22 @@
-[package]
-name = "nostro2"
-version = "0.2.7"
-edition = "2021"
-license = "MIT"
-description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
-repository = "https://github.com/42Pupusas/NostrO2.git"
-readme = "README.md"
-homepage = "https://github.com/42Pupusas/NostrO2.git"
-documentation = "https://docs.rs/nostro2/latest/nostro2/"
+[workspace]
+resolver="2"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+members = [
+    "nostro2",
+    "nostro2-relay",
+    "nostro2-web-relay",
+    "nostro2-signer",
+    "nostro2-web-signer",
+]
 
-[dependencies]
-# Error handling
-anyhow = "1"
-
+[workspace.dependencies]
 # JSON
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
-web-sys = { version = "0.3", features = ["SubtleCrypto", "CryptoKey", "Window", "Crypto", "AesKeyGenParams", "AesGcmParams",  "Navigator", "Navigator"] }
+
+nostro2 = { path = "nostro2", version = "^0.3" }
+nostro2-signer = { path = "nostro2-signer", version = "0.1" }
 
 # Logging
 tracing = "0.1"
@@ -43,24 +39,16 @@ bip39 = { version = "2.1", features = ["spanish"] }
 # Miscellanea utility
 futures-util = { version = "0.3", features = ["sink", "std"] }
 chrono = "0.4"
+tracing-test = "0.2"
 
 # Native platform TCP
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync", "io-util"] }
+tokio = { version = "1" }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 
-# Web Browser TCP
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
-serde-wasm-bindgen = "0.6.5"
-tokio = { version = "1", features = ["macros", "sync"] }
+ring = "0.17" 
 tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roots"] }
 wasm-bindgen-futures = "0.4"
-
-# Dependiecies for testing only
-[dev-dependencies]
-tokio = { version = "1", features = ["test-util", "macros", "rt", "sync"] }
 wasm-bindgen-test = "0.3"
-wasm-bindgen-futures = "0.4"
-tracing-test = "0.2"
+web-sys = { version = "0.3" }
+

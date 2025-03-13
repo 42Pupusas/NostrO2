@@ -1,10 +1,6 @@
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::fmt::{Display, Formatter};
+use crate::tags::NoteTags;
 
-use super::NoteTags;
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,
@@ -18,43 +14,53 @@ pub struct NostrNote {
 }
 impl Default for NostrNote {
     fn default() -> Self {
-        NostrNote {
-            pubkey: "".to_string(),
+        Self {
+            pubkey: String::new(),
             created_at: chrono::Utc::now().timestamp(),
             kind: 1,
             tags: NoteTags::default(),
-            content: "".to_string(),
+            content: String::new(),
             id: None,
             sig: None,
         }
     }
 }
 impl NostrNote {
+    #[must_use]
     pub fn get_note_hrp(&self) -> Option<String> {
         let hrp = bech32::Hrp::parse("note").ok()?;
         let note_data = self.id.as_ref()?;
-        let string = bech32::encode::<bech32::Bech32>(hrp, &note_data.as_bytes()).ok()?;
+        let string = bech32::encode::<bech32::Bech32>(hrp, note_data.as_bytes()).ok()?;
         Some(string)
     }
+    #[must_use]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
-        let mut id_bytes = [0u8; 32];
-        let id = Self::hex_decode(&self.id.as_ref()?);
+        let mut id_bytes = [0_u8; 32];
+        let id = Self::hex_decode(self.id.as_ref()?);
         id_bytes.copy_from_slice(&id);
         Some(id_bytes)
     }
+    /// Returns the signature as a byte array
     fn sig_bytes(&self) -> Option<[u8; 64]> {
-        let mut sig_bytes = [0u8; 64];
-        let sig = Self::hex_decode(&self.sig.as_ref()?);
+        let mut sig_bytes = [0_u8; 64];
+        let sig = Self::hex_decode(self.sig.as_ref()?);
         sig_bytes.copy_from_slice(&sig);
         Some(sig_bytes)
     }
-    fn pubkey_bytes(&self) -> Option<[u8; 32]> {
-        let mut pubkey_bytes = [0u8; 32];
+    /// Returns the public key as a byte array
+    fn pubkey_bytes(&self) -> [u8; 32] {
+        let mut pubkey_bytes = [0_u8; 32];
         let pubkey = Self::hex_decode(&self.pubkey);
         pubkey_bytes.copy_from_slice(&pubkey);
-        Some(pubkey_bytes)
+        pubkey_bytes
     }
-    pub fn serialize_id(&mut self) -> anyhow::Result<()> {
+
+    /// # Errors
+    ///
+    /// Will return `Err` if `serde` cannot serialize the data
+    pub fn serialize_id(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        use sha2::Digest as _;
+
         let serialized_data = (
             0,
             &*self.pubkey,
@@ -64,28 +70,34 @@ impl NostrNote {
             &*self.content,
         );
         let json_str = serde_json::to_string(&serialized_data)?;
-        let mut hasher = Sha256::new();
+        let mut hasher = sha2::Sha256::new();
         hasher.update(json_str.as_bytes());
-        self.id = Some(Self::hex_encode(hasher.finalize().to_vec()));
+        self.id = Some(
+            hasher
+                .finalize()
+                .iter()
+                .fold(String::new(), |mut acc, byte| {
+                    acc.push_str(&format!("{byte:02x}"));
+                    acc
+                }),
+        );
         Ok(())
     }
-    fn verify_signature(&self) -> anyhow::Result<()> {
+    /// Used to verify the signature of the note
+    ///
+    /// Verifies the signature of the note using the secp256k1 library
+    fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use secp256k1::{schnorr, Secp256k1, XOnlyPublicKey};
         let secp = Secp256k1::verification_only();
-        let id = self
-            .id_bytes()
-            .ok_or(anyhow::anyhow!("Failed to get id bytes."))?;
-        let sig = self
-            .sig_bytes()
-            .ok_or(anyhow::anyhow!("Failed to get sig bytes."))?;
-        let public_key = XOnlyPublicKey::from_slice(
-            &self
-                .pubkey_bytes()
-                .ok_or(anyhow::anyhow!("Failed to get pubkey bytes."))?,
-        )?;
+        let id = self.id_bytes().ok_or("Failed to get id bytes.")?;
+        let sig = self.sig_bytes().ok_or("Failed to get signature bytes.")?;
+        let public_key = XOnlyPublicKey::from_slice(&self.pubkey_bytes())?;
         let signature = schnorr::Signature::from_byte_array(sig);
-        Ok(secp.verify_schnorr(&signature, &id, &public_key)?)
+        Ok(secp.verify_schnorr(&signature, &id, &public_key).is_ok())
     }
+    /// Used to verify the content of the note
+    ///
+    /// Rebuilds the note and rehashes the content to verify the id
     fn verify_content(&self) -> bool {
         let mut copied_note = Self {
             pubkey: self.pubkey.to_string(),
@@ -100,65 +112,35 @@ impl NostrNote {
         }
         self.id == copied_note.id
     }
+    #[must_use]
     pub fn verify(&self) -> bool {
         if self.verify_signature().is_ok() && self.verify_content() {
             return true;
         }
         false
     }
+    /// Generic function to decode a hex string into a byte vector
     fn hex_decode(hex_string: &str) -> Vec<u8> {
         hex_string
             .as_bytes()
             .chunks(2)
-            .filter_map(|b| u8::from_str_radix(std::str::from_utf8(b).ok()?, 16).ok())
+            .filter_map(|b| u8::from_str_radix(core::str::from_utf8(b).ok()?, 16).ok())
             .collect()
     }
-    fn hex_encode(bytes: Vec<u8>) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
-    }
 }
-impl Into<crate::relays::WebSocketMessage> for NostrNote {
-    fn into(self) -> crate::relays::WebSocketMessage {
-        let note: String =
-            crate::relays::SendNoteEvent(crate::relays::RelayEventTag::EVENT, self).into();
-        crate::relays::WebSocketMessage::Text(note.into())
-    }
-}
-impl Display for NostrNote {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+impl core::fmt::Display for NostrNote {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(
             f,
             "{}",
-            serde_json::to_string_pretty(self).expect("Failed to serialize NostrNote.")
+            serde_json::to_string(self).expect("Failed to serialize NostrNote.")
         )
     }
 }
-impl TryFrom<&String> for NostrNote {
-    type Error = serde_json::Error;
-    fn try_from(value: &String) -> Result<Self, Self::Error> {
-        serde_json::from_str(value)
-    }
-}
-impl Into<String> for NostrNote {
-    fn into(self) -> String {
-        serde_json::to_string(&self).unwrap()
-    }
-}
-impl TryFrom<String> for NostrNote {
-    type Error = serde_json::Error;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        serde_json::from_str(&value)
-    }
-}
-impl Into<String> for &NostrNote {
-    fn into(self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
-}
-impl TryFrom<&str> for NostrNote {
-    type Error = serde_json::Error;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        serde_json::from_str(&value)
+impl core::str::FromStr for NostrNote {
+    type Err = serde_json::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
     }
 }
 impl TryFrom<serde_json::Value> for NostrNote {
@@ -173,30 +155,28 @@ impl TryFrom<&serde_json::Value> for NostrNote {
         serde_json::from_value(value.clone())
     }
 }
-impl Into<serde_json::Value> for NostrNote {
-    fn into(self) -> serde_json::Value {
-        serde_json::to_value(&self).unwrap()
+impl From<NostrNote> for serde_json::Value {
+    fn from(note: NostrNote) -> Self {
+        serde_json::to_value(note).expect("Failed to serialize NostrNote.")
     }
 }
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<web_sys::wasm_bindgen::JsValue> for NostrNote {
     type Error = web_sys::wasm_bindgen::JsError;
     fn try_from(value: web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
         Ok(serde_wasm_bindgen::from_value(value)?)
     }
 }
-impl Into<web_sys::wasm_bindgen::JsValue> for NostrNote {
-    fn into(self) -> web_sys::wasm_bindgen::JsValue {
-        serde_wasm_bindgen::to_value(&self).unwrap()
-    }
-}
+#[cfg(target_arch = "wasm32")]
 impl TryFrom<&web_sys::wasm_bindgen::JsValue> for NostrNote {
     type Error = web_sys::wasm_bindgen::JsError;
     fn try_from(value: &web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
         Ok(serde_wasm_bindgen::from_value(value.clone())?)
     }
 }
-impl Into<web_sys::wasm_bindgen::JsValue> for &NostrNote {
-    fn into(self) -> web_sys::wasm_bindgen::JsValue {
-        serde_wasm_bindgen::to_value(self).unwrap()
+#[cfg(target_arch = "wasm32")]
+impl From<NostrNote> for web_sys::wasm_bindgen::JsValue {
+    fn from(note: NostrNote) -> Self {
+        serde_wasm_bindgen::to_value(&note).expect("Failed to serialize NostrNote.")
     }
 }

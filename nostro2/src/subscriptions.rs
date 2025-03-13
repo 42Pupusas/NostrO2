@@ -1,10 +1,4 @@
-use std::collections::HashMap;
-use secp256k1::rand::{thread_rng, Rng};
-use serde::{Deserialize, Serialize};
-
-use super::SubscribeEvent;
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct NostrSubscription {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<String>>,
@@ -20,38 +14,36 @@ pub struct NostrSubscription {
     pub limit: Option<u32>,
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<HashMap<String, Vec<String>>>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
 }
-impl Default for NostrSubscription {
-    fn default() -> Self {
-        NostrSubscription {
-            authors: None,
-            ids: None,
-            kinds: None,
-            since: None,
-            until: None,
-            limit: None,
-            tags: None,
-        }
+impl TryFrom<serde_json::Value> for NostrSubscription {
+    type Error = serde_json::Error;
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value)
     }
 }
-impl Into<crate::relays::WebSocketMessage> for NostrSubscription {
-    fn into(self) -> crate::relays::WebSocketMessage {
-        let event: SubscribeEvent = self.into();
-        crate::relays::WebSocketMessage::Text(event.into())
+impl TryFrom<&[u8]> for NostrSubscription {
+    type Error = serde_json::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
     }
 }
-impl Into<SubscribeEvent> for NostrSubscription {
-    fn into(self) -> SubscribeEvent {
-        let random_bits: [u8; 16] = thread_rng().gen();
-        let random_id = random_bits.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        SubscribeEvent(
-            super::RelayEventTag::REQ,
-            random_id,
-            self.clone(),
+impl std::str::FromStr for NostrSubscription {
+    type Err = serde_json::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value)
+    }
+}
+impl std::fmt::Display for NostrSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(self).expect("Failed to serialize Subscription")
         )
     }
 }
+
 impl NostrSubscription {
     pub fn add_tag(&mut self, tag: &str, value: &str) {
         if let Some(tags) = &mut self.tags {
@@ -61,7 +53,7 @@ impl NostrSubscription {
                 tags.insert(tag.to_string(), vec![value.to_string()]);
             }
         } else {
-            let mut tags = HashMap::new();
+            let mut tags = std::collections::HashMap::new();
             tags.insert(tag.to_string(), vec![value.to_string()]);
             self.tags = Some(tags);
         }
@@ -74,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_filter_tags() {
-        let mut tags = HashMap::new();
+        let mut tags = std::collections::HashMap::new();
         tags.insert("#p".to_string(), vec!["value1".to_string()]);
         tags.insert("#q".to_string(), vec!["value2".to_string()]);
         let filter = NostrSubscription {
@@ -108,4 +100,3 @@ mod tests {
         );
     }
 }
-

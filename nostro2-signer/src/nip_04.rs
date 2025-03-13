@@ -10,40 +10,60 @@ pub struct Nip04 {
 }
 
 impl Nip04 {
-    pub fn new(private_key: NostrKeypair, peer_pubkey: String) -> Self {
-        Nip04 {
+    #[must_use]
+    pub const fn new(private_key: NostrKeypair, peer_pubkey: String) -> Self {
+        Self {
             private_key,
             peer_pubkey,
         }
     }
-    pub fn encrypt(&self, plaintext: String) -> anyhow::Result<String> {
+
+    /// Encrypts a message using NIP-04 
+    ///
+    /// # Errors 
+    ///
+    /// Returns an error if the public key cannot create a shared secret with the private keypair,
+    /// or if the encryption fails.
+    pub fn encrypt(&self, plaintext: &str) -> Result<String, Box<dyn std::error::Error>> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let iv = thread_rng().gen::<[u8; 16]>();
         let mut cipher = Cipher::new_256(&shared_secret);
         cipher.set_auto_padding(true);
         let cyphertext = cipher.cbc_encrypt(&iv, plaintext.as_bytes());
         let base_64_cyphertext = general_purpose::STANDARD.encode(&cyphertext);
-        let base_64_iv = general_purpose::STANDARD.encode(&iv);
-        Ok(format!("{}?iv={}", base_64_cyphertext, base_64_iv))
+        let base_64_iv = general_purpose::STANDARD.encode(iv);
+        Ok(format!("{base_64_cyphertext}?iv={base_64_iv}"))
     }
 
-    pub fn decrypt(&self, cyphertext: String) -> anyhow::Result<String> {
+    /// Decrypts a NIP-04 encrypted message
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the public key cannot create a shared secret with the private keypair,
+    /// or if the cyphertext is not in the correct format,
+    /// or if the decryption fails.
+    pub fn decrypt(&self, cyphertext: &str) -> Result<String, Box<dyn std::error::Error>> {
         let shared_secret = self.private_key.get_shared_point(&self.peer_pubkey)?;
         let mut parts = cyphertext.split('?');
-        let base_64_cyphertext = parts.next().ok_or(anyhow::anyhow!("No cyphertext"))?;
-        let base_64_iv = &parts.next().ok_or(anyhow::anyhow!("No IV"))?[3..]; // skip "iv="
-        let cyphertext = general_purpose::STANDARD.decode(base_64_cyphertext.as_bytes())?;
-        let iv = general_purpose::STANDARD.decode(base_64_iv.as_bytes())?;
+        let base_64_cyphertext = parts.next().ok_or("No cyphertext")?;
+        let base_64_iv = &parts.next().ok_or("No IV")?[3..]; // skip "iv="
+        let cyphertext = general_purpose::STANDARD
+            .decode(base_64_cyphertext.as_bytes())
+            .map_err(|_| "Invalid base64")?;
+        let iv = general_purpose::STANDARD
+            .decode(base_64_iv.as_bytes())
+            .map_err(|_| "Invalid base64")?;
         let mut cipher = Cipher::new_256(&shared_secret);
         cipher.set_auto_padding(true);
         let plaintext = cipher.cbc_decrypt(&iv, &cyphertext);
-        Ok(String::from_utf8(plaintext)?)
+        Ok(String::from_utf8(plaintext).map_err(|_| "Invalid UTF-8")?)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{keypair::NostrKeypair, nips::nip_46::Nip46Request, notes::NostrNote};
+    use crate::keypair::NostrKeypair;
+    use nostro2::note::NostrNote;
 
     use super::*;
 
@@ -60,7 +80,7 @@ mod tests {
             private_key: my_keys,
             peer_pubkey: public_key.to_string(),
         };
-        let plaintext = nip04.decrypt(cyphertext.to_string()).expect("");
+        let plaintext = nip04.decrypt(cyphertext).expect("");
 
         assert_eq!(plaintext, "{\"id\":\"2fm12v\",\"method\":\"connect\",\"params\":[\"62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba\",\"\",\"sign_event:1985,sign_event:3,sign_event:30000\"]}");
     }
@@ -83,11 +103,7 @@ mod tests {
     "sig": "9a712ba5ac6d4069f7e6a0029e739ea6754d43b5ee4d19e35123e3e1e15e939ad767e025d6cf3643dfbb0787913092d81999544b2d6de29a12590219b5b190cb"
     }
         "#;
-        let signed_note = serde_json::from_str::<NostrNote>(note_str).unwrap();
-        let my_keys = NostrKeypair::try_from(
-            "341fe1a3b23d0f1660a70e0395fcd7d09a73ff041a4a2cf4d0760b721eb14c55",
-        ).expect("");
-        let respnse = Nip46Request::get_request_command(&signed_note, &my_keys);
-        assert!(respnse.is_ok());
+        let signed_note: NostrNote = note_str.parse().unwrap();
+        assert_eq!(signed_note.verify(), true);
     }
 }

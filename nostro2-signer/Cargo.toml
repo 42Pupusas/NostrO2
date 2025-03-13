@@ -1,5 +1,5 @@
 [package]
-name = "nostro2-web-relay"
+name = "nostro2-signer"
 version = "0.1.0"
 edition = "2021"
 categories = ["cryptography", "protocol"]
@@ -12,12 +12,13 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 
 [dependencies]
-
-futures-util.workspace = true
-tokio = { workspace = true, features = ["macros", "sync"] }
-web-sys = { workspace = true, features = ["WebSocket", "MessageEvent"] }
-nostro2.workspace =true 
-wasm-bindgen-futures.workspace = true
-
-[dev-dependencies]
-wasm-bindgen-test.workspace = true
+base64.workspace = true
+bech32.workspace = true
+bip39.workspace = true
+chacha20.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+libaes.workspace = true
+nostro2.workspace = true
+secp256k1.workspace = true
+sha2.workspace = true
