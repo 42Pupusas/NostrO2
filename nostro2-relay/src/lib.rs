@@ -14,7 +14,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay() {
-        let mut relay = super::relay::NostrRelay::new("wss://relay.illuminodes.com")
+        let relay = super::relay::NostrRelay::new("wss://relay.illuminodes.com")
             .await
             .expect("Failed to create relay");
         let filter = nostro2::subscriptions::NostrSubscription {
@@ -27,6 +27,39 @@ mod tests {
             println!("{:?}", msg);
             break;
         }
+    }
+    #[tokio::test]
+    async fn test_relay_pool_count() {
+        let pool = super::pool::NostrPool::new(&vec![
+            "wss://relay.illuminodes.com",
+            "wss://relay.arrakis.lat",
+        ])
+        .await;
+        let filter = nostro2::subscriptions::NostrSubscription {
+            kinds: vec![1].into(),
+            limit: Some(10),
+            ..Default::default()
+        };
+        pool.send(&filter).await.expect("Failed to send filter");
+        let mut count = 0;
+        let mut eose = 0;
+        while let Some(msg) = pool.recv().await {
+            match msg {
+                nostro2::relay_events::NostrRelayEvent::NewNote(..) => {
+                    println!("{:?}", msg);
+                    count += 1;
+                }
+                nostro2::relay_events::NostrRelayEvent::EndOfSubscription(_, _) => {
+                    println!("{:?}", msg);
+                    eose += 1;
+                }
+                _ => {}
+            }
+            if eose == 2 {
+                break;
+            }
+        }
+        assert!(count == 20);
     }
 
     #[tokio::test]

@@ -1,12 +1,11 @@
 use futures_util::FutureExt;
 use web_sys::wasm_bindgen::JsCast;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NostrRelay {
     notified: std::rc::Rc<tokio::sync::Notify>,
     state: std::rc::Rc<std::sync::RwLock<web_sys::WebSocket>>,
-    pub reader:
-        std::rc::Rc<tokio::sync::broadcast::Receiver<nostro2::relay_events::NostrRelayEvent>>,
+    pub reader: tokio::sync::broadcast::Receiver<nostro2::relay_events::NostrRelayEvent>,
 }
 impl NostrRelay {
     #[must_use]
@@ -128,7 +127,6 @@ impl NostrRelay {
     pub fn new(url: &str) -> Result<Self, web_sys::wasm_bindgen::JsValue> {
         let state = std::rc::Rc::new(std::sync::RwLock::new(web_sys::WebSocket::new(url)?));
         let (sender, reader) = tokio::sync::broadcast::channel(100);
-        let reader = std::rc::Rc::new(reader);
         let new_self = Self {
             state: state.clone(),
             reader,
@@ -167,10 +165,14 @@ impl NostrRelay {
     /// # Errors
     ///
     /// This will error out if the lock is poisoned.
-    pub fn send(
+    pub fn send<T>(
         &self,
-        event: &nostro2::relay_events::NostrClientEvent,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> {
+        event: T,
+    ) -> Result<(), web_sys::wasm_bindgen::JsValue> 
+    where 
+        T: Into<nostro2::relay_events::NostrClientEvent> + Send + Sync,
+    {
+        let event: nostro2::relay_events::NostrClientEvent = event.into();
         let ws = self
             .state
             .read()

@@ -1,16 +1,14 @@
 [package]
 name = "nostro2-relay"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
-categories = ["cryptography", "protocol"]
+categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
 description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
 repository = "https://github.com/42Pupusas/NostrO2.git"
-readme = "README.md"
+readme = "../README.md"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
-
-
 
 [dependencies]
 futures-util.workspace = true
