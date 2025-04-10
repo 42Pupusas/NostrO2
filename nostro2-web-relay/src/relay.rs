@@ -1,193 +1,158 @@
-use futures_util::FutureExt;
 use web_sys::wasm_bindgen::JsCast;
 
 #[derive(Debug)]
 pub struct NostrRelay {
-    notified: std::rc::Rc<tokio::sync::Notify>,
-    state: std::rc::Rc<std::sync::RwLock<web_sys::WebSocket>>,
-    pub reader: tokio::sync::broadcast::Receiver<nostro2::relay_events::NostrRelayEvent>,
+    _url: String,
+    state: tokio::sync::RwLock<tokio::sync::watch::Receiver<nostro2::relay_events::RelayStatus>>,
+    reader: tokio::sync::RwLock<
+        tokio::sync::mpsc::UnboundedReceiver<nostro2::relay_events::NostrRelayEvent>,
+    >,
+    writer: tokio::sync::RwLock<
+        tokio::sync::mpsc::UnboundedSender<nostro2::relay_events::NostrClientEvent>,
+    >,
+    closer: tokio::sync::RwLock<tokio::sync::mpsc::Sender<()>>,
 }
 impl NostrRelay {
     #[must_use]
-    pub fn state(&self) -> nostro2::relay_events::RelayStatus {
-        self.state
-            .read()
-            .map_err(|e| web_sys::wasm_bindgen::JsValue::from_str(e.to_string().as_str()))
-            .map(|state| state.ready_state().into())
-            .unwrap_or(nostro2::relay_events::RelayStatus::CLOSED)
-    }
-    #[allow(clippy::future_not_send)]
-    pub async fn is_open(&self) -> bool {
-        let notifier = self.notified.clone();
-        notifier
-            .notified()
-            .map(|()| {
-                self.state
-                    .read()
-                    .map(|state| {
-                        nostro2::relay_events::RelayStatus::from(state.ready_state())
-                            == nostro2::relay_events::RelayStatus::OPEN
-                    })
-                    .unwrap_or(false)
-            })
-            .await
-    }
-    /// Add an open handler to the relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the lock is poisoned.
-    pub fn on_open(
-        &self,
-        closure: impl FnMut() + 'static,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> {
-        let Ok(ws) = self.state.read() else {
-            return Err(web_sys::wasm_bindgen::JsValue::from_str(
-                "Failed to read ws",
-            ));
-        };
-        ws.set_onopen(Some(
-            web_sys::wasm_bindgen::closure::Closure::wrap(Box::new(closure) as Box<dyn FnMut()>)
-                .into_js_value()
-                .unchecked_ref(),
-        ));
-        Ok(())
-    }
-    /// Add a message handler to the relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the lock is poisoned.
-    pub fn on_message(
-        &self,
-        closure: impl FnMut(web_sys::MessageEvent) + 'static,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> {
-        let Ok(ws) = self.state.read() else {
-            return Err(web_sys::wasm_bindgen::JsValue::from_str(
-                "Failed to read ws",
-            ));
-        };
-        ws.set_onmessage(Some(
-            web_sys::wasm_bindgen::closure::Closure::wrap(Box::new(closure) as Box<dyn FnMut(_)>)
-                .into_js_value()
-                .unchecked_ref(),
-        ));
-        Ok(())
-    }
-    /// Add a close handler to the relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the lock is poisoned.
-    pub fn on_close(
-        &self,
-        closure: impl FnMut() + 'static,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> {
-        let state_clone = self.state.clone();
-        let Ok(ws) = state_clone.read() else {
-            return Err(web_sys::wasm_bindgen::JsValue::from_str(
-                "Failed to read ws",
-            ));
-        };
-        ws.set_onclose(Some(
-            web_sys::wasm_bindgen::closure::Closure::wrap(Box::new(closure) as Box<dyn FnMut()>)
-                .into_js_value()
-                .unchecked_ref(),
-        ));
-        Ok(())
-    }
-    /// Add an error handler to the relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the lock is poisoned.
-    pub fn on_error(
-        &self,
-        closure: impl FnMut() + 'static,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> {
-        let state_clone = self.state.clone();
-        let Ok(ws) = state_clone.read() else {
-            return Err(web_sys::wasm_bindgen::JsValue::from_str(
-                "Failed to read ws",
-            ));
-        };
-        ws.set_onerror(Some(
-            web_sys::wasm_bindgen::closure::Closure::wrap(Box::new(closure) as Box<dyn FnMut()>)
-                .into_js_value()
-                .unchecked_ref(),
-        ));
-        Ok(())
-    }
-    /// Create a new relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the relay could not be created. This could be due to the relay being
-    /// closed or an error occurred while creating the relay.
-    pub fn new(url: &str) -> Result<Self, web_sys::wasm_bindgen::JsValue> {
-        let state = std::rc::Rc::new(std::sync::RwLock::new(web_sys::WebSocket::new(url)?));
-        let (sender, reader) = tokio::sync::broadcast::channel(100);
-        let new_self = Self {
-            state: state.clone(),
-            reader,
-            notified: tokio::sync::Notify::new().into(),
-        };
-
-        let state_clone = new_self.notified.clone();
-        let on_open = move || {
-            state_clone.notify_waiters();
-        };
-
-        let on_message = move |event: web_sys::MessageEvent| {
-            let Some(Ok(event)) = event.data().as_string().map(|s| s.parse()) else {
+    pub fn new(url: &str) -> Self {
+        let (state_tx, state_rx) =
+            tokio::sync::watch::channel(nostro2::relay_events::RelayStatus::CONNECTING);
+        let (reader_tx, reader_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (writer_tx, mut writer_rx) =
+            tokio::sync::mpsc::unbounded_channel::<nostro2::relay_events::NostrClientEvent>();
+        let (closer_tx, mut closer_rx) = tokio::sync::mpsc::channel(1);
+        let new_url = url.to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            let Ok(ws) = web_sys::WebSocket::new(&new_url) else {
+                let _ = state_tx.send(nostro2::relay_events::RelayStatus::CLOSED);
                 return;
             };
-            let _ = sender
-                .send(event)
-                .map_err(|_| state.read().map(|ws| ws.close_with_code(1000)));
-        };
+            let state_clone = state_tx.clone();
+            ws.set_onopen(Some(
+                web_sys::wasm_bindgen::closure::Closure::once_into_js(move || {
+                    let _ = state_clone.send(nostro2::relay_events::RelayStatus::OPEN);
+                })
+                .unchecked_ref(),
+            ));
+            let state_clone = state_tx.clone();
+            ws.set_onmessage(Some(
+                web_sys::wasm_bindgen::closure::Closure::wrap(Box::new(
+                    move |event: web_sys::MessageEvent| {
+                        let Some(Ok(event)) = event.data().as_string().map(|s| s.parse()) else {
+                            return;
+                        };
+                        reader_tx.send(event).is_err().then(|| {
+                            let _ = state_clone.send(nostro2::relay_events::RelayStatus::CLOSING);
+                        });
+                    },
+                )
+                    as Box<dyn FnMut(_)>)
+                .into_js_value()
+                .unchecked_ref(),
+            ));
+            let state_clone = state_tx.clone();
+            ws.set_onclose(Some(
+                web_sys::wasm_bindgen::closure::Closure::once_into_js(move || {
+                    let _ = state_clone.send(nostro2::relay_events::RelayStatus::CLOSED);
+                })
+                .unchecked_ref(),
+            ));
+            let ws_clone = ws.clone();
+            let state_clone = state_tx.clone();
+            ws.set_onerror(Some(
+                web_sys::wasm_bindgen::closure::Closure::once_into_js(move || {
+                    let _ = state_clone.send(nostro2::relay_events::RelayStatus::CLOSING);
+                    let _ = ws_clone.close();
+                })
+                .unchecked_ref(),
+            ));
+            loop {
+                tokio::select! {
+                    Some(msg) = writer_rx.recv() => {
+                        if let Err(_err) = ws.send_with_str(msg.to_string().as_str()) {
+                            let _ = state_tx.send(nostro2::relay_events::RelayStatus::CLOSING);
+                            break;
+                        }
+                    }
+                    _ = closer_rx.recv() => {
+                        let _ = ws.close();
+                        let _ = state_tx
+                            .send(nostro2::relay_events::RelayStatus::CLOSED);
+                        break;
+                    }
+                }
+            }
+        });
 
-        let notifier = new_self.notified.clone();
-        let on_close = move || {
-            notifier.notify_waiters();
-        };
-        let on_error = move || {};
-
-        new_self.on_open(on_open)?;
-        new_self.on_message(on_message)?;
-        new_self.on_close(on_close)?;
-        new_self.on_error(on_error)?;
-
-        Ok(new_self)
+        Self {
+            _url: url.to_string(),
+            state: state_rx.into(),
+            reader: reader_rx.into(),
+            writer: writer_tx.into(),
+            closer: closer_tx.into(),
+        }
     }
+
+    pub async fn relay_state(&self) -> nostro2::relay_events::RelayStatus {
+        let status_watch: tokio::sync::watch::Receiver<nostro2::relay_events::RelayStatus> =
+            self.state.read().await.clone();
+        let status = status_watch.borrow();
+        *status
+    }
+
+    pub async fn is_open(&self) -> bool {
+        let _ = self
+            .state
+            .write()
+            .await
+            .wait_for(|status| {
+                status == &nostro2::relay_events::RelayStatus::OPEN
+                    || status == &nostro2::relay_events::RelayStatus::CLOSED
+            })
+            .await
+            .is_ok();
+        if self.relay_state().await == nostro2::relay_events::RelayStatus::OPEN {
+            true
+        } else {
+            self.disconnect().await;
+            false
+        }
+    }
+
     /// Send an event to the relay
     ///
     /// # Errors
     ///
-    /// This will error out if the lock is poisoned.
-    pub fn send<T>(
+    /// If the event cannot be sent to the relay, an error is returned.
+    pub async fn send<T>(
         &self,
         event: T,
-    ) -> Result<(), web_sys::wasm_bindgen::JsValue> 
-    where 
-        T: Into<nostro2::relay_events::NostrClientEvent> + Send + Sync,
+    ) -> Result<nostro2::relay_events::NostrClientEvent, Box<dyn std::error::Error>>
+    where
+        T: Into<nostro2::relay_events::NostrClientEvent> + Send + 'static + Sync,
     {
-        let event: nostro2::relay_events::NostrClientEvent = event.into();
-        let ws = self
-            .state
-            .read()
-            .map_err(|e| web_sys::wasm_bindgen::JsValue::from_str(e.to_string().as_str()))?;
-        ws.send_with_str(event.to_string().as_str())
+        if !self.is_open().await {
+            self.disconnect().await;
+            return Err("Relay is not open".into());
+        };
+        // Send the event to the relay
+        let msg: nostro2::relay_events::NostrClientEvent = event.into();
+        self.writer.write().await.send(msg.clone())?;
+        Ok(msg)
     }
-    /// Close the relay
-    ///
-    /// # Errors
-    ///
-    /// This will error out if the lock is poisoned.
-    pub fn close(&self) -> Result<(), web_sys::wasm_bindgen::JsValue> {
-        self.state
-            .read()
-            .map_err(|e| web_sys::wasm_bindgen::JsValue::from_str(e.to_string().as_str()))?
-            .close()
+
+    pub async fn read(&self) -> Option<nostro2::relay_events::NostrRelayEvent> {
+        // Return the reader
+        self.reader.write().await.recv().await // Return the event
+    }
+
+    pub async fn disconnect(&self) {
+        let _ = self.closer.write().await.send(()).await;
+        let _ = self
+            .state
+            .write()
+            .await
+            .wait_for(|status| status == &nostro2::relay_events::RelayStatus::CLOSED)
+            .await;
     }
 }

@@ -15,20 +15,23 @@ pub extern crate nostro2;
 mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_wasm_connection() {
-        let mut relay = crate::relay::NostrRelay::new("wss://relay.illuminodes.com").unwrap();
+        let relay = crate::relay::NostrRelay::new("wss://relay.illuminodes.com");
         relay.is_open().await;
-        assert_eq!(relay.state(), nostro2::relay_events::RelayStatus::OPEN);
+        assert_eq!(
+            relay.relay_state().await,
+            nostro2::relay_events::RelayStatus::OPEN
+        );
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
             limit: Some(10),
             ..Default::default()
         };
-        relay.send(filter).expect("Failed to send filter");
+        relay.send(filter).await.expect("Failed to send filter");
 
         let mut received = false;
-        while let Ok(msg) = relay.reader.recv().await {
+        while let Some(msg) = relay.read().await {
             let nostro2::relay_events::NostrRelayEvent::EndOfSubscription(_, _) = msg else {
                 received = true;
                 continue;
@@ -37,23 +40,29 @@ mod tests {
             break;
         }
         assert!(received);
-        relay.close().expect("Failed to close relay");
-        assert_eq!(relay.state(), nostro2::relay_events::RelayStatus::CLOSING);
+        relay.disconnect().await;
+        assert_eq!(
+            relay.relay_state().await,
+            nostro2::relay_events::RelayStatus::CLOSED
+        );
     }
-    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_wasm_count() {
-        let mut relay = crate::relay::NostrRelay::new("wss://relay.arrakis.lat").unwrap();
+        let relay = crate::relay::NostrRelay::new("wss://relay.arrakis.lat");
         relay.is_open().await;
-        assert_eq!(relay.state(), nostro2::relay_events::RelayStatus::OPEN);
+        assert_eq!(
+            relay.relay_state().await,
+            nostro2::relay_events::RelayStatus::OPEN
+        );
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
             limit: Some(10),
             ..Default::default()
         };
-        relay.send(filter).expect("Failed to send filter");
+        relay.send(filter).await.expect("Failed to send filter");
 
         let mut received = 0;
-        while let Ok(msg) = relay.reader.recv().await {
+        while let Some(msg) = relay.read().await {
             match msg {
                 nostro2::relay_events::NostrRelayEvent::NewNote(..) => {
                     received += 1;
@@ -65,10 +74,22 @@ mod tests {
             }
         }
         assert!(received == 10);
-        relay.close().expect("Failed to close relay");
-        assert_eq!(relay.state(), nostro2::relay_events::RelayStatus::CLOSING);
+        relay.disconnect().await;
+        assert_eq!(
+            relay.relay_state().await,
+            nostro2::relay_events::RelayStatus::CLOSED
+        );
     }
     #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn _test_closed_relay() {
+        let relay = crate::relay::NostrRelay::new("wss://bouncer.minibolt.info");
+        relay.is_open().await;
+        assert_eq!(
+            relay.relay_state().await,
+            nostro2::relay_events::RelayStatus::CLOSED
+        );
+    }
+    // #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_note_dedup() {
         let pool: crate::pool::RelayPool = [
             "wss://relay.illuminodes.com",
@@ -83,7 +104,6 @@ mod tests {
         .as_slice()
         .into();
         wasm_bindgen_test::console_log!("Created pool");
-        pool.connect().await.unwrap();
         wasm_bindgen_test::console_log!("Connected to pool");
         let new_keys = nostro2_signer::keypair::NostrKeypair::generate(false);
         let filter = nostro2::subscriptions::NostrSubscription {
@@ -91,7 +111,11 @@ mod tests {
             authors: vec![new_keys.public_key()].into(),
             ..Default::default()
         };
-        pool.send(filter).await.expect("Failed to send filter");
+        let sub = pool.send(filter).await;
+        assert!(matches!(
+            sub,
+            nostro2::relay_events::NostrClientEvent::Subscribe(..)
+        ));
         wasm_bindgen_test::console_log!("Sent filter");
         let mut new_note = nostro2::note::NostrNote {
             content: "Test".to_string(),
@@ -100,17 +124,22 @@ mod tests {
             ..Default::default()
         };
         new_keys.sign_nostr_event(&mut new_note);
-        pool.send(new_note).await.expect("Failed to send note");
+        pool.send(new_note).await;
+        wasm_bindgen_test::console_log!("Sent note");
 
         loop {
-            let Ok(msg) = pool.read().await else {
+            let Some(msg) = pool.read().await else {
                 wasm_bindgen_test::console_log!("Failed to read from pool");
                 continue;
             };
-            wasm_bindgen_test::console_log!("Received {:?}", msg);
+            if let nostro2::relay_events::NostrRelayEvent::NewNote(.., note) = msg {
+                assert_eq!(note.kind, 20004);
+                assert_eq!(note.pubkey, new_keys.public_key());
+                wasm_bindgen_test::console_log!("Received note {:?}", note);
+            }
         }
     }
-    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_relay_pool() {
         let pool: crate::pool::RelayPool = [
             "wss://relay.illuminodes.com",
@@ -125,18 +154,17 @@ mod tests {
         .as_slice()
         .into();
         wasm_bindgen_test::console_log!("Created pool");
-        pool.connect().await.unwrap();
         wasm_bindgen_test::console_log!("Connected to pool");
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
             limit: Some(10),
             ..Default::default()
         };
-        pool.send(filter).await.expect("Failed to send filter");
+        pool.send(filter).await;
         wasm_bindgen_test::console_log!("Sent filter");
         let mut count = 0;
         loop {
-            let Ok(msg) = pool.read().await else {
+            let Some(msg) = pool.read().await else {
                 wasm_bindgen_test::console_log!("Failed to read from pool");
                 continue;
             };
@@ -152,26 +180,25 @@ mod tests {
         }
         assert!(count > 5);
     }
-    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _test_message_count() {
         let pool: crate::pool::RelayPool =
             ["wss://relay.illuminodes.com", "wss://bitcoiner.social"]
                 .as_slice()
                 .into();
         wasm_bindgen_test::console_log!("Created pool");
-        pool.connect().await.unwrap();
         wasm_bindgen_test::console_log!("Connected to pool");
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
             limit: Some(10),
             ..Default::default()
         };
-        pool.send(filter).await.expect("Failed to send filter");
+        pool.send(filter).await;
         wasm_bindgen_test::console_log!("Sent filter");
         let mut count = 0;
         let mut eose = 0;
         loop {
-            let Ok(msg) = pool.read().await else {
+            let Some(msg) = pool.read().await else {
                 wasm_bindgen_test::console_log!("Failed to read from pool");
                 continue;
             };
@@ -192,7 +219,7 @@ mod tests {
         wasm_bindgen_test::console_log!("Received {} messages", count);
         assert!(count == 20);
     }
-    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
     async fn _stress_test_relay_pool() {
         let pool: crate::pool::RelayPool = [
             "wss://relay.illuminodes.com",
@@ -207,15 +234,14 @@ mod tests {
         .as_slice()
         .into();
 
-        pool.connect().await.unwrap();
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
             ..Default::default()
         };
-        pool.send(filter).await.expect("Failed to send filter");
+        pool.send(filter).await;
         let mut count = 0;
         loop {
-            let Ok(msg) = pool.read().await else {
+            let Some(msg) = pool.read().await else {
                 wasm_bindgen_test::console_log!("Failed to read from pool");
                 continue;
             };
