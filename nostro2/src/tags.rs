@@ -5,6 +5,7 @@ pub enum NostrTag {
     Event,
     Parameterized,
     Custom(&'static str),
+    Relay,
 }
 impl std::str::FromStr for NostrTag {
     type Err = ();
@@ -24,6 +25,7 @@ impl std::fmt::Display for NostrTag {
             Self::Event => write!(f, "e"),
             Self::Parameterized => write!(f, "d"),
             Self::Custom(s) => write!(f, "{s}"),
+            Self::Relay => write!(f, "relay"),
         }
     }
 }
@@ -114,16 +116,27 @@ impl NoteTags {
             .flat_map(|tag_list| tag_list.tags.iter().cloned())
             .collect()
     }
-    pub fn add_custom_tag(&mut self, tag_type: NostrTag, tag: &str) {
-        if let Some(index) = self.0.iter().position(|inner| inner.tag_type == tag_type) {
+    pub fn add_custom_tag(&mut self, tag_type: &'static str, tag: &str) {
+        if let Some(index) = self
+            .0
+            .iter()
+            .position(|inner| inner.tag_type == NostrTag::Custom(tag_type))
+        {
             self.0[index].tags.push(tag.to_owned());
         } else {
             let new_inner = TagList {
-                tag_type,
+                tag_type: NostrTag::Custom(tag_type),
                 tags: vec![tag.to_owned()],
             };
             self.0.push(new_inner);
         }
+    }
+    pub fn add_relay_tag(&mut self, relay: &str) {
+        let new_inner = TagList {
+            tag_type: NostrTag::Relay,
+            tags: vec![relay.to_owned()],
+        };
+        self.0.push(new_inner);
     }
     pub fn add_parameter_tag(&mut self, parameter: &str) {
         if let Some(index) = self
@@ -140,20 +153,16 @@ impl NoteTags {
             self.0.push(new_inner);
         }
     }
-    pub fn add_pubkey_tag(&mut self, pubkey: &str) {
-        if let Some(index) = self
-            .0
-            .iter()
-            .position(|inner| inner.tag_type == NostrTag::Pubkey)
-        {
-            self.0[index].tags.push(pubkey.to_owned());
-        } else {
-            let new_inner = TagList {
-                tag_type: NostrTag::Pubkey,
-                tags: vec![pubkey.to_owned()],
-            };
-            self.0.push(new_inner);
+    pub fn add_pubkey_tag(&mut self, pubkey: &str, relay: Option<&str>) {
+        let mut tags = vec![pubkey.to_owned()];
+        if let Some(relay) = relay {
+            tags.push(relay.to_owned());
         }
+        let new_inner = TagList {
+            tag_type: NostrTag::Pubkey,
+            tags,
+        };
+        self.0.push(new_inner);
     }
     pub fn add_event_tag(&mut self, event_id: &str) {
         if let Some(index) = self

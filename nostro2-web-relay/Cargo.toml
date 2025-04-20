@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-web-relay"
-version = "0.1.2"
+version = "0.1.5"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"

@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.3.1"
+version = "0.3.3"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -22,5 +22,4 @@ sha2.workspace = true
 web-sys.workspace = true
 serde-wasm-bindgen.workspace = true
 ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
-
 

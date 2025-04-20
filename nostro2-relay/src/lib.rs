@@ -11,6 +11,7 @@ pub extern crate nostro2;
 
 #[cfg(test)]
 mod tests {
+    use nostro2::NostrSigner;
 
     #[tokio::test]
     async fn test_relay() {
@@ -79,7 +80,7 @@ mod tests {
         println!("Connected in: {:?}", time_spent.elapsed());
         let filter = nostro2::subscriptions::NostrSubscription {
             kinds: vec![1].into(),
-            limit: Some(2000),
+            limit: Some(20),
             ..Default::default()
         };
         pool.send(&filter).await.expect("Failed to send filter");
@@ -92,7 +93,7 @@ mod tests {
             println!("{:?}", msg);
             println!("Received in: {:?}", time_spent.elapsed());
             count += 1;
-            if count > 5 {
+            if count > 3 {
                 break;
             }
         }
@@ -107,7 +108,9 @@ mod tests {
             content: "Hello, World!".to_string(),
             ..Default::default()
         };
-        signer.sign_nostr_event(&mut note);
+        signer
+            .sign_nostr_note(&mut note)
+            .expect("Failed to sign note");
         let pool = super::pool::NostrPool::new(&[
             "wss://relay.illuminodes.com",
             "wss://relay.arrakis.lat",

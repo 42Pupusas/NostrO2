@@ -26,6 +26,7 @@ pub enum RelayEventTag {
     CLOSE,
     CLOSED,
     REQ,
+    AUTH,
 }
 // FROM RELAY TO CLIENT
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub enum NostrRelayEvent {
     Notice(RelayEventTag, String),
     Ping,
     Close(String),
+    Auth(RelayEventTag, String),
 }
 impl TryFrom<&[u8]> for NostrRelayEvent {
     type Error = serde_json::Error;
@@ -71,11 +73,17 @@ pub enum NostrClientEvent {
         super::subscriptions::NostrSubscription,
     ),
     CloseSubscriptionEvent(RelayEventTag, String),
+    AuthEvent(RelayEventTag, crate::note::NostrNote),
+    Pong,
 }
 impl NostrClientEvent {
     #[must_use]
     pub fn close_subscription(sub_id: &str) -> Self {
-        Self::CloseSubscriptionEvent(RelayEventTag::REQ, sub_id.to_string())
+        Self::CloseSubscriptionEvent(RelayEventTag::CLOSE, sub_id.to_string())
+    }
+    #[must_use]
+    pub const fn auth_event(note: super::note::NostrNote) -> Self {
+        Self::AuthEvent(RelayEventTag::AUTH, note)
     }
 }
 impl From<super::note::NostrNote> for NostrClientEvent {

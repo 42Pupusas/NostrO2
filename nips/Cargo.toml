@@ -1,0 +1,17 @@
+[package]
+name = "nips"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64.workspace = true
+chacha20.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+libaes.workspace = true
+nostro2.workspace = true
+secp256k1.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+

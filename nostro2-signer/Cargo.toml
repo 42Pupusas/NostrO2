@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-signer"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -22,3 +22,6 @@ libaes.workspace = true
 nostro2.workspace = true
 secp256k1.workspace = true
 sha2.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+nips.workspace = true

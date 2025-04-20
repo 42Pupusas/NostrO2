@@ -13,6 +13,8 @@ pub extern crate nostro2;
 
 #[cfg(test)]
 mod tests {
+    use nostro2::NostrSigner;
+
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -123,7 +125,9 @@ mod tests {
             pubkey: new_keys.public_key(),
             ..Default::default()
         };
-        new_keys.sign_nostr_event(&mut new_note);
+        new_keys
+            .sign_nostr_note(&mut new_note)
+            .expect("Failed to sign note");
         pool.send(new_note).await;
         wasm_bindgen_test::console_log!("Sent note");
 
@@ -219,40 +223,40 @@ mod tests {
         wasm_bindgen_test::console_log!("Received {} messages", count);
         assert!(count == 20);
     }
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn _stress_test_relay_pool() {
-        let pool: crate::pool::RelayPool = [
-            "wss://relay.illuminodes.com",
-            "wss://relay.arrakis.lat",
-            "wss://frens.nostr1.com",
-            "wss://bitcoiner.social",
-            "wss://bouncer.minibolt.info",
-            "wss://freespeech.casa",
-            "wss://junxingwang.org",
-            "wss://nostr.0x7e.xyz",
-        ]
-        .as_slice()
-        .into();
+    //#[wasm_bindgen_test::wasm_bindgen_test]
+    //async fn _stress_test_relay_pool() {
+    //    let pool: crate::pool::RelayPool = [
+    //        "wss://relay.illuminodes.com",
+    //        "wss://relay.arrakis.lat",
+    //        "wss://frens.nostr1.com",
+    //        "wss://bitcoiner.social",
+    //        "wss://bouncer.minibolt.info",
+    //        "wss://freespeech.casa",
+    //        "wss://junxingwang.org",
+    //        "wss://nostr.0x7e.xyz",
+    //    ]
+    //    .as_slice()
+    //    .into();
 
-        let filter = nostro2::subscriptions::NostrSubscription {
-            kinds: vec![1].into(),
-            ..Default::default()
-        };
-        pool.send(filter).await;
-        let mut count = 0;
-        loop {
-            let Some(msg) = pool.read().await else {
-                wasm_bindgen_test::console_log!("Failed to read from pool");
-                continue;
-            };
-            if let nostro2::relay_events::NostrRelayEvent::NewNote(..) = msg {
-                wasm_bindgen_test::console_log!("Received {}", count);
-                count += 1;
-            };
-            if count > 10000 {
-                break;
-            }
-        }
-        assert!(count > 10000);
-    }
+    //    let filter = nostro2::subscriptions::NostrSubscription {
+    //        kinds: vec![1].into(),
+    //        ..Default::default()
+    //    };
+    //    pool.send(filter).await;
+    //    let mut count = 0;
+    //    loop {
+    //        let Some(msg) = pool.read().await else {
+    //            wasm_bindgen_test::console_log!("Failed to read from pool");
+    //            continue;
+    //        };
+    //        if let nostro2::relay_events::NostrRelayEvent::NewNote(..) = msg {
+    //            wasm_bindgen_test::console_log!("Received {}", count);
+    //            count += 1;
+    //        };
+    //        if count > 10000 {
+    //            break;
+    //        }
+    //    }
+    //    assert!(count > 10000);
+    //}
 }

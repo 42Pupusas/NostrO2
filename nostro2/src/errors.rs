@@ -6,6 +6,7 @@ pub enum NostrErrors {
     SecpError(secp256k1::Error),
     SerdeError(serde_json::Error),
     IoError(std::io::Error),
+    SignatureError(String),
 }
 impl From<Box<dyn std::error::Error>> for NostrErrors {
     fn from(e: Box<dyn std::error::Error>) -> Self {
@@ -53,24 +54,7 @@ impl From<bech32::primitives::hrp::Error> for NostrErrors {
     }
 }
 
-impl core::error::Error for NostrErrors {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::SerdeError(e) => Some(e),
-            Self::SecpError(e) => Some(e),
-            Self::IoError(e) => Some(e),
-            Self::NotFound(e) | Self::StdError(e) | Self::Bech32Error(e) => Some(e.as_ref()),
-        }
-    }
-    fn cause(&self) -> Option<&dyn core::error::Error> {
-        match self {
-            Self::SerdeError(e) => Some(e),
-            Self::SecpError(e) => Some(e),
-            Self::IoError(e) => Some(e),
-            Self::NotFound(e) | Self::StdError(e) | Self::Bech32Error(e) => Some(e.as_ref()),
-        }
-    }
-}
+impl core::error::Error for NostrErrors {}
 impl core::fmt::Display for NostrErrors {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
@@ -78,6 +62,7 @@ impl core::fmt::Display for NostrErrors {
             Self::SecpError(e) => write!(f, "{e}"),
             Self::StdError(e) | Self::Bech32Error(e) | Self::NotFound(e) => write!(f, "{e}"),
             Self::IoError(e) => write!(f, "{e}"),
+            Self::SignatureError(e) => write!(f, "{e}"),
         }
     }
 }

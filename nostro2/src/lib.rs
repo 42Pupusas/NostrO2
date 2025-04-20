@@ -10,13 +10,26 @@
 ///
 /// `nostr_o2` is a library for interacting with the `Nostr` protocol.
 ///
-/// It contains the data structures described in NIP-01, with full serde support, 
+/// It contains the data structures described in NIP-01, with full serde support,
 /// and type conversion between common formats.
-mod errors;
+pub mod errors;
 pub mod note;
 pub mod relay_events;
 pub mod subscriptions;
 pub mod tags;
+
+pub trait NostrSigner {
+    /// Sign a Nostr note
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the note cannot be signed
+    /// or if the keypair is invalid
+    fn sign_nostr_note(&self, note: &mut crate::note::NostrNote)
+        -> Result<(), errors::NostrErrors>;
+    fn generate(extractable: bool) -> Self;
+    fn public_key(&self) -> String;
+}
 
 #[cfg(test)]
 mod tests {
@@ -24,7 +37,6 @@ mod tests {
 
     use super::note::NostrNote;
     use super::tags::NostrTag;
-
 
     // Created and verified the signature of a note.
     #[test]
@@ -48,11 +60,11 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
+        signed_note.tags.add_custom_tag("t", "test");
+        signed_note.tags.add_event_tag("adsfasdfadsfadsfasdfadfs");
         signed_note
             .tags
-            .add_custom_tag(NostrTag::Custom("t"), "test");
-        signed_note.tags.add_event_tag("adsfasdfadsfadsfasdfadfs");
-        signed_note.tags.add_pubkey_tag("adsfasdfadsfadsfasdfadfs");
+            .add_pubkey_tag("adsfasdfadsfadsfasdfadfs", None);
         let t_tags = signed_note.tags.find_tags(&NostrTag::Custom("t"));
         let t_tag = t_tags.first().expect("Failed to get tag!");
         assert_eq!(t_tag, "test");
@@ -77,7 +89,7 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
-        signed_note.tags.add_pubkey_tag(PUB);
+        signed_note.tags.add_pubkey_tag(PUB, None);
         assert_eq!(
             signed_note.tags.find_first_tagged_pubkey(),
             Some(PUB.to_string())

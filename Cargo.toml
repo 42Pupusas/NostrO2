@@ -2,11 +2,12 @@
 resolver="2"
 
 members = [
+    "nips",
     "nostro2",
     "nostro2-relay",
     "nostro2-web-relay",
     "nostro2-signer",
-    "nostro2-web-signer",
+    "nostro2-web-signer", 
 ]
 
 [workspace.dependencies]
@@ -15,7 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
 
-nostro2 = { path = "nostro2", version = "0.3.1" }
+nips = { path = "nips", version = "0.1" }
+nostro2 = { path = "nostro2", version = "0.3" }
 nostro2-signer = { path = "nostro2-signer", version = "0.1" }
 
 # Logging
@@ -26,11 +28,13 @@ tracing-subscriber = "0.3"
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
 chacha20 = "0.9"
+hex = "0.4.3"
 hkdf = "0.12"
 hmac = "0.12"
 libaes = "0.7"
 secp256k1 = { version = "0.30.0", features = ["rand", "std", "alloc"] }
 sha2 = "0.10.8"
+zeroize = "1.8.1"
 
 # Key helpers
 bech32 = "0.11"
@@ -42,11 +46,11 @@ chrono = "0.4"
 tracing-test = "0.2"
 
 # Native platform TCP
-tokio = { version = "1" }
+tokio = { version = "^1.43.1" }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 
-ring = "0.17" 
+ring = "^0.17.12" 
 tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roots"] }
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
