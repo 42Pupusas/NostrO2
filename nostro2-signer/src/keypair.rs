@@ -1,5 +1,5 @@
-use nips::{Nip04, Nip44, Nip59};
 use nostro2::NostrSigner;
+use nostro2_nips::{Nip04, Nip44, Nip59};
 use zeroize::Zeroize;
 
 use crate::errors::NostrKeypairError;
@@ -27,6 +27,10 @@ impl NostrKeypair {
     pub fn public_key_slice(&self) -> [u8; 32] {
         self.keypair.public_key().x_only_public_key().0.serialize()
     }
+    #[must_use]
+    pub fn public_key(&self) -> String {
+        hex::encode(self.keypair.x_only_public_key().0.serialize())
+    }
     /// Get the public key as a bech32 string
     /// starting with "npub"
     ///
@@ -40,6 +44,14 @@ impl NostrKeypair {
             hrp,
             &self.keypair.x_only_public_key().0.serialize(),
         )?)
+    }
+    /// Sign a note
+    ///
+    /// # Errors
+    ///
+    pub fn sign_note(&self, note: &mut nostro2::note::NostrNote) -> Result<(), NostrKeypairError> {
+        self.sign_nostr_note(note)?;
+        Ok(())
     }
     /// Sign and encrypt a note
     ///
@@ -64,7 +76,6 @@ impl NostrKeypair {
         self.sign_nostr_note(note)?;
         Ok(())
     }
-
     /// Decrypt a note
     ///
     /// # Errors
@@ -82,7 +93,6 @@ impl NostrKeypair {
             EncryptionScheme::Nip44 => Ok(self.nip44_decrypt_note(note, peer_pubkey)?),
         }
     }
-
     /// Giftwrap a note
     ///
     /// - A `rumor` is a regular nostr event, but is not signed. This means that if it is leaked, it cannot be verified.
@@ -109,7 +119,12 @@ impl NostrKeypair {
             }
         }
     }
-
+    pub fn extract_rumor(
+        &self,
+        note: nostro2::note::NostrNote,
+    ) -> Result<nostro2::note::NostrNote, NostrKeypairError> {
+        Ok(self.rumor(&note)?)
+    }
     /// Get the shared secret point between the private keypair and a public key
     ///
     /// # Errors
@@ -137,7 +152,6 @@ impl NostrKeypair {
         }
         out
     }
-
     /// Get the secret key as a bech32 string
     /// starting with "nsec"
     ///
@@ -199,24 +213,26 @@ impl NostrKeypair {
         }
     }
 }
-impl nips::Nip04 for NostrKeypair {
+impl nostro2_nips::Nip04 for NostrKeypair {
     fn shared_secret(
         &self,
         public_key_string: &str,
-    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nips::Nip04Error> {
+    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip04Error> {
         Ok(self.shared_point(public_key_string)?.into())
     }
 }
-impl nips::Nip44 for NostrKeypair {
+impl nostro2_nips::Nip44 for NostrKeypair {
     fn shared_secret(
         &self,
         public_key_string: &str,
-    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nips::Nip44Error> {
+    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip44Error> {
         Ok(self.shared_point(public_key_string)?.into())
     }
 }
-impl nips::Nip17 for NostrKeypair {}
-impl nips::Nip59 for NostrKeypair {}
+impl nostro2_nips::Nip17 for NostrKeypair {}
+impl nostro2_nips::Nip46 for NostrKeypair {}
+impl nostro2_nips::Nip59 for NostrKeypair {}
+impl nostro2_nips::Nip82 for NostrKeypair {}
 impl nostro2::NostrSigner for NostrKeypair {
     fn sign_nostr_note(
         &self,
@@ -242,6 +258,9 @@ impl nostro2::NostrSigner for NostrKeypair {
     }
     fn public_key(&self) -> String {
         hex::encode(self.keypair.x_only_public_key().0.serialize())
+    }
+    fn secret_key(&self) -> String {
+        hex::encode(self.keypair.secret_key().secret_bytes())
     }
 }
 

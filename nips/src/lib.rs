@@ -9,12 +9,16 @@
 mod nip_04;
 mod nip_17;
 mod nip_44;
+mod nip_46;
 mod nip_59;
+mod nip_82;
 
 pub use nip_04::*;
 pub use nip_17::*;
 pub use nip_44::*;
+pub use nip_46::*;
 pub use nip_59::*;
+pub use nip_82::*;
 
 mod tests {
     pub struct NipTester {
@@ -65,6 +69,9 @@ mod tests {
         }
     }
     impl nostro2::NostrSigner for NipTester {
+        fn secret_key(&self) -> String {
+            hex::encode(self.private_key.secret_key().secret_bytes())
+        }
         fn sign_nostr_note(
             &self,
             note: &mut nostro2::note::NostrNote,
@@ -93,7 +100,9 @@ mod tests {
         }
     }
     impl crate::Nip17 for NipTester {}
+    impl crate::Nip46 for NipTester {}
     impl crate::Nip59 for NipTester {}
+    impl crate::Nip82 for NipTester {}
     impl NipTester {
         pub fn _peer_one() -> Self {
             let private_key = secp256k1::Keypair::from_secret_key(
@@ -133,6 +142,15 @@ mod tests {
                 .unwrap(),
             );
             Self { private_key }
+        }
+    }
+    impl std::str::FromStr for NipTester {
+        type Err = ();
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            Ok(Self {
+                private_key: secp256k1::Keypair::from_seckey_str(&secp256k1::Secp256k1::new(), s)
+                    .map_err(|_| ())?,
+            })
         }
     }
 }

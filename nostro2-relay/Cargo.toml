@@ -18,5 +18,3 @@ nostro2.workspace =true
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 
-[dev-dependencies]
-nostro2-signer.workspace = true

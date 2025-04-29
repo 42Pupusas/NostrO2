@@ -1,4 +1,72 @@
+// #[derive(Debug)]
+// pub enum NostrRelayError {
+//     Standard(Box<dyn std::error::Error>),
+//     Tungstenite(tokio_tungstenite::tungstenite::Error),
+// }
+// impl std::fmt::Display for NostrRelayError {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "NostrRelayError: {:?}", self.to_string())
+//     }
+// }
+// impl std::error::Error for NostrRelayError {}
+// impl From<tokio_tungstenite::tungstenite::Error> for NostrRelayError {
+//     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+//         NostrRelayError::Tungstenite(err)
+//     }
+// }
+// impl From<Box<dyn std::error::Error>> for NostrRelayError {
+//     fn from(err: Box<dyn std::error::Error>) -> Self {
+//         NostrRelayError::Standard(err)
+//     }
+// }
+//
 use futures_util::{SinkExt, StreamExt};
+//
+// #[derive(Clone)]
+// pub struct NostrRelay {
+//     stream: std::sync::Arc<
+//         tokio::sync::mpsc::UnboundedReceiver<nostro2::relay_events::NostrRelayEvent>,
+//     >,
+//     sink: tokio::sync::mpsc::UnboundedSender<nostro2::relay_events::NostrClientEvent>,
+// }
+// impl NostrRelay {
+//     /// Creates a new relay connection to the given URL.
+//     ///
+//     /// # Errors
+//     ///
+//     /// Returns an error if the connection fails.
+//     pub async fn new(url: &str) -> Result<Self, NostrRelayError> {
+//         let (stream_tx, stream) = tokio::sync::mpsc::unbounded_channel();
+//         let (sink, mut sink_rx) =
+//             tokio::sync::mpsc::unbounded_channel::<nostro2::relay_events::NostrClientEvent>();
+//         let (ws_stream, _) = tokio_tungstenite::connect_async(url).await?;
+//         let (mut ws_sink, mut ws_stream) = ws_stream.split();
+//         tokio::spawn(async move {
+//             while let Some(msg) = ws_stream.next().await {
+//                 let Ok(msg) = msg else {
+//                     continue;
+//                 };
+//                 if let Ok(Ok(event)) = msg
+//                     .to_text()
+//                     .map(|s| s.parse::<nostro2::relay_events::NostrRelayEvent>())
+//                 {
+//                     stream_tx.send(event).unwrap();
+//                 }
+//             }
+//         });
+//         tokio::spawn(async move {
+//             while let Some(msg) = sink_rx.recv().await {
+//                 if let Err(e) = ws_sink.send(msg.to_string().into()).await {
+//                     eprintln!("Failed to send message: {}", e);
+//                 }
+//             }
+//         });
+//         Ok(Self {
+//             stream: stream.into(),
+//             sink,
+//         })
+//     }
+// }
 
 #[derive(Clone)]
 pub struct NostrRelay {
@@ -35,7 +103,7 @@ impl NostrRelay {
                 "Failed to connect to relay",
             ));
         };
-        let (sink, stream) = websocket.split();
+        let (sink, stream) = futures_util::StreamExt::split(websocket);
         Ok(Self {
             stream: std::sync::Arc::new(stream.into()),
             sink: std::sync::Arc::new(sink.into()),
@@ -75,15 +143,17 @@ impl NostrRelay {
     /// Should never failed to parse the message, as it is guaranteed to be a valid
     /// `NostrRelayEvent`.
     pub async fn recv(&self) -> Option<nostro2::relay_events::NostrRelayEvent> {
-        self.stream
-            .write()
-            .await
-            .next()
-            .await?
-            .ok()?
-            .to_text()
-            .ok()?
-            .parse()
-            .ok()
+        Some(
+            self.stream
+                .write()
+                .await
+                .next()
+                .await?
+                .ok()?
+                .to_text()
+                .ok()?
+                .parse()
+                .unwrap_or(nostro2::relay_events::NostrRelayEvent::Ping),
+        )
     }
 }

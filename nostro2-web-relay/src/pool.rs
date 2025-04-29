@@ -1,7 +1,12 @@
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct RelayPool {
     seen_notes: std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
     relays: std::collections::HashMap<String, std::sync::Arc<crate::relay::NostrRelay>>,
+    events: std::sync::Arc<
+        tokio::sync::Mutex<
+            tokio::sync::mpsc::UnboundedReceiver<nostro2::relay_events::NostrRelayEvent>,
+        >,
+    >,
 }
 impl PartialEq for RelayPool {
     fn eq(&self, other: &Self) -> bool {
@@ -35,10 +40,15 @@ impl From<&[String]> for RelayPool {
             let new_relay = crate::relay::NostrRelay::new(url.as_str());
             relays.insert(url.clone(), std::sync::Arc::new(new_relay));
         }
-        Self {
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<nostro2::relay_events::NostrRelayEvent>();
+        let new_self = Self {
             seen_notes: tokio::sync::RwLock::new(std::collections::HashSet::new()).into(),
             relays,
-        }
+            events: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
+        };
+        new_self.relay_channel(tx);
+        new_self
     }
 }
 impl From<&[&str]> for RelayPool {
@@ -48,13 +58,44 @@ impl From<&[&str]> for RelayPool {
             let new_relay = crate::relay::NostrRelay::new(url);
             relays.insert((*url).to_string(), std::sync::Arc::new(new_relay));
         }
-        Self {
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<nostro2::relay_events::NostrRelayEvent>();
+
+        let new_self = Self {
             seen_notes: tokio::sync::RwLock::new(std::collections::HashSet::new()).into(),
             relays,
-        }
+            events: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
+        };
+        new_self.relay_channel(tx);
+        new_self
     }
 }
 impl RelayPool {
+    pub fn relay_channel(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<nostro2::relay_events::NostrRelayEvent>,
+    ) {
+        for relay in self.relays.values().cloned() {
+            let tx = tx.clone();
+            let seen = self.seen_notes.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                while let Some(event) = relay.read().await {
+                    if let nostro2::relay_events::NostrRelayEvent::NewNote(.., ref note) = event {
+                        let mut seen = seen.write().await;
+                        if let Some(ref note_id) = note.id {
+                            if seen.contains(note_id) {
+                                continue;
+                            }
+                            seen.insert(note_id.clone());
+                        }
+                    }
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    }
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.relays.is_empty()
@@ -110,25 +151,6 @@ impl RelayPool {
         event.into()
     }
     pub async fn read(&self) -> Option<nostro2::relay_events::NostrRelayEvent> {
-        futures_util::future::select_ok(self.relays.values().map(|relay| {
-            Box::pin(async move {
-                let Some(event) = relay.read().await else {
-                    return Err(());
-                };
-                if let nostro2::relay_events::NostrRelayEvent::NewNote(.., ref note) = event {
-                    let Some(id) = note.id.as_ref() else {
-                        return Err(());
-                    };
-                    if self.seen_notes.write().await.insert(id.to_string()) {
-                        return Ok(event);
-                    };
-                    return Err(());
-                }
-                Ok(event)
-            })
-        }))
-        .await
-        .ok()
-        .map(|(event, _)| event)
+        self.events.lock().await.recv().await
     }
 }

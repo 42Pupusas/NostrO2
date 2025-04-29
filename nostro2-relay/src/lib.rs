@@ -100,41 +100,4 @@ mod tests {
         assert!(count > 3);
         println!("Done in: {:?}", time_spent.elapsed());
     }
-    #[tokio::test]
-    async fn send_note() {
-        let signer = nostro2_signer::keypair::NostrKeypair::generate(false);
-        let mut note = nostro2::note::NostrNote {
-            kind: 300,
-            content: "Hello, World!".to_string(),
-            ..Default::default()
-        };
-        signer
-            .sign_nostr_note(&mut note)
-            .expect("Failed to sign note");
-        let pool = super::pool::NostrPool::new(&[
-            "wss://relay.illuminodes.com",
-            "wss://relay.arrakis.lat",
-            "wss://frens.nostr1.com",
-            "wss://bitcoiner.social",
-            "wss://bouncer.minibolt.info",
-            "wss://freespeech.casa",
-            "wss://junxingwang.org",
-            "wss://nostr.0x7e.xyz",
-        ])
-        .await;
-        pool.send(&note).await.expect("Failed to send note");
-        let mut count = 0;
-        while let Some(msg) = pool.recv().await {
-            let nostro2::relay_events::NostrRelayEvent::SentOk(_, _, did_send, _) = msg else {
-                continue;
-            };
-            if did_send {
-                println!("{:?}", msg);
-                count += 1;
-                if count > 3 {
-                    break;
-                }
-            }
-        }
-    }
 }

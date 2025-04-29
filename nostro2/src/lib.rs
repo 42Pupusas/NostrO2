@@ -29,6 +29,7 @@ pub trait NostrSigner {
         -> Result<(), errors::NostrErrors>;
     fn generate(extractable: bool) -> Self;
     fn public_key(&self) -> String;
+    fn secret_key(&self) -> String;
 }
 
 #[cfg(test)]

@@ -81,7 +81,6 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             return Err(Nip59Error::SigningError);
         }
         rumor.sig.take();
-        println!("SEAL: {rumor:?}");
         let mut seal = nostro2::note::NostrNote {
             content: rumor.to_string(),
             kind: 13,
@@ -93,7 +92,6 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         if !seal.verify() {
             return Err(Nip59Error::SigningError);
         }
-        println!("SEAL RUMOR: {rumor:?}");
         Ok(seal)
     }
     /// Wraps a sealed note into a persistent giftwrap.
@@ -111,7 +109,6 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     where
         Self: Sized,
     {
-        println!("Giftwrap: {rumor:?}");
         let throwaway_key = Self::generate(false);
         let mut giftwrap = nostro2::note::NostrNote {
             content: self.seal(rumor, peer_pubkey)?.to_string(),
@@ -119,7 +116,6 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             pubkey: throwaway_key.public_key(),
             ..Default::default()
         };
-        println!("Giftwrap: {rumor:?}");
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         throwaway_key
             .nip44_encrypt_note(&mut giftwrap, peer_pubkey)
@@ -127,7 +123,6 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         throwaway_key
             .sign_nostr_note(&mut giftwrap)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
-        println!("Giftwrap: {rumor:?}");
         Ok(giftwrap)
     }
     /// Wraps a sealed note into a replaceable giftwrap.
@@ -139,23 +134,23 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn replaceable_giftwrap(
         &self,
-        seal: &nostro2::note::NostrNote,
+        rumor: &mut nostro2::note::NostrNote,
         peer_pubkey: &str,
     ) -> Result<nostro2::note::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
-        let throwaway_key = Self::generate(false);
         let mut giftwrap = nostro2::note::NostrNote {
-            content: throwaway_key
-                .nip_44_encrypt(&seal.to_string(), peer_pubkey)?
-                .to_string(),
+            content: self.seal(rumor, peer_pubkey)?.to_string(),
             kind: 10059,
-            pubkey: throwaway_key.public_key(),
+            pubkey: self.public_key(),
             ..Default::default()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
-        throwaway_key.nip44_encrypt_note(&mut giftwrap, peer_pubkey)?;
+        self.nip44_encrypt_note(&mut giftwrap, peer_pubkey)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
+        self.sign_nostr_note(&mut giftwrap)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
     /// Wraps a sealed note into an ephemeral giftwrap.
@@ -167,7 +162,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn ephemeral_giftwrap(
         &self,
-        seal: &nostro2::note::NostrNote,
+        rumor: &mut nostro2::note::NostrNote,
         peer_pubkey: &str,
     ) -> Result<nostro2::note::NostrNote, Nip59Error>
     where
@@ -175,15 +170,18 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     {
         let throwaway_key = Self::generate(false);
         let mut giftwrap = nostro2::note::NostrNote {
-            content: throwaway_key
-                .nip_44_encrypt(&seal.to_string(), peer_pubkey)?
-                .to_string(),
+            content: self.seal(rumor, peer_pubkey)?.to_string(),
             kind: 20059,
             pubkey: throwaway_key.public_key(),
             ..Default::default()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
-        throwaway_key.nip44_encrypt_note(&mut giftwrap, peer_pubkey)?;
+        throwaway_key
+            .nip44_encrypt_note(&mut giftwrap, peer_pubkey)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
+        throwaway_key
+            .sign_nostr_note(&mut giftwrap)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
     /// Wraps a sealed note into a parameterized giftwrap.
@@ -195,25 +193,25 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn parameterized_giftwrap(
         &self,
-        seal: &nostro2::note::NostrNote,
+        rumor: &mut nostro2::note::NostrNote,
         peer_pubkey: &str,
         d_tag: &str,
     ) -> Result<nostro2::note::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
-        let throwaway_key = Self::generate(false);
         let mut giftwrap = nostro2::note::NostrNote {
-            content: throwaway_key
-                .nip_44_encrypt(&seal.to_string(), peer_pubkey)?
-                .to_string(),
+            content: self.seal(rumor, peer_pubkey)?.to_string(),
             kind: 30059,
-            pubkey: throwaway_key.public_key(),
+            pubkey: self.public_key(),
             ..Default::default()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         giftwrap.tags.add_parameter_tag(d_tag);
-        throwaway_key.nip44_encrypt_note(&mut giftwrap, peer_pubkey)?;
+        self.nip44_encrypt_note(&mut giftwrap, peer_pubkey)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
+        self.sign_nostr_note(&mut giftwrap)
+            .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
 }
@@ -239,10 +237,29 @@ mod tests {
         let receiver = NipTester::generate(false);
         let mut original_note = make_test_note("This is a secret rumor");
 
-        println!("RUMOR: {original_note:?}");
         let gift = sender
             .giftwrap(&mut original_note, &receiver.public_key())
             .unwrap();
+
+        assert_eq!(gift.kind, 1059);
+        assert!(gift.verify());
+        let result = receiver.rumor(&gift).unwrap();
+
+        assert_eq!(result.content, original_note.content);
+        assert!(result.sig.is_none());
+    }
+    #[test]
+    fn test_parameterized_rumor() {
+        let sender = NipTester::generate(false);
+        let receiver = NipTester::generate(false);
+        let mut original_note = make_test_note("This is a secret rumor");
+
+        let gift = sender
+            .parameterized_giftwrap(&mut original_note, &receiver.public_key(), "test-d")
+            .unwrap();
+        assert_eq!(gift.kind, 30059);
+        assert!(gift.verify());
+
         let result = receiver.rumor(&gift).unwrap();
 
         assert_eq!(result.content, original_note.content);
@@ -253,11 +270,11 @@ mod tests {
     fn test_replaceable_giftwrap_kind() {
         let sender = NipTester::generate(false);
         let receiver = NipTester::generate(false);
-        let seal = sender
+        let mut seal = sender
             .seal(&mut make_test_note("replaceable"), &receiver.public_key())
             .unwrap();
         let gift = sender
-            .replaceable_giftwrap(&seal, &receiver.public_key())
+            .replaceable_giftwrap(&mut seal, &receiver.public_key())
             .unwrap();
 
         assert_eq!(gift.kind, 10059);
@@ -267,11 +284,11 @@ mod tests {
     fn test_ephemeral_giftwrap_kind() {
         let sender = NipTester::generate(false);
         let receiver = NipTester::generate(false);
-        let seal = sender
+        let mut seal = sender
             .seal(&mut make_test_note("ephemeral"), &receiver.public_key())
             .unwrap();
         let gift = sender
-            .ephemeral_giftwrap(&seal, &receiver.public_key())
+            .ephemeral_giftwrap(&mut seal, &receiver.public_key())
             .unwrap();
 
         assert_eq!(gift.kind, 20059);
@@ -281,11 +298,11 @@ mod tests {
     fn test_parameterized_giftwrap_tag_and_kind() {
         let sender = NipTester::generate(false);
         let receiver = NipTester::generate(false);
-        let seal = sender
+        let mut seal = sender
             .seal(&mut make_test_note("param"), &receiver.public_key())
             .unwrap();
         let gift = sender
-            .parameterized_giftwrap(&seal, &receiver.public_key(), "test-d")
+            .parameterized_giftwrap(&mut seal, &receiver.public_key(), "test-d")
             .unwrap();
 
         assert_eq!(gift.kind, 30059);
