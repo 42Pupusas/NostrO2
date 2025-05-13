@@ -120,14 +120,13 @@ impl NostrRelay {
         T: Into<nostro2::relay_events::NostrClientEvent> + Send + Sync,
     {
         let msg: nostro2::relay_events::NostrClientEvent = msg.into();
-        if self
-            .sink
-            .write()
-            .await
-            .send(msg.to_string().into())
-            .await
-            .is_err()
-        {
+        let msg_str = serde_json::to_string(&msg).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Failed to serialize message",
+            )
+        })?;
+        if self.sink.write().await.send(msg_str.into()).await.is_err() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "Failed to send message to relay",

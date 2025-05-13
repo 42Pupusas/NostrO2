@@ -11,9 +11,18 @@ homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 [dependencies]
+base64.workspace = true
+chacha20.workspace = true
 futures = "0.3.31"
+hex.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
 nostro2.workspace = true
+secp256k1.workspace = true
+serde-wasm-bindgen.workspace = true
+sha2.workspace = true
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures.workspace = true
 wasm-bindgen-test.workspace = true
-web-sys = { workspace = true, features = ["Window", "Document"] }
+web-sys = { workspace = true, features = ["Window", "Document", "CryptoKey", "SubtleCrypto", "Crypto", "EcKeyGenParams", "CryptoKeyPair", "AesGcmParams"] }
+zeroize.workspace = true

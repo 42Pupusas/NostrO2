@@ -98,21 +98,10 @@ mod tests {
         let note = keys.preffered_relays(&relays).unwrap();
         assert!(note.verify());
         assert_eq!(note.kind, 10050);
-        let tags = note
-            .tags
-            .0
-            .iter()
-            .flat_map(|tag_list| {
-                tag_list
-                    .tags
-                    .iter()
-                    .filter(|tag| tag.starts_with("wss://"))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let tags = note.tags.find_tags(&nostro2::tags::NostrTag::Relay);
         assert_eq!(tags.len(), relays.len());
         for relay in relays {
-            assert!(tags.contains(&&relay.to_string()));
+            assert!(tags.contains(&relay.to_string()));
         }
     }
 }

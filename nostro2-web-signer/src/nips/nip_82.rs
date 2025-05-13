@@ -2,7 +2,6 @@
 pub enum Nip82Error {
     Nip44Error(crate::nip_44::Nip44Error),
     Nostro2Error(nostro2::errors::NostrErrors),
-    SerializationError(serde_json::Error),
     ParseError(String),
     SigningError,
 }
@@ -32,12 +31,10 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
     ) -> Result<nostro2::note::NostrNote, Nip82Error> {
         let signing_key = Self::generate(true);
         self.sign_nostr_note(fhir_note)?;
-        let serialized =
-            serde_json::to_string(fhir_note).map_err(Nip82Error::SerializationError)?;
-        let pubkey = signing_key.public_key();
-        let encrypted = signing_key.nip_44_encrypt(&serialized, &pubkey)?;
         let mut wrapped = nostro2::note::NostrNote {
-            content: encrypted.to_string(),
+            content: signing_key
+                .nip_44_encrypt(&fhir_note.to_string(), &signing_key.public_key())?
+                .to_string(),
             pubkey: signing_key.public_key(),
             kind: 32225,
             ..Default::default()
@@ -46,7 +43,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
         wrapped.tags.add_pubkey_tag(&self.public_key(), None);
         wrapped.tags.add_pubkey_tag(peer_pubkey, None);
         wrapped.tags.0.push(nostro2::tags::TagList {
-            tag_type: nostro2::tags::NostrTag::Custom("key".into()),
+            tag_type: nostro2::tags::NostrTag::Custom("key"),
             tags: vec![
                 self.public_key(),
                 signing_key
@@ -55,7 +52,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
             ],
         });
         wrapped.tags.0.push(nostro2::tags::TagList {
-            tag_type: nostro2::tags::NostrTag::Custom("key".into()),
+            tag_type: nostro2::tags::NostrTag::Custom("key"),
             tags: vec![
                 peer_pubkey.to_string(),
                 signing_key
@@ -75,7 +72,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
             .0
             .iter()
             .find_map(|tag_list| {
-                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key".into())
+                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key")
                     && tag_list.tags.first() == Some(&self.public_key()))
                 .then(|| tag_list.tags.get(1))
                 .flatten()
@@ -99,7 +96,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
             .0
             .iter()
             .find_map(|tag_list| {
-                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key".into())
+                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key")
                     && tag_list.tags.first() == Some(&self.public_key()))
                 .then(|| tag_list.tags.get(1))
                 .flatten()

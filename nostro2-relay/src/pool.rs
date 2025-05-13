@@ -61,14 +61,18 @@ impl NostrPool {
                 if let Some(nostro2::relay_events::NostrRelayEvent::NewNote(.., ref msg)) = next_msg
                 {
                     if let Some(id) = msg.id.as_ref() {
-                        if self.seen.add(&id).await {
+                        if self.seen.add(id).await {
                             return Ok::<
                                 Option<nostro2::relay_events::NostrRelayEvent>,
                                 Box<dyn std::error::Error>,
                             >(next_msg);
-                        } else {
-                            return Ok(Some(nostro2::relay_events::NostrRelayEvent::Ping));
                         }
+                        return Ok::<
+                            Option<nostro2::relay_events::NostrRelayEvent>,
+                            Box<dyn std::error::Error>,
+                        >(Some(
+                            nostro2::relay_events::NostrRelayEvent::Ping,
+                        ));
                     }
                 }
                 Ok(next_msg)

@@ -128,15 +128,6 @@ impl NostrNote {
             .collect()
     }
 }
-impl core::fmt::Display for NostrNote {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string(self).expect("Failed to serialize NostrNote.")
-        )
-    }
-}
 impl core::str::FromStr for NostrNote {
     type Err = serde_json::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -158,25 +149,5 @@ impl TryFrom<&serde_json::Value> for NostrNote {
 impl From<NostrNote> for serde_json::Value {
     fn from(note: NostrNote) -> Self {
         serde_json::to_value(note).expect("Failed to serialize NostrNote.")
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<web_sys::wasm_bindgen::JsValue> for NostrNote {
-    type Error = web_sys::wasm_bindgen::JsError;
-    fn try_from(value: web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
-        Ok(serde_wasm_bindgen::from_value(value)?)
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<&web_sys::wasm_bindgen::JsValue> for NostrNote {
-    type Error = web_sys::wasm_bindgen::JsError;
-    fn try_from(value: &web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
-        Ok(serde_wasm_bindgen::from_value(value.clone())?)
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl From<NostrNote> for web_sys::wasm_bindgen::JsValue {
-    fn from(note: NostrNote) -> Self {
-        serde_wasm_bindgen::to_value(&note).expect("Failed to serialize NostrNote.")
     }
 }

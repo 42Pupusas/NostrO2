@@ -4,7 +4,7 @@ pub enum NostrTag {
     Pubkey,
     Event,
     Parameterized,
-    Custom(&'static str),
+    Custom(std::borrow::Cow<'static, str>),
     Relay,
 }
 impl std::str::FromStr for NostrTag {
@@ -14,18 +14,7 @@ impl std::str::FromStr for NostrTag {
             "p" => Ok(Self::Pubkey),
             "e" => Ok(Self::Event),
             "d" => Ok(Self::Parameterized),
-            _ => Ok(Self::Custom(Box::leak(s.to_owned().into_boxed_str()))),
-        }
-    }
-}
-impl std::fmt::Display for NostrTag {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Pubkey => write!(f, "p"),
-            Self::Event => write!(f, "e"),
-            Self::Parameterized => write!(f, "d"),
-            Self::Custom(s) => write!(f, "{s}"),
-            Self::Relay => write!(f, "relay"),
+            _ => Ok(Self::Custom(std::borrow::Cow::Owned(s.to_owned()))),
         }
     }
 }
@@ -41,7 +30,11 @@ impl serde::Serialize for TagList {
         S: serde::Serializer,
     {
         let mut new_vec = Vec::new();
-        new_vec.push(self.tag_type.to_string());
+        if let Ok(tag_str) = serde_json::to_string(&self.tag_type) {
+            new_vec.push(tag_str);
+        } else {
+            return Err(serde::ser::Error::custom("Invalid tag type"));
+        }
         new_vec.extend(self.tags.iter().cloned());
         new_vec.serialize(serializer)
     }
@@ -109,23 +102,24 @@ impl NoteTags {
             .and_then(|tag_list| tag_list.tags.first().cloned())
     }
     #[must_use]
-    pub fn find_tags(&self, tag_type: &NostrTag) -> Vec<String> {
+    pub fn find_tags(&self, tag_type: &str) -> Vec<String> {
+        let Ok(tag_type) = tag_type.parse::<NostrTag>() else {
+            return vec![];
+        };
         self.0
             .iter()
-            .filter(|tag_list| &tag_list.tag_type == tag_type)
+            .filter(|tag_list| tag_list.tag_type == tag_type)
             .flat_map(|tag_list| tag_list.tags.iter().cloned())
             .collect()
     }
-    pub fn add_custom_tag(&mut self, tag_type: &'static str, tag: &str) {
-        if let Some(index) = self
-            .0
-            .iter()
-            .position(|inner| inner.tag_type == NostrTag::Custom(tag_type))
-        {
+    pub fn add_custom_tag(&mut self, tag_type: &str, tag: &str) {
+        if let Some(index) = self.0.iter().position(|inner| {
+            inner.tag_type == NostrTag::Custom(std::borrow::Cow::Owned(tag_type.into()))
+        }) {
             self.0[index].tags.push(tag.to_owned());
         } else {
             let new_inner = TagList {
-                tag_type: NostrTag::Custom(tag_type),
+                tag_type: NostrTag::Custom(std::borrow::Cow::Owned(tag_type.into())),
                 tags: vec![tag.to_owned()],
             };
             self.0.push(new_inner);

@@ -37,7 +37,6 @@ mod tests {
     const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d";
 
     use super::note::NostrNote;
-    use super::tags::NostrTag;
 
     // Created and verified the signature of a note.
     #[test]
@@ -49,7 +48,7 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
-        assert_eq!(unsigned_note.verify(), false);
+        assert!(!unsigned_note.verify());
     }
 
     #[test]
@@ -66,7 +65,7 @@ mod tests {
         signed_note
             .tags
             .add_pubkey_tag("adsfasdfadsfadsfasdfadfs", None);
-        let t_tags = signed_note.tags.find_tags(&NostrTag::Custom("t"));
+        let t_tags = signed_note.tags.find_tags("t");
         let t_tag = t_tags.first().expect("Failed to get tag!");
         assert_eq!(t_tag, "test");
         let p_tag = signed_note

@@ -1,35 +1,45 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum RelayStatus {
     #[default]
-    CONNECTING = 0,
-    OPEN = 1,
-    CLOSING = 2,
-    CLOSED = 3,
+    Connecting,
+    Open,
+    Closing,
+    Closed,
 }
 impl From<u16> for RelayStatus {
     fn from(value: u16) -> Self {
         match value {
-            1 => Self::OPEN,
-            2 => Self::CLOSING,
-            3 => Self::CLOSED,
-            _ => Self::CONNECTING,
+            1 => Self::Open,
+            2 => Self::Closing,
+            3 => Self::Closed,
+            _ => Self::Connecting,
         }
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum RelayEventTag {
-    EVENT,
-    OK,
-    EOSE,
-    NOTICE,
-    CLOSE,
-    CLOSED,
-    REQ,
-    AUTH,
+    // EVENT,
+    // OK,
+    // EOSE,
+    // NOTICE,
+    // CLOSE,
+    // CLOSED,
+    // REQ,
+    // AUTH,
+    Event,
+    Ok,
+    Eose,
+    Notice,
+    Close,
+    Auth,
+    Req,
+    Closed,
 }
 // FROM RELAY TO CLIENT
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Hash)]
 #[serde(untagged)]
 pub enum NostrRelayEvent {
     NewNote(RelayEventTag, String, crate::note::NostrNote),
@@ -41,29 +51,86 @@ pub enum NostrRelayEvent {
     Close(String),
     Auth(RelayEventTag, String),
 }
-impl TryFrom<&[u8]> for NostrRelayEvent {
-    type Error = serde_json::Error;
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        serde_json::from_slice(value)
-    }
-}
 impl std::str::FromStr for NostrRelayEvent {
     type Err = serde_json::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         serde_json::from_str(value)
     }
 }
-impl std::fmt::Display for NostrRelayEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string(self).expect("Failed to serialize RelayEvent")
-        )
+impl TryFrom<&[u8]> for NostrRelayEvent {
+    type Error = serde_json::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
     }
 }
+// impl<'de> serde::Deserialize<'de> for NostrRelayEvent {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: serde::Deserializer<'de>,
+//     {
+//         use serde::de::{Error, SeqAccess, Visitor};
+//         struct RelayEventVisitor;
+//
+//         impl<'de> Visitor<'de> for RelayEventVisitor {
+//             type Value = NostrRelayEvent;
+//
+//             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+//                 formatter.write_str("a Nostr relay event array")
+//             }
+//
+//             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+//             where
+//                 A: SeqAccess<'de>,
+//             {
+//                 let tag: String = seq
+//                     .next_element()?
+//                     .ok_or_else(|| Error::custom("missing event tag"))?;
+//                 match tag.as_str() {
+//                     "EVENT" => Ok(NostrRelayEvent::NewNote(
+//                         RelayEventTag::EVENT,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing id"))?,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing note"))?,
+//                     )),
+//                     "OK" => Ok(NostrRelayEvent::SentOk(
+//                         RelayEventTag::OK,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing id"))?,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing success"))?,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing msg"))?,
+//                     )),
+//                     "EOSE" => Ok(NostrRelayEvent::EndOfSubscription(
+//                         RelayEventTag::EOSE,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing sub_id"))?,
+//                     )),
+//                     "NOTICE" => Ok(NostrRelayEvent::Notice(
+//                         RelayEventTag::NOTICE,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing msg"))?,
+//                     )),
+//                     "CLOSE" => Ok(NostrRelayEvent::Close(
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing sub_id"))?,
+//                     )),
+//                     "AUTH" => Ok(NostrRelayEvent::Auth(
+//                         RelayEventTag::AUTH,
+//                         seq.next_element()?
+//                             .ok_or_else(|| Error::custom("missing challenge"))?,
+//                     )),
+//                     _ => Err(Error::custom("unknown tag")),
+//                 }
+//             }
+//         }
+//
+//         deserializer.deserialize_seq(RelayEventVisitor)
+//     }
+// }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum NostrClientEvent {
     SendNoteEvent(RelayEventTag, super::note::NostrNote),
@@ -79,28 +146,28 @@ pub enum NostrClientEvent {
 impl NostrClientEvent {
     #[must_use]
     pub fn close_subscription(sub_id: &str) -> Self {
-        Self::CloseSubscriptionEvent(RelayEventTag::CLOSE, sub_id.to_string())
+        Self::CloseSubscriptionEvent(RelayEventTag::Close, sub_id.to_string())
     }
     #[must_use]
     pub const fn auth_event(note: super::note::NostrNote) -> Self {
-        Self::AuthEvent(RelayEventTag::AUTH, note)
+        Self::AuthEvent(RelayEventTag::Auth, note)
     }
 }
 impl From<super::note::NostrNote> for NostrClientEvent {
     fn from(note: super::note::NostrNote) -> Self {
-        Self::SendNoteEvent(RelayEventTag::EVENT, note)
+        Self::SendNoteEvent(RelayEventTag::Event, note)
     }
 }
 impl From<&super::note::NostrNote> for NostrClientEvent {
     fn from(note: &super::note::NostrNote) -> Self {
-        Self::SendNoteEvent(RelayEventTag::EVENT, note.clone())
+        Self::SendNoteEvent(RelayEventTag::Event, note.clone())
     }
 }
 impl From<super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: super::subscriptions::NostrSubscription) -> Self {
         use secp256k1::rand::Rng;
         Self::Subscribe(
-            RelayEventTag::REQ,
+            RelayEventTag::Req,
             secp256k1::rand::thread_rng().gen::<u64>().to_string(),
             subscription,
         )
@@ -110,7 +177,7 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: &super::subscriptions::NostrSubscription) -> Self {
         use secp256k1::rand::Rng;
         Self::Subscribe(
-            RelayEventTag::REQ,
+            RelayEventTag::Req,
             secp256k1::rand::thread_rng().gen::<u64>().to_string(),
             subscription.clone(),
         )
@@ -126,14 +193,5 @@ impl TryFrom<&[u8]> for NostrClientEvent {
     type Error = serde_json::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         serde_json::from_slice(value)
-    }
-}
-impl std::fmt::Display for NostrClientEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string(self).expect("Failed to serialize ClientEvent")
-        )
     }
 }

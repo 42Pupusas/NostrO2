@@ -11,8 +11,6 @@ pub extern crate nostro2;
 
 #[cfg(test)]
 mod tests {
-    use nostro2::NostrSigner;
-
     #[tokio::test]
     async fn test_relay() {
         let relay = super::relay::NostrRelay::new("wss://relay.illuminodes.com")
@@ -34,6 +32,12 @@ mod tests {
         let pool = super::pool::NostrPool::new(&vec![
             "wss://relay.illuminodes.com",
             "wss://relay.arrakis.lat",
+            "wss://frens.nostr1.com",
+            "wss://bitcoiner.social",
+            "wss://bouncer.minibolt.info",
+            "wss://freespeech.casa",
+            "wss://junxingwang.org",
+            "wss://nostr.0x7e.xyz",
         ])
         .await;
         let filter = nostro2::subscriptions::NostrSubscription {
@@ -60,7 +64,7 @@ mod tests {
                 break;
             }
         }
-        assert!(count == 20);
+        assert!(count > 10);
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@
 )]
 
 pub mod pool;
-pub mod relay;
+// pub mod relay;
 pub extern crate nostro2;
 
 #[cfg(test)]
