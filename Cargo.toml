@@ -14,9 +14,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
 
-nostro2-nips = { path = "nips", version = "0.1.2" }
-nostro2 = { path = "nostro2", version = "0.3.4" }
-nostro2-signer = { path = "nostro2-signer", version = "0.1.5" }
+
+# nostro2-nips = { path = "nips" }
+# nostro2 = { path = "nostro2" }
+nostro2-nips = { path = "nips", version = "0.1.5" }
+nostro2 = { path = "nostro2", version = "0.3.6" }
+nostro2-signer = { path = "nostro2-signer", version = "0.1.9" }
 
 # Logging
 tracing = "0.1"
@@ -44,7 +47,7 @@ chrono = "0.4"
 tracing-test = "0.2"
 
 # Native platform TCP
-tokio = { version = "^1.43.1" }
+tokio = { version = "^1.44" }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 

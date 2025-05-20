@@ -1,11 +1,12 @@
-use crate::tags::NoteTags;
+use crate::tags::NostrTags;
+use std::fmt::Write as _;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,
     pub kind: u32,
-    pub tags: NoteTags,
+    pub tags: NostrTags,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -18,7 +19,7 @@ impl Default for NostrNote {
             pubkey: String::new(),
             created_at: chrono::Utc::now().timestamp(),
             kind: 1,
-            tags: NoteTags::default(),
+            tags: NostrTags::default(),
             content: String::new(),
             id: None,
             sig: None,
@@ -77,7 +78,8 @@ impl NostrNote {
                 .finalize()
                 .iter()
                 .fold(String::new(), |mut acc, byte| {
-                    acc.push_str(&format!("{byte:02x}"));
+                    write!(acc, "{byte:02x}").unwrap();
+                    // acc.push_str(&format!("{byte:02x}"));
                     acc
                 }),
         );
@@ -126,6 +128,15 @@ impl NostrNote {
             .chunks(2)
             .filter_map(|b| u8::from_str_radix(core::str::from_utf8(b).ok()?, 16).ok())
             .collect()
+    }
+    /// Creates a JSON encoded string from the `NostrNote` struct
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if `serde` cannot serialize the data,
+    /// but because of data types should never realistically fail.
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
     }
 }
 impl core::str::FromStr for NostrNote {

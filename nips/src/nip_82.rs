@@ -24,19 +24,25 @@ impl From<nostro2::errors::NostrErrors> for Nip82Error {
 }
 
 pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str::FromStr {
+    /// Creates a NIP-82 request note.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the note fails to sign or encrypt.
     fn encrypted_wrap(
         &self,
-        fhir_note: &mut nostro2::note::NostrNote,
+        fhir_note: &mut nostro2::NostrNote,
         peer_pubkey: &str,
         wrap_id: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip82Error> {
+    ) -> Result<nostro2::NostrNote, Nip82Error> {
         let signing_key = Self::generate(true);
         self.sign_nostr_note(fhir_note)?;
-        let serialized =
-            serde_json::to_string(fhir_note).map_err(Nip82Error::SerializationError)?;
+        let serialized = fhir_note
+            .serialize()
+            .map_err(Nip82Error::SerializationError)?;
         let pubkey = signing_key.public_key();
         let encrypted = signing_key.nip_44_encrypt(&serialized, &pubkey)?;
-        let mut wrapped = nostro2::note::NostrNote {
+        let mut wrapped = nostro2::NostrNote {
             content: encrypted.to_string(),
             pubkey: signing_key.public_key(),
             kind: 32225,
@@ -45,39 +51,40 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
         wrapped.tags.add_parameter_tag(wrap_id);
         wrapped.tags.add_pubkey_tag(&self.public_key(), None);
         wrapped.tags.add_pubkey_tag(peer_pubkey, None);
-        wrapped.tags.0.push(nostro2::tags::TagList {
-            tag_type: nostro2::tags::NostrTag::Custom("key".into()),
-            tags: vec![
-                self.public_key(),
-                signing_key
-                    .nip_44_encrypt(&signing_key.secret_key(), &self.public_key())?
-                    .to_string(),
-            ],
-        });
-        wrapped.tags.0.push(nostro2::tags::TagList {
-            tag_type: nostro2::tags::NostrTag::Custom("key".into()),
-            tags: vec![
-                peer_pubkey.to_string(),
-                signing_key
-                    .nip_44_encrypt(&signing_key.secret_key(), peer_pubkey)?
-                    .to_string(),
-            ],
-        });
+        wrapped.tags.0.push(vec![
+            "key".to_string(),
+            self.public_key(),
+            signing_key
+                .nip_44_encrypt(&signing_key.secret_key(), &self.public_key())?
+                .to_string(),
+        ]);
+        wrapped.tags.0.push(vec![
+            "key".to_string(),
+            peer_pubkey.to_string(),
+            signing_key
+                .nip_44_encrypt(&signing_key.secret_key(), peer_pubkey)?
+                .to_string(),
+        ]);
         signing_key.sign_nostr_note(&mut wrapped)?;
         Ok(wrapped)
     }
+    /// Decrypts a NIP-82 request note.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the note fails to decrypt or parse.
     fn decrypt_wrap(
         &self,
-        fhir_note: &nostro2::note::NostrNote,
-    ) -> Result<nostro2::note::NostrNote, Nip82Error> {
+        fhir_note: &nostro2::NostrNote,
+    ) -> Result<nostro2::NostrNote, Nip82Error> {
         let encrypted_signing_key = fhir_note
             .tags
             .0
             .iter()
             .find_map(|tag_list| {
-                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key".into())
-                    && tag_list.tags.first() == Some(&self.public_key()))
-                .then(|| tag_list.tags.get(1))
+                (tag_list.first().is_some_and(|tag| tag == "key")
+                    && tag_list.get(1) == Some(&self.public_key()))
+                .then(|| tag_list.get(2))
                 .flatten()
             })
             .ok_or_else(|| Nip82Error::ParseError("Failed to get signing key".to_string()))?;
@@ -89,19 +96,24 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
         let decrypted_note =
             signing_key.nip_44_decrypt(fhir_note.content.as_str(), &fhir_note.pubkey)?;
         let decrypted_wrap = decrypted_note
-            .parse::<nostro2::note::NostrNote>()
-            .map_err(|_| Nip82Error::ParseError("Failed to parse decrypted note".to_string()))?;
+            .parse::<nostro2::NostrNote>()
+            .map_err(|e| Nip82Error::ParseError(e.to_string()))?;
         Ok(decrypted_wrap)
     }
-    fn signing_key(&self, fhir_note: &nostro2::note::NostrNote) -> Result<Self, Nip82Error> {
+    /// Decrypts a NIP-82 request note and returns the signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the note fails to decrypt or parse.
+    fn signing_key(&self, fhir_note: &nostro2::NostrNote) -> Result<Self, Nip82Error> {
         let encrypted_signing_key = fhir_note
             .tags
             .0
             .iter()
             .find_map(|tag_list| {
-                (tag_list.tag_type == nostro2::tags::NostrTag::Custom("key".into())
-                    && tag_list.tags.first() == Some(&self.public_key()))
-                .then(|| tag_list.tags.get(1))
+                (tag_list.first().is_some_and(|tag| tag == "key")
+                    && tag_list.get(1) == Some(&self.public_key()))
+                .then(|| tag_list.get(2))
                 .flatten()
             })
             .ok_or_else(|| Nip82Error::ParseError("Failed to get signing key".to_string()))?;
@@ -118,7 +130,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
 mod tests {
     use super::*;
     use crate::tests::NipTester;
-    use nostro2::{note::NostrNote, NostrSigner};
+    use nostro2::{NostrNote, NostrSigner};
 
     #[test]
     fn test_nip82() {

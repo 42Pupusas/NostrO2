@@ -13,7 +13,7 @@ pub enum Nip46Method {
     Nip44Decrypt,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Nip46Request {
     id: String,
     method: Nip46Method,
@@ -33,7 +33,7 @@ impl std::str::FromStr for Nip46Request {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Nip46Response {
     id: String,
     result: String,
@@ -55,13 +55,18 @@ impl std::str::FromStr for Nip46Response {
 }
 
 pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
+    /// Creates a NIP-46 request note. 
+    ///
+    /// # Errors 
+    ///
+    /// Returns an error if the note fails to sign or encrypt.
     fn nip46_request(
         &self,
         method: Nip46Method,
         params: Vec<String>,
         signer_pk: &str,
-    ) -> Result<nostro2::note::NostrNote, nostro2::errors::NostrErrors> {
-        let mut note = nostro2::note::NostrNote {
+    ) -> Result<nostro2::NostrNote, nostro2::errors::NostrErrors> {
+        let mut note = nostro2::NostrNote {
             kind: 24133,
             content: self
                 .nip_44_encrypt(
@@ -84,19 +89,24 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
         self.sign_nostr_note(&mut note)?;
         Ok(note)
     }
+    /// Creates a NIP-46 response note. 
+    ///
+    /// # Errors 
+    ///
+    /// Returns an error if the note fails to sign or encrypt. 
     fn nip46_response(
         &self,
         request_id: &str,
         result: String,
         error: Option<String>,
         signer_pk: &str,
-    ) -> Result<nostro2::note::NostrNote, nostro2::errors::NostrErrors> {
+    ) -> Result<nostro2::NostrNote, nostro2::errors::NostrErrors> {
         let response = Nip46Response {
             id: request_id.to_string(),
             result,
             error,
         };
-        let mut note = nostro2::note::NostrNote {
+        let mut note = nostro2::NostrNote {
             kind: 24133,
             content: self
                 .nip_44_encrypt(&response.to_string(), signer_pk)
@@ -130,7 +140,7 @@ mod tests {
         let request = request.unwrap();
         assert_eq!(request.kind, 24133);
         assert_eq!(
-            request.tags.find_first_tagged_pubkey(),
+            request.tags.first_tagged_pubkey(),
             Some(remote_key.public_key())
         );
 
@@ -153,7 +163,7 @@ mod tests {
         let request = request.unwrap();
         assert_eq!(request.kind, 24133);
         assert_eq!(
-            request.tags.find_first_tagged_pubkey(),
+            request.tags.first_tagged_pubkey(),
             Some(remote_key.public_key())
         );
 
@@ -169,7 +179,7 @@ mod tests {
         let response = response.unwrap();
         assert_eq!(response.kind, 24133);
         assert_eq!(
-            response.tags.find_first_tagged_pubkey(),
+            response.tags.first_tagged_pubkey(),
             Some(request.pubkey.clone())
         );
         let content = nip_tester

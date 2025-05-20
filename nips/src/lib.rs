@@ -74,7 +74,7 @@ mod tests {
         }
         fn sign_nostr_note(
             &self,
-            note: &mut nostro2::note::NostrNote,
+            note: &mut nostro2::NostrNote,
         ) -> Result<(), nostro2::errors::NostrErrors> {
             note.pubkey = self.public_key();
             note.serialize_id()?;

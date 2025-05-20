@@ -20,7 +20,7 @@ pub struct NostrKeypair {
     extractable: bool,
 }
 impl NostrKeypair {
-    pub fn set_extractable(&mut self, extractable: bool) {
+    pub const fn set_extractable(&mut self, extractable: bool) {
         self.extractable = extractable;
     }
     #[must_use]
@@ -49,7 +49,7 @@ impl NostrKeypair {
     ///
     /// # Errors
     ///
-    pub fn sign_note(&self, note: &mut nostro2::note::NostrNote) -> Result<(), NostrKeypairError> {
+    pub fn sign_note(&self, note: &mut nostro2::NostrNote) -> Result<(), NostrKeypairError> {
         self.sign_nostr_note(note)?;
         Ok(())
     }
@@ -61,7 +61,7 @@ impl NostrKeypair {
     /// or if the note cannot be encrypted
     pub fn sign_encrypted_note(
         &self,
-        note: &mut nostro2::note::NostrNote,
+        note: &mut nostro2::NostrNote,
         peer_pubkey: &str,
         encryption_scheme: &EncryptionScheme,
     ) -> Result<(), NostrKeypairError> {
@@ -84,7 +84,7 @@ impl NostrKeypair {
     /// or if the note cannot be decrypted
     pub fn decrypt_note<'a>(
         &self,
-        note: &'a nostro2::note::NostrNote,
+        note: &'a nostro2::NostrNote,
         peer_pubkey: &'a str,
         encryption_scheme: &EncryptionScheme,
     ) -> Result<std::borrow::Cow<'a, str>, NostrKeypairError> {
@@ -106,10 +106,10 @@ impl NostrKeypair {
     /// or if the note cannot be encrypted.
     pub fn giftwrap_note(
         &self,
-        note: &mut nostro2::note::NostrNote,
+        note: &mut nostro2::NostrNote,
         peer_pubkey: &str,
         scheme: &GiftwrapScheme,
-    ) -> Result<nostro2::note::NostrNote, NostrKeypairError> {
+    ) -> Result<nostro2::NostrNote, NostrKeypairError> {
         match scheme {
             GiftwrapScheme::Persistent => Ok(self.giftwrap(note, peer_pubkey)?),
             GiftwrapScheme::Replaceable => Ok(self.replaceable_giftwrap(note, peer_pubkey)?),
@@ -119,11 +119,17 @@ impl NostrKeypair {
             }
         }
     }
+    /// Extract a rumor from a note
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the note cannot be decrypted
+    /// or if the note is not a rumor.
     pub fn extract_rumor(
         &self,
-        note: nostro2::note::NostrNote,
-    ) -> Result<nostro2::note::NostrNote, NostrKeypairError> {
-        Ok(self.rumor(&note)?)
+        note: &nostro2::NostrNote,
+    ) -> Result<nostro2::NostrNote, NostrKeypairError> {
+        Ok(self.rumor(note)?)
     }
     /// Get the shared secret point between the private keypair and a public key
     ///
@@ -236,7 +242,7 @@ impl nostro2_nips::Nip82 for NostrKeypair {}
 impl nostro2::NostrSigner for NostrKeypair {
     fn sign_nostr_note(
         &self,
-        note: &mut nostro2::note::NostrNote,
+        note: &mut nostro2::NostrNote,
     ) -> Result<(), nostro2::errors::NostrErrors> {
         note.pubkey = self.public_key();
         note.serialize_id()?;
@@ -320,7 +326,7 @@ mod tests {
     #[test]
     fn test_secret_key_extraction_protection() {
         let kp = NostrKeypair::generate(false);
-        assert_eq!(kp.secret_key(), [0u8; 32]);
+        assert_eq!(kp.secret_key(), [0_u8; 32]);
         assert!(kp.nsec().is_err());
         assert!(kp.mnemonic(bip39::Language::English).is_err());
     }
@@ -358,7 +364,7 @@ mod tests {
         let alice = NostrKeypair::generate(true);
         let bob = NostrKeypair::generate(true);
 
-        let mut note = nostro2::note::NostrNote {
+        let mut note = nostro2::NostrNote {
             content: "Hello, Bob!".to_string(),
             kind: 1,
             ..Default::default()

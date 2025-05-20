@@ -29,32 +29,32 @@ The main data structures of Nostr, as defined by [NIP-01](https://github.com/nos
 Can be created from a private key `str` or a mnemonic phrase and will allow you to sign Nostr Notes.
 
 ```rust
-    let new_user = NostrKeypair::new("<64-bit hex string>").expect("Failed to create user keys");
+    let new_user = "<64-bit hex string>".parse::<NostrKeypair>().expect("Failed to create user keys");
     let mut note = NostrNote {
         content: "Hello World".to_string(),
         kind: 300,
-        public_key: "0x1234567890abcdef".to_string(),
         ..Default::default()
     };
-    note.add_tag(NostrTag::Custom("t", "myCustomTag"));
-    user_key_pair.sign_nostr_event(&mut unsigned_note); // -> Modifies the note in place
+    user_key_pair.sign_nostr_event(&mut unsigned_note); // -> Modifies the note in place, adds pubkey, id and sig.
 ```
 
 ### Subscriptions
 
 Create a new `NostrSubscription` using the default constructor and then add filters to it.
 Filters correspond to the object described by [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md).
-Using the relay_event() method, you can create a new event that can be sent to a relay.
+All fields are represented as options and skipped in serialization if `None`.
 
 ```rust
 let subscription = 
     NostrFilter {
-        kinds: vec![0, 1],
+        kinds: vec![0, 1].into(),
+        limit: Some(10),
         ..Default::default()
-        vec![0, 1]
-    ).relay_event();
+    };
 
-println!("Subscribe to relay with id: {}", subscription.1);
+let relay_event = pool.send(subscription)?;
+
+println!("Subscribe to relay with id: {}", relay_event.1);
 ```
 
 ### NostrRelay

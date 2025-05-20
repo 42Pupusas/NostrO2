@@ -1,6 +1,6 @@
 #[derive(Debug)]
 pub enum Nip17Error {
-    SigningError(String),
+    SigningError(nostro2::errors::NostrErrors),
     Nip44Error(crate::nip_44::Nip44Error),
     ParseError(String),
     Nip59Error(crate::nip_59::Nip59Error),
@@ -38,11 +38,11 @@ pub trait Nip17: crate::nip_59::Nip59 {
     /// # Errors
     ///
     /// Can fail while sealing or encrypting.
-    fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::note::NostrNote, Nip17Error>
+    fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::NostrNote, Nip17Error>
     where
         Self: Sized,
     {
-        let mut dm_note = nostro2::note::NostrNote {
+        let mut dm_note = nostro2::NostrNote {
             content: dm.to_string(),
             kind: 14,
             ..Default::default()
@@ -57,17 +57,19 @@ pub trait Nip17: crate::nip_59::Nip59 {
     /// # Errors
     ///
     /// Can fail while signing the note.
-    fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::note::NostrNote, Nip17Error> {
-        let mut note = nostro2::note::NostrNote {
+    fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::NostrNote, Nip17Error> {
+        let mut note = nostro2::NostrNote {
             kind: 10050,
             ..Default::default()
         };
+        let mut relay_tags = vec![];
+        relay_tags.push("relay".to_string());
         for relay in relays {
-            note.tags
-                .add_relay_tag(Box::leak((*relay).to_string().into_boxed_str()));
+            relay_tags.push((*relay).to_string());
         }
+        note.tags.0.push(relay_tags);
         self.sign_nostr_note(&mut note)
-            .map_err(|_| Nip17Error::SigningError("Failed to sign NostrNote".to_string()))?;
+            .map_err(Nip17Error::SigningError)?;
         Ok(note)
     }
 }
@@ -98,21 +100,10 @@ mod tests {
         let note = keys.preffered_relays(&relays).unwrap();
         assert!(note.verify());
         assert_eq!(note.kind, 10050);
-        let tags = note
-            .tags
-            .0
-            .iter()
-            .flat_map(|tag_list| {
-                tag_list
-                    .tags
-                    .iter()
-                    .filter(|tag| tag.starts_with("wss://"))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let tags = note.tags.find_tags("relay");
         assert_eq!(tags.len(), relays.len());
         for relay in relays {
-            assert!(tags.contains(&&relay.to_string()));
+            assert!(tags.contains(&relay.to_string()));
         }
     }
 }

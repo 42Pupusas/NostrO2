@@ -125,7 +125,7 @@ pub trait Nip04 {
     /// or if the encryption fails.
     fn nip04_encrypt_note(
         &self,
-        note: &mut nostro2::note::NostrNote,
+        note: &mut nostro2::NostrNote,
         pubkey: &str,
     ) -> Result<(), Nip04Error> {
         note.content = self.nip04_encrypt(&note.content, pubkey)?.into_owned();
@@ -141,7 +141,7 @@ pub trait Nip04 {
     /// or if the decryption fails.
     fn nip04_decrypt_note<'a>(
         &self,
-        note: &'a nostro2::note::NostrNote,
+        note: &'a nostro2::NostrNote,
         peer_pubkey: &'a str,
     ) -> Result<std::borrow::Cow<'a, str>, Nip04Error> {
         self.nip04_decrypt(&note.content, peer_pubkey)

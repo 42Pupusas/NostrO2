@@ -24,12 +24,12 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ///
     /// # Errors
     ///
-    /// Returns `Nip59Error::Nip44Error` if NIP-44 decryption fails.  
+    /// Returns `Nip59Error::Nip44Error` if NIP-44 decryption fails.
     /// Returns `Nip59Error::ParseError` if either decrypted note cannot be parsed.
     fn rumor(
         &self,
-        giftwrap: &nostro2::note::NostrNote,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error> {
+        giftwrap: &nostro2::NostrNote,
+    ) -> Result<nostro2::NostrNote, Nip59Error> {
         if !giftwrap.verify() {
             return Err(Nip59Error::ParseError(
                 "Giftwrap signature verification failed".to_string(),
@@ -37,7 +37,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         }
         let seal_note = self
             .nip_44_decrypt(&giftwrap.content, &giftwrap.pubkey)?
-            .parse::<nostro2::note::NostrNote>()
+            .parse::<nostro2::NostrNote>()
             .map_err(|_| {
                 Nip59Error::ParseError("Failed to parse NostrNote from giftwrap".to_string())
             })?;
@@ -46,7 +46,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
                 "Seal note signature verification failed".to_string(),
             ));
         }
-        let rumor_note: nostro2::note::NostrNote = self
+        let rumor_note: nostro2::NostrNote = self
             .nip_44_decrypt(&seal_note.content.to_string(), &seal_note.pubkey)?
             .parse()
             .map_err(|_| {
@@ -65,20 +65,20 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ///
     /// # Errors
     ///
-    /// Returns `Nip59Error::Nip44Error` if encryption fails.  
+    /// Returns `Nip59Error::Nip44Error` if encryption fails.
     /// Returns `Nip59Error::ParseError` if signing the sealed note fails.
     fn seal(
         &self,
-        rumor: &mut nostro2::note::NostrNote,
+        rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error> {
+    ) -> Result<nostro2::NostrNote, Nip59Error> {
         self.sign_nostr_note(rumor)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         if !rumor.verify() {
             return Err(Nip59Error::SigningError);
         }
         rumor.sig.take();
-        let mut seal = nostro2::note::NostrNote {
+        let mut seal = nostro2::NostrNote {
             content: serde_json::to_string(rumor).map_err(Nip59Error::SerializationError)?,
             kind: 13,
             ..Default::default()
@@ -100,15 +100,15 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn giftwrap(
         &self,
-        rumor: &mut nostro2::note::NostrNote,
+        rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error>
+    ) -> Result<nostro2::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
         let throwaway_key = Self::generate(false);
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut giftwrap = nostro2::note::NostrNote {
+        let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 1059,
             pubkey: throwaway_key.public_key(),
@@ -132,14 +132,14 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn replaceable_giftwrap(
         &self,
-        rumor: &mut nostro2::note::NostrNote,
+        rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error>
+    ) -> Result<nostro2::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut giftwrap = nostro2::note::NostrNote {
+        let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 10059,
             pubkey: self.public_key(),
@@ -161,15 +161,15 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn ephemeral_giftwrap(
         &self,
-        rumor: &mut nostro2::note::NostrNote,
+        rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error>
+    ) -> Result<nostro2::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
         let throwaway_key = Self::generate(false);
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut giftwrap = nostro2::note::NostrNote {
+        let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 20059,
             pubkey: throwaway_key.public_key(),
@@ -193,15 +193,15 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Returns `Nip59Error::Nip44Error` if encryption of the note fails.
     fn parameterized_giftwrap(
         &self,
-        rumor: &mut nostro2::note::NostrNote,
+        rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
         d_tag: &str,
-    ) -> Result<nostro2::note::NostrNote, Nip59Error>
+    ) -> Result<nostro2::NostrNote, Nip59Error>
     where
         Self: Sized,
     {
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut giftwrap = nostro2::note::NostrNote {
+        let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 30059,
             pubkey: self.public_key(),
@@ -222,7 +222,7 @@ mod tests {
     use crate::tests::NipTester;
 
     use super::*;
-    use nostro2::{note::NostrNote, NostrSigner};
+    use nostro2::{NostrNote, NostrSigner};
 
     fn make_test_note(content: &str) -> NostrNote {
         NostrNote {
@@ -307,6 +307,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(gift.kind, 30059);
-        assert_eq!(gift.tags.find_first_parameter(), Some("test-d".to_string()));
+        assert_eq!(gift.tags.first_parameter(), Some("test-d".to_string()));
     }
 }
