@@ -6,9 +6,9 @@ pub enum NostrKeypairError {
     HexDecodeError(hex::FromHexError),
     HrpParseError,
     Nip01Error(nostro2::errors::NostrErrors),
-    Nip04Error(nips::Nip04Error),
-    Nip44Error(nips::Nip44Error),
-    Nip59Error(nips::Nip59Error),
+    Nip04Error(nostro2_nips::Nip04Error),
+    Nip44Error(nostro2_nips::Nip44Error),
+    Nip59Error(nostro2_nips::Nip59Error),
     Secp256k1Error(secp256k1::Error),
     ConversionError(std::convert::Infallible),
     SharedSecretError,
@@ -73,18 +73,18 @@ impl From<hex::FromHexError> for NostrKeypairError {
         Self::HexDecodeError(err)
     }
 }
-impl From<nips::Nip04Error> for NostrKeypairError {
-    fn from(err: nips::Nip04Error) -> Self {
+impl From<nostro2_nips::Nip04Error> for NostrKeypairError {
+    fn from(err: nostro2_nips::Nip04Error) -> Self {
         Self::Nip04Error(err)
     }
 }
-impl From<nips::Nip44Error> for NostrKeypairError {
-    fn from(err: nips::Nip44Error) -> Self {
+impl From<nostro2_nips::Nip44Error> for NostrKeypairError {
+    fn from(err: nostro2_nips::Nip44Error) -> Self {
         Self::Nip44Error(err)
     }
 }
-impl From<nips::Nip59Error> for NostrKeypairError {
-    fn from(err: nips::Nip59Error) -> Self {
+impl From<nostro2_nips::Nip59Error> for NostrKeypairError {
+    fn from(err: nostro2_nips::Nip59Error) -> Self {
         Self::Nip59Error(err)
     }
 }
@@ -98,12 +98,12 @@ impl From<bip39::Error> for NostrKeypairError {
         Self::Bip39Error(err)
     }
 }
-impl From<NostrKeypairError> for nips::Nip04Error {
+impl From<NostrKeypairError> for nostro2_nips::Nip04Error {
     fn from(err: NostrKeypairError) -> Self {
         Self::CustomError(err.to_string())
     }
 }
-impl From<NostrKeypairError> for nips::Nip44Error {
+impl From<NostrKeypairError> for nostro2_nips::Nip44Error {
     fn from(err: NostrKeypairError) -> Self {
         Self::CustomError(err.to_string())
     }

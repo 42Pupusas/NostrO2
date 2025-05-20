@@ -6,29 +6,29 @@
     clippy::pedantic,
     clippy::nursery
 )]
-mod nip_04;
-mod nip_17;
+// mod nip_04;
+// mod nip_17;
 mod nip_44;
-mod nip_46;
+// mod nip_46;
 mod nip_59;
-mod nip_82;
+// mod nip_82;
 
-pub use nip_04::*;
-pub use nip_17::*;
+// pub use nip_04::*;
+// pub use nip_17::*;
 pub use nip_44::*;
-pub use nip_46::*;
+// pub use nip_46::*;
 pub use nip_59::*;
-pub use nip_82::*;
+// pub use nip_82::*;
 
 mod tests {
     pub struct NipTester {
         pub private_key: secp256k1::Keypair,
     }
-    impl crate::Nip04 for NipTester {
+    impl crate::nips::Nip44 for NipTester {
         fn shared_secret(
             &self,
             pubkey: &str,
-        ) -> Result<zeroize::Zeroizing<[u8; 32]>, crate::Nip04Error> {
+        ) -> Result<zeroize::Zeroizing<[u8; 32]>, crate::nips::Nip44Error> {
             let hex_pk = hex::decode(pubkey)?;
             let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
             let public_key = secp256k1::PublicKey::from_x_only_public_key(
@@ -41,29 +41,7 @@ mod tests {
                     .to_owned();
             ssp.resize(32, 0); // toss the Y part
             let slice: [u8; 32] = ssp.try_into().map_err(|_| {
-                crate::Nip04Error::SharedSecretError("Failed to convert to array".to_string())
-            })?;
-            Ok(slice.into())
-        }
-    }
-    impl crate::Nip44 for NipTester {
-        fn shared_secret(
-            &self,
-            pubkey: &str,
-        ) -> Result<zeroize::Zeroizing<[u8; 32]>, crate::Nip44Error> {
-            let hex_pk = hex::decode(pubkey)?;
-            let x_only_public_key = secp256k1::XOnlyPublicKey::from_slice(hex_pk.as_slice())?;
-            let public_key = secp256k1::PublicKey::from_x_only_public_key(
-                x_only_public_key,
-                secp256k1::Parity::Even,
-            );
-            let mut ssp =
-                secp256k1::ecdh::shared_secret_point(&public_key, &self.private_key.secret_key())
-                    .as_slice()
-                    .to_owned();
-            ssp.resize(32, 0); // toss the Y part
-            let slice: [u8; 32] = ssp.try_into().map_err(|_| {
-                crate::Nip44Error::SharedSecretError("Failed to convert to array".to_string())
+                crate::nips::Nip44Error::SharedSecretError("Failed to convert to array".to_string())
             })?;
             Ok(slice.into())
         }
@@ -74,7 +52,7 @@ mod tests {
         }
         fn sign_nostr_note(
             &self,
-            note: &mut nostro2::NostrNote,
+            note: &mut nostro2::note::NostrNote,
         ) -> Result<(), nostro2::errors::NostrErrors> {
             note.pubkey = self.public_key();
             note.serialize_id()?;
@@ -99,10 +77,10 @@ mod tests {
             hex::encode(self.private_key.x_only_public_key().0.serialize())
         }
     }
-    impl crate::Nip17 for NipTester {}
-    impl crate::Nip46 for NipTester {}
-    impl crate::Nip59 for NipTester {}
-    impl crate::Nip82 for NipTester {}
+    //impl crate::Nip17 for NipTester {}
+    //impl crate::Nip46 for NipTester {}
+    impl crate::nips::Nip59 for NipTester {}
+    //impl crate::Nip82 for NipTester {}
     impl NipTester {
         pub fn _peer_one() -> Self {
             let private_key = secp256k1::Keypair::from_secret_key(

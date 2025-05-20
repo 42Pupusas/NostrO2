@@ -1,4 +1,4 @@
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct NostrSubscription {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<String>>,
@@ -34,16 +34,6 @@ impl std::str::FromStr for NostrSubscription {
         serde_json::from_str(value)
     }
 }
-impl std::fmt::Display for NostrSubscription {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string(self).expect("Failed to serialize Subscription")
-        )
-    }
-}
-
 impl NostrSubscription {
     pub fn add_tag(&mut self, tag: &str, value: &str) {
         if let Some(tags) = &mut self.tags {

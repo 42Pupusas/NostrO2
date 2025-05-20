@@ -57,12 +57,6 @@ impl From<bech32::primitives::hrp::Error> for NostrErrors {
 impl core::error::Error for NostrErrors {}
 impl core::fmt::Display for NostrErrors {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match self {
-            Self::SerdeError(e) => write!(f, "{e}"),
-            Self::SecpError(e) => write!(f, "{e}"),
-            Self::StdError(e) | Self::Bech32Error(e) | Self::NotFound(e) => write!(f, "{e}"),
-            Self::IoError(e) => write!(f, "{e}"),
-            Self::SignatureError(e) => write!(f, "{e}"),
-        }
+        write!(f, "NostrErrors: {self:#?}")
     }
 }

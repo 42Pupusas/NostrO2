@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-relay"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -17,6 +17,7 @@ nostro2.workspace =true
 
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
+serde_json.workspace = true
 
 [dev-dependencies]
 nostro2-signer.workspace = true

@@ -1,6 +1,6 @@
 #[derive(Debug)]
 pub enum Nip17Error {
-    SigningError(nostro2::errors::NostrErrors),
+    SigningError(String),
     Nip44Error(crate::nip_44::Nip44Error),
     ParseError(String),
     Nip59Error(crate::nip_59::Nip59Error),
@@ -38,11 +38,11 @@ pub trait Nip17: crate::nip_59::Nip59 {
     /// # Errors
     ///
     /// Can fail while sealing or encrypting.
-    fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::NostrNote, Nip17Error>
+    fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::note::NostrNote, Nip17Error>
     where
         Self: Sized,
     {
-        let mut dm_note = nostro2::NostrNote {
+        let mut dm_note = nostro2::note::NostrNote {
             content: dm.to_string(),
             kind: 14,
             ..Default::default()
@@ -57,19 +57,17 @@ pub trait Nip17: crate::nip_59::Nip59 {
     /// # Errors
     ///
     /// Can fail while signing the note.
-    fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::NostrNote, Nip17Error> {
-        let mut note = nostro2::NostrNote {
+    fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::note::NostrNote, Nip17Error> {
+        let mut note = nostro2::note::NostrNote {
             kind: 10050,
             ..Default::default()
         };
-        let mut relay_tags = vec![];
-        relay_tags.push("relay".to_string());
         for relay in relays {
-            relay_tags.push((*relay).to_string());
+            note.tags
+                .add_relay_tag(Box::leak((*relay).to_string().into_boxed_str()));
         }
-        note.tags.0.push(relay_tags);
         self.sign_nostr_note(&mut note)
-            .map_err(Nip17Error::SigningError)?;
+            .map_err(|_| Nip17Error::SigningError("Failed to sign NostrNote".to_string()))?;
         Ok(note)
     }
 }
@@ -100,7 +98,7 @@ mod tests {
         let note = keys.preffered_relays(&relays).unwrap();
         assert!(note.verify());
         assert_eq!(note.kind, 10050);
-        let tags = note.tags.find_tags("relay");
+        let tags = note.tags.find_tags(&nostro2::tags::NostrTag::Relay);
         assert_eq!(tags.len(), relays.len());
         for relay in relays {
             assert!(tags.contains(&relay.to_string()));

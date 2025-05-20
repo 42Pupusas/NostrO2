@@ -19,7 +19,6 @@ pub enum Nip44Error {
     HmacError,
     SliceError,
 }
-
 impl std::fmt::Display for Nip44Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -114,7 +113,7 @@ pub trait Nip44 {
     /// - `DecryptionError`: if decryption fails or the decrypted length prefix is invalid.
     fn nip44_encrypt_note<'a>(
         &self,
-        note: &'a mut nostro2::NostrNote,
+        note: &'a mut nostro2::note::NostrNote,
         peer_pubkey: &'a str,
     ) -> Result<(), Nip44Error> {
         note.content = self.nip_44_encrypt(&note.content, peer_pubkey)?.to_string();
@@ -133,7 +132,7 @@ pub trait Nip44 {
     /// - `DecryptionError`: if decryption fails or the decrypted length prefix is invalid.
     fn nip44_decrypt_note<'a>(
         &self,
-        note: &'a nostro2::NostrNote,
+        note: &'a nostro2::note::NostrNote,
         peer_pubkey: &'a str,
     ) -> Result<std::borrow::Cow<'a, str>, Nip44Error> {
         self.nip_44_decrypt(&note.content, peer_pubkey)
@@ -351,7 +350,7 @@ pub trait Nip44 {
         buf.extend_from_slice(ciphertext);
         buf.extend_from_slice(mac);
 
-        let mut out = String::with_capacity((buf.len() * 4).div_ceil(3));
+        let mut out = String::with_capacity((buf.len() * 4 + 2) / 3);
         general_purpose::STANDARD.encode_string(&buf, &mut out);
         out
     }
@@ -434,7 +433,6 @@ mod tests {
 
         assert!(result.is_err());
     }
-    use std::fmt::Write as _;
     #[test]
     fn encrypt_very_large_note() {
         let secp = Secp256k1::new();
@@ -453,8 +451,7 @@ mod tests {
 
         let mut plaintext = String::new();
         for i in 0..15329 {
-            // plaintext.push_str(&format!("{i}"));
-            let _ = write!(plaintext, "{i}");
+            plaintext.push_str(&format!("{i}"));
         }
         let receiver_pk = receiver.receiver_pk.to_string();
         let sender_pk = sender.receiver_pk.to_string();

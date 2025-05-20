@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-signer"
-version = "0.1.2"
+version = "0.1.9"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -15,13 +15,8 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 base64.workspace = true
 bech32.workspace = true
 bip39.workspace = true
-chacha20.workspace = true
-hkdf.workspace = true
-hmac.workspace = true
-libaes.workspace = true
-nostro2.workspace = true
-secp256k1.workspace = true
-sha2.workspace = true
 hex.workspace = true
+nostro2.workspace = true
+nostro2-nips.workspace = true
+secp256k1.workspace = true
 zeroize.workspace = true
-nips.workspace = true

@@ -14,7 +14,7 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 [dependencies]
 
 futures-util.workspace = true
-tokio = { workspace = true, features = ["macros", "sync"] }
+# tokio = { workspace = true, features = ["macros", "sync"] }
 web-sys = { workspace = true, features = ["WebSocket", "MessageEvent"] }
 nostro2.workspace =true 
 wasm-bindgen-futures.workspace = true

@@ -13,10 +13,14 @@
 /// It contains the data structures described in NIP-01, with full serde support,
 /// and type conversion between common formats.
 pub mod errors;
-pub mod note;
-pub mod relay_events;
-pub mod subscriptions;
-pub mod tags;
+mod note;
+mod relay_events;
+mod subscriptions;
+mod tags;
+pub use note::NostrNote;
+pub use relay_events::{NostrClientEvent, NostrRelayEvent};
+pub use subscriptions::NostrSubscription;
+pub use tags::NostrTag;
 
 pub trait NostrSigner {
     /// Sign a Nostr note
@@ -29,6 +33,7 @@ pub trait NostrSigner {
         -> Result<(), errors::NostrErrors>;
     fn generate(extractable: bool) -> Self;
     fn public_key(&self) -> String;
+    fn secret_key(&self) -> String;
 }
 
 #[cfg(test)]
@@ -36,7 +41,6 @@ mod tests {
     const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d";
 
     use super::note::NostrNote;
-    use super::tags::NostrTag;
 
     // Created and verified the signature of a note.
     #[test]
@@ -48,7 +52,7 @@ mod tests {
             content: content_of_note.to_string(),
             ..Default::default()
         };
-        assert_eq!(unsigned_note.verify(), false);
+        assert!(!unsigned_note.verify());
     }
 
     #[test]
@@ -65,17 +69,17 @@ mod tests {
         signed_note
             .tags
             .add_pubkey_tag("adsfasdfadsfadsfasdfadfs", None);
-        let t_tags = signed_note.tags.find_tags(&NostrTag::Custom("t"));
+        let t_tags = signed_note.tags.find_tags("t");
         let t_tag = t_tags.first().expect("Failed to get tag!");
         assert_eq!(t_tag, "test");
         let p_tag = signed_note
             .tags
-            .find_first_tagged_pubkey()
+            .first_tagged_pubkey()
             .expect("Failed to get tag!");
         assert_eq!(p_tag, "adsfasdfadsfadsfasdfadfs");
         let e_tag = signed_note
             .tags
-            .find_first_tagged_event()
+            .first_tagged_event()
             .expect("Failed to get tag!");
         assert_eq!(e_tag, "adsfasdfadsfadsfasdfadfs");
     }
@@ -91,7 +95,7 @@ mod tests {
         };
         signed_note.tags.add_pubkey_tag(PUB, None);
         assert_eq!(
-            signed_note.tags.find_first_tagged_pubkey(),
+            signed_note.tags.first_tagged_pubkey(),
             Some(PUB.to_string())
         );
     }

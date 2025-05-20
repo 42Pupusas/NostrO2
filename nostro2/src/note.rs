@@ -1,11 +1,12 @@
-use crate::tags::NoteTags;
+use crate::tags::NostrTags;
+use std::fmt::Write as _;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,
     pub kind: u32,
-    pub tags: NoteTags,
+    pub tags: NostrTags,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -18,7 +19,7 @@ impl Default for NostrNote {
             pubkey: String::new(),
             created_at: chrono::Utc::now().timestamp(),
             kind: 1,
-            tags: NoteTags::default(),
+            tags: NostrTags::default(),
             content: String::new(),
             id: None,
             sig: None,
@@ -77,7 +78,8 @@ impl NostrNote {
                 .finalize()
                 .iter()
                 .fold(String::new(), |mut acc, byte| {
-                    acc.push_str(&format!("{byte:02x}"));
+                    write!(acc, "{byte:02x}").unwrap();
+                    // acc.push_str(&format!("{byte:02x}"));
                     acc
                 }),
         );
@@ -127,14 +129,14 @@ impl NostrNote {
             .filter_map(|b| u8::from_str_radix(core::str::from_utf8(b).ok()?, 16).ok())
             .collect()
     }
-}
-impl core::fmt::Display for NostrNote {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string(self).expect("Failed to serialize NostrNote.")
-        )
+    /// Creates a JSON encoded string from the `NostrNote` struct
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if `serde` cannot serialize the data,
+    /// but because of data types should never realistically fail.
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
     }
 }
 impl core::str::FromStr for NostrNote {
@@ -158,25 +160,5 @@ impl TryFrom<&serde_json::Value> for NostrNote {
 impl From<NostrNote> for serde_json::Value {
     fn from(note: NostrNote) -> Self {
         serde_json::to_value(note).expect("Failed to serialize NostrNote.")
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<web_sys::wasm_bindgen::JsValue> for NostrNote {
-    type Error = web_sys::wasm_bindgen::JsError;
-    fn try_from(value: web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
-        Ok(serde_wasm_bindgen::from_value(value)?)
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<&web_sys::wasm_bindgen::JsValue> for NostrNote {
-    type Error = web_sys::wasm_bindgen::JsError;
-    fn try_from(value: &web_sys::wasm_bindgen::JsValue) -> Result<Self, Self::Error> {
-        Ok(serde_wasm_bindgen::from_value(value.clone())?)
-    }
-}
-#[cfg(target_arch = "wasm32")]
-impl From<NostrNote> for web_sys::wasm_bindgen::JsValue {
-    fn from(note: NostrNote) -> Self {
-        serde_wasm_bindgen::to_value(&note).expect("Failed to serialize NostrNote.")
     }
 }
