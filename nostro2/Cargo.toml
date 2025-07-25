@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -12,7 +12,6 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 [dependencies]
 bech32.workspace = true
-chrono.workspace = true
 secp256k1.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,5 +20,5 @@ sha2.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
 serde-wasm-bindgen.workspace = true
-## web-sys.workspace = true
+js-sys = "0.3"
 

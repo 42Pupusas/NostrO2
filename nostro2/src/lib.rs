@@ -6,6 +6,7 @@
     clippy::pedantic,
     clippy::nursery
 )]
+
 /// # `NostrO2`
 ///
 /// `nostr_o2` is a library for interacting with the `Nostr` protocol.

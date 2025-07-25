@@ -17,7 +17,16 @@ impl Default for NostrNote {
     fn default() -> Self {
         Self {
             pubkey: String::new(),
-            created_at: chrono::Utc::now().timestamp(),
+            #[cfg(not(target_arch = "wasm32"))]
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .try_into()
+                .unwrap_or(0),
+            #[cfg(target_arch = "wasm32")]
+            #[allow(clippy::cast_possible_truncation)]
+            created_at: (js_sys::Date::now() / 1000.0) as i64,
             kind: 1,
             tags: NostrTags::default(),
             content: String::new(),
@@ -38,6 +47,9 @@ impl NostrNote {
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
         let mut id_bytes = [0_u8; 32];
         let id = Self::hex_decode(self.id.as_ref()?);
+        if id.len() != 32 {
+            return None;
+        }
         id_bytes.copy_from_slice(&id);
         Some(id_bytes)
     }
@@ -45,6 +57,9 @@ impl NostrNote {
     fn sig_bytes(&self) -> Option<[u8; 64]> {
         let mut sig_bytes = [0_u8; 64];
         let sig = Self::hex_decode(self.sig.as_ref()?);
+        if sig.len() != 64 {
+            return None;
+        }
         sig_bytes.copy_from_slice(&sig);
         Some(sig_bytes)
     }
@@ -52,6 +67,9 @@ impl NostrNote {
     fn pubkey_bytes(&self) -> [u8; 32] {
         let mut pubkey_bytes = [0_u8; 32];
         let pubkey = Self::hex_decode(&self.pubkey);
+        if pubkey.len() != 32 {
+            return pubkey_bytes;
+        }
         pubkey_bytes.copy_from_slice(&pubkey);
         pubkey_bytes
     }
@@ -102,11 +120,11 @@ impl NostrNote {
     /// Rebuilds the note and rehashes the content to verify the id
     fn verify_content(&self) -> bool {
         let mut copied_note = Self {
+            content: self.content.to_string(),
             pubkey: self.pubkey.to_string(),
             created_at: self.created_at,
             kind: self.kind,
             tags: self.tags.clone(),
-            content: self.content.to_string(),
             ..Default::default()
         };
         if copied_note.serialize_id().is_err() {
@@ -116,10 +134,7 @@ impl NostrNote {
     }
     #[must_use]
     pub fn verify(&self) -> bool {
-        if self.verify_signature().is_ok() && self.verify_content() {
-            return true;
-        }
-        false
+        self.verify_signature().is_ok_and(|t| t) && self.verify_content()
     }
     /// Generic function to decode a hex string into a byte vector
     fn hex_decode(hex_string: &str) -> Vec<u8> {
