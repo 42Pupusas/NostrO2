@@ -20,7 +20,7 @@ pub struct NostrKeypair {
     extractable: bool,
 }
 impl NostrKeypair {
-    pub const fn set_extractable(&mut self, extractable: bool) {
+    pub fn set_extractable(&mut self, extractable: bool) {
         self.extractable = extractable;
     }
     #[must_use]

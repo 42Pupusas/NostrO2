@@ -13,9 +13,9 @@ documentation = "https://docs.rs/nostro2/latest/nostro2/"
 [dependencies]
 futures-util.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
-nostro2.workspace =true 
-
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+
+nostro2.workspace =true 
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 serde_json.workspace = true
 
