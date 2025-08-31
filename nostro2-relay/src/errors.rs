@@ -20,5 +20,4 @@ impl From<tokio::sync::broadcast::error::SendError<nostro2::NostrClientEvent>> f
     }
 }
 
-
 impl std::error::Error for NostrRelayError {}

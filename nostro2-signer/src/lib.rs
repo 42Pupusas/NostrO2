@@ -12,4 +12,3 @@ pub extern crate nostro2_nips;
 pub use bip39::Language;
 pub static SECP: std::sync::LazyLock<secp256k1::Secp256k1<secp256k1::SignOnly>> =
     std::sync::LazyLock::new(secp256k1::Secp256k1::signing_only);
-

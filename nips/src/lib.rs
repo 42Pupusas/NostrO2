@@ -40,7 +40,9 @@ mod tests {
                     .as_slice()
                     .to_owned();
             ssp.resize(32, 0); // toss the Y part
-            let slice: [u8; 32] = ssp.try_into().map_err(|_| crate::Nip04Error::InvalidLength)?;
+            let slice: [u8; 32] = ssp
+                .try_into()
+                .map_err(|_| crate::Nip04Error::InvalidLength)?;
             Ok(slice.into())
         }
     }

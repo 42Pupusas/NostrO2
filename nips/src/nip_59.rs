@@ -26,10 +26,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ///
     /// Returns `Nip59Error::Nip44Error` if NIP-44 decryption fails.
     /// Returns `Nip59Error::ParseError` if either decrypted note cannot be parsed.
-    fn rumor(
-        &self,
-        giftwrap: &nostro2::NostrNote,
-    ) -> Result<nostro2::NostrNote, Nip59Error> {
+    fn rumor(&self, giftwrap: &nostro2::NostrNote) -> Result<nostro2::NostrNote, Nip59Error> {
         if !giftwrap.verify() {
             return Err(Nip59Error::ParseError(
                 "Giftwrap signature verification failed".to_string(),

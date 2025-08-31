@@ -12,7 +12,6 @@ pub extern crate nostro2;
 pub use pool::NostrPool;
 pub use relay::NostrRelay;
 
-
 #[cfg(test)]
 mod tests {
     use nostro2::NostrSigner;
