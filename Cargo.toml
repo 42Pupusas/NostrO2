@@ -21,8 +21,8 @@ nostro2 = { path = "nostro2", version = "0.3.8" }
 # nostro2-nips = { path = "nips" }
 nostro2-nips = { path = "nips", version = "0.1.6" }
 
-nostro2-signer = { path = "nostro2-signer" }
-# nostro2-signer = { path = "nostro2-signer", version = "0.1.9" }
+# nostro2-signer = { path = "nostro2-signer" }
+nostro2-signer = { path = "nostro2-signer", version = "0.1.11" }
 
 # Logging
 tracing = "0.1"
