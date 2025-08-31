@@ -1,28 +1,16 @@
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Nip82Error {
-    Nip44Error(crate::nip_44::Nip44Error),
-    Nostro2Error(nostro2::errors::NostrErrors),
-    SerializationError(serde_json::Error),
+    #[error("Failed to encrypt message {0}")]
+    Nip44Error(#[from] crate::nip_44::Nip44Error),
+    #[error("Failed to sign message {0}")]
+    Nostro2Error(#[from] nostro2::errors::NostrErrors),
+    #[error("Failed to serialize message {0}")]
+    SerializationError(#[from] serde_json::Error),
+    #[error("Failed to parse message {0}")]
     ParseError(String),
+    #[error("Failed to sign message")]
     SigningError,
 }
-impl std::fmt::Display for Nip82Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Nip82Error: {self:?}")
-    }
-}
-impl std::error::Error for Nip82Error {}
-impl From<crate::nip_44::Nip44Error> for Nip82Error {
-    fn from(err: crate::nip_44::Nip44Error) -> Self {
-        Self::Nip44Error(err)
-    }
-}
-impl From<nostro2::errors::NostrErrors> for Nip82Error {
-    fn from(err: nostro2::errors::NostrErrors) -> Self {
-        Self::Nostro2Error(err)
-    }
-}
-
 pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str::FromStr {
     /// Creates a NIP-82 request note.
     ///
@@ -37,9 +25,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
     ) -> Result<nostro2::NostrNote, Nip82Error> {
         let signing_key = Self::generate(true);
         self.sign_nostr_note(fhir_note)?;
-        let serialized = fhir_note
-            .serialize()
-            .map_err(Nip82Error::SerializationError)?;
+        let serialized = fhir_note.serialize()?;
         let pubkey = signing_key.public_key();
         let encrypted = signing_key.nip_44_encrypt(&serialized, &pubkey)?;
         let mut wrapped = nostro2::NostrNote {

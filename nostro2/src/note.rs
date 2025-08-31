@@ -77,7 +77,7 @@ impl NostrNote {
     /// # Errors
     ///
     /// Will return `Err` if `serde` cannot serialize the data
-    pub fn serialize_id(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn serialize_id(&mut self) -> Result<(), crate::errors::NostrErrors> {
         use sha2::Digest as _;
 
         let serialized_data = (
@@ -109,8 +109,12 @@ impl NostrNote {
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use secp256k1::{schnorr, Secp256k1, XOnlyPublicKey};
         let secp = Secp256k1::verification_only();
-        let id = self.id_bytes().ok_or("Failed to get id bytes.")?;
-        let sig = self.sig_bytes().ok_or("Failed to get signature bytes.")?;
+        let id = self
+            .id_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingId)?;
+        let sig = self
+            .sig_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingSignature)?;
         let public_key = XOnlyPublicKey::from_slice(&self.pubkey_bytes())?;
         let signature = schnorr::Signature::from_byte_array(sig);
         Ok(secp.verify_schnorr(&signature, &id, &public_key).is_ok())
@@ -150,8 +154,8 @@ impl NostrNote {
     ///
     /// Will return `Err` if `serde` cannot serialize the data,
     /// but because of data types should never realistically fail.
-    pub fn serialize(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
+    pub fn serialize(&self) -> Result<String, crate::errors::NostrErrors> {
+        Ok(serde_json::to_string(self)?)
     }
 }
 impl core::str::FromStr for NostrNote {

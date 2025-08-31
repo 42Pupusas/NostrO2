@@ -1,110 +1,31 @@
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum NostrKeypairError {
+    #[error("Invalid key")]
     InvalidKey,
-    Bech32DecodeError(bech32::DecodeError),
-    Bech32EncodeError(bech32::EncodeError),
-    HexDecodeError(hex::FromHexError),
+    #[error("Bech32 decode error {0}")]
+    Bech32DecodeError(#[from] bech32::DecodeError),
+    #[error("Bech32 encode error {0}")]
+    Bech32EncodeError(#[from] bech32::EncodeError),
+    #[error("Hex decode error {0}")]
+    HexDecodeError(#[from] hex::FromHexError),
+    #[error("Invalid hrp")]
     HrpParseError,
-    Nip01Error(nostro2::errors::NostrErrors),
-    Nip04Error(nostro2_nips::Nip04Error),
-    Nip44Error(nostro2_nips::Nip44Error),
-    Nip59Error(nostro2_nips::Nip59Error),
-    Secp256k1Error(secp256k1::Error),
-    ConversionError(std::convert::Infallible),
+    #[error("Nostr error {0}")]
+    Nip01Error(#[from] nostro2::errors::NostrErrors),
+    #[error("Nip04 error {0}")]
+    Nip04Error(#[from] nostro2_nips::Nip04Error),
+    #[error("Nip44 error {0}")]
+    Nip44Error(#[from] nostro2_nips::Nip44Error),
+    #[error("Nip59 error {0}")]
+    Nip59Error(#[from] nostro2_nips::Nip59Error),
+    #[error("Secp256k1 error {0}")]
+    Secp256k1Error(#[from] secp256k1::Error),
+    #[error("Conversion error {0}")]
+    ConversionError(#[from] std::convert::Infallible),
+    #[error("Shared secret error")]
     SharedSecretError,
+    #[error("Not extractable")]
     NotExtractable,
-    Bip39Error(bip39::Error),
-    StdErrors(Box<dyn std::error::Error>),
-}
-impl std::fmt::Display for NostrKeypairError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidKey => write!(f, "Invalid key"),
-            Self::Bech32DecodeError(err) => write!(f, "Bech32 decode error: {err}"),
-            Self::Bech32EncodeError(err) => write!(f, "Bech32 encode error: {err}"),
-            Self::HexDecodeError(err) => write!(f, "Hex decode error: {err}"),
-            Self::HrpParseError => write!(f, "Invalid hrp"),
-            Self::Nip04Error(err) => write!(f, "Nip04 error: {err}"),
-            Self::Nip44Error(err) => write!(f, "Nip44 error: {err}"),
-            Self::Secp256k1Error(err) => write!(f, "Secp256k1 error: {err}"),
-            Self::ConversionError(err) => write!(f, "Conversion error: {err}"),
-            Self::SharedSecretError => write!(f, "Shared secret error"),
-            Self::NotExtractable => write!(f, "Keypair is not extractable"),
-            Self::Bip39Error(err) => write!(f, "BIP39 error: {err}"),
-            Self::Nip59Error(err) => write!(f, "Nip59 error: {err}"),
-            Self::StdErrors(err) => write!(f, "Standard error: {err}"),
-            Self::Nip01Error(err) => write!(f, "Nip01 error: {err}"),
-        }
-    }
-}
-impl std::error::Error for NostrKeypairError {}
-impl From<nostro2::errors::NostrErrors> for NostrKeypairError {
-    fn from(err: nostro2::errors::NostrErrors) -> Self {
-        Self::Nip01Error(err)
-    }
-}
-impl From<std::io::Error> for NostrKeypairError {
-    fn from(err: std::io::Error) -> Self {
-        Self::StdErrors(Box::new(err))
-    }
-}
-impl From<Box<dyn std::error::Error>> for NostrKeypairError {
-    fn from(err: Box<dyn std::error::Error>) -> Self {
-        Self::StdErrors(err)
-    }
-}
-impl From<secp256k1::Error> for NostrKeypairError {
-    fn from(err: secp256k1::Error) -> Self {
-        Self::Secp256k1Error(err)
-    }
-}
-impl From<bech32::DecodeError> for NostrKeypairError {
-    fn from(err: bech32::DecodeError) -> Self {
-        Self::Bech32DecodeError(err)
-    }
-}
-impl From<bech32::EncodeError> for NostrKeypairError {
-    fn from(err: bech32::EncodeError) -> Self {
-        Self::Bech32EncodeError(err)
-    }
-}
-impl From<hex::FromHexError> for NostrKeypairError {
-    fn from(err: hex::FromHexError) -> Self {
-        Self::HexDecodeError(err)
-    }
-}
-impl From<nostro2_nips::Nip04Error> for NostrKeypairError {
-    fn from(err: nostro2_nips::Nip04Error) -> Self {
-        Self::Nip04Error(err)
-    }
-}
-impl From<nostro2_nips::Nip44Error> for NostrKeypairError {
-    fn from(err: nostro2_nips::Nip44Error) -> Self {
-        Self::Nip44Error(err)
-    }
-}
-impl From<nostro2_nips::Nip59Error> for NostrKeypairError {
-    fn from(err: nostro2_nips::Nip59Error) -> Self {
-        Self::Nip59Error(err)
-    }
-}
-impl From<std::convert::Infallible> for NostrKeypairError {
-    fn from(err: std::convert::Infallible) -> Self {
-        Self::ConversionError(err)
-    }
-}
-impl From<bip39::Error> for NostrKeypairError {
-    fn from(err: bip39::Error) -> Self {
-        Self::Bip39Error(err)
-    }
-}
-impl From<NostrKeypairError> for nostro2_nips::Nip04Error {
-    fn from(err: NostrKeypairError) -> Self {
-        Self::CustomError(err.to_string())
-    }
-}
-impl From<NostrKeypairError> for nostro2_nips::Nip44Error {
-    fn from(err: NostrKeypairError) -> Self {
-        Self::CustomError(err.to_string())
-    }
+    #[error("BIP39 error {0}")]
+    Bip39Error(#[from] bip39::Error),
 }

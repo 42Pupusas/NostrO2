@@ -2,63 +2,28 @@ use base64::{engine::general_purpose, Engine as _};
 use secp256k1::rand::{thread_rng, Rng};
 use zeroize::Zeroize;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Nip04Error {
-    CustomError(String),
-    StandardError(Box<dyn std::error::Error>),
-    SharedSecretError(String),
-    Base64DecodingError(base64::DecodeError),
-    Utf8Error(std::string::FromUtf8Error),
+    #[error("Invalid length")]
+    InvalidLength,
+    #[error("Shared secret error")]
+    FromHexError(#[from] hex::FromHexError),
+    #[error("Secp256k1 error {0}")]
+    Secp256k1Error(#[from] secp256k1::Error),
+    #[error("Shared secret error")]
+    SharedSecretError,
+    #[error("Base64 decoding error {0}")]
+    Base64DecodingError(#[from] base64::DecodeError),
+    #[error("UTF-8 conversion error {0}")]
+    Utf8Error(#[from] std::string::FromUtf8Error),
+    #[error("Missing ciphertext")]
     MissingCiphertext,
+    #[error("Missing IV")]
     MissingIv,
+    #[error("Malformed IV")]
     MalformedIv,
-    ConversionError(std::convert::Infallible),
-}
-impl std::fmt::Display for Nip04Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CustomError(msg) => write!(f, "Custom error: {msg}"),
-            Self::SharedSecretError(msg) => write!(f, "Shared secret error: {msg}"),
-            Self::Base64DecodingError(err) => write!(f, "Base64 decoding error: {err}"),
-            Self::Utf8Error(err) => write!(f, "UTF-8 error: {err}"),
-            Self::MissingCiphertext => write!(f, "Missing ciphertext"),
-            Self::MissingIv => write!(f, "Missing IV"),
-            Self::MalformedIv => write!(f, "Malformed IV"),
-            Self::ConversionError(err) => write!(f, "Conversion error: {err}"),
-            Self::StandardError(err) => write!(f, "Standard error: {err}"),
-        }
-    }
-}
-impl std::error::Error for Nip04Error {}
-impl From<Box<dyn std::error::Error>> for Nip04Error {
-    fn from(err: Box<dyn std::error::Error>) -> Self {
-        Self::StandardError(err)
-    }
-}
-impl std::convert::From<std::convert::Infallible> for Nip04Error {
-    fn from(err: std::convert::Infallible) -> Self {
-        Self::ConversionError(err)
-    }
-}
-impl From<base64::DecodeError> for Nip04Error {
-    fn from(err: base64::DecodeError) -> Self {
-        Self::Base64DecodingError(err)
-    }
-}
-impl From<std::string::FromUtf8Error> for Nip04Error {
-    fn from(err: std::string::FromUtf8Error) -> Self {
-        Self::Utf8Error(err)
-    }
-}
-impl From<secp256k1::Error> for Nip04Error {
-    fn from(err: secp256k1::Error) -> Self {
-        Self::SharedSecretError(err.to_string())
-    }
-}
-impl From<hex::FromHexError> for Nip04Error {
-    fn from(err: hex::FromHexError) -> Self {
-        Self::SharedSecretError(err.to_string())
-    }
+    #[error("Conversion error {0}")]
+    ConversionError(#[from] std::convert::Infallible),
 }
 pub trait Nip04 {
     /// Generates a shared secret using the private keypair and the public key of the peer

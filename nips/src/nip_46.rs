@@ -54,10 +54,18 @@ impl std::str::FromStr for Nip46Response {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Nip46Error {
+    #[error("Nostr note error {0}")]
+    NostrNoteError(#[from] nostro2::errors::NostrErrors),
+    #[error("Failed to encrypt message {0}")]
+    Nip44Error(#[from] crate::nip_44::Nip44Error),
+}
+
 pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
-    /// Creates a NIP-46 request note. 
+    /// Creates a NIP-46 request note.
     ///
-    /// # Errors 
+    /// # Errors
     ///
     /// Returns an error if the note fails to sign or encrypt.
     fn nip46_request(
@@ -65,7 +73,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
         method: Nip46Method,
         params: Vec<String>,
         signer_pk: &str,
-    ) -> Result<nostro2::NostrNote, nostro2::errors::NostrErrors> {
+    ) -> Result<nostro2::NostrNote, Nip46Error> {
         let mut note = nostro2::NostrNote {
             kind: 24133,
             content: self
@@ -79,8 +87,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
                     }
                     .to_string(),
                     signer_pk,
-                )
-                .map_err(|e| nostro2::errors::NostrErrors::SignatureError(e.to_string()))?
+                )?
                 .to_string(),
             pubkey: self.public_key(),
             ..Default::default()
@@ -89,18 +96,18 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
         self.sign_nostr_note(&mut note)?;
         Ok(note)
     }
-    /// Creates a NIP-46 response note. 
+    /// Creates a NIP-46 response note.
     ///
-    /// # Errors 
+    /// # Errors
     ///
-    /// Returns an error if the note fails to sign or encrypt. 
+    /// Returns an error if the note fails to sign or encrypt.
     fn nip46_response(
         &self,
         request_id: &str,
         result: String,
         error: Option<String>,
         signer_pk: &str,
-    ) -> Result<nostro2::NostrNote, nostro2::errors::NostrErrors> {
+    ) -> Result<nostro2::NostrNote, Nip46Error> {
         let response = Nip46Response {
             id: request_id.to_string(),
             result,
@@ -109,8 +116,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
         let mut note = nostro2::NostrNote {
             kind: 24133,
             content: self
-                .nip_44_encrypt(&response.to_string(), signer_pk)
-                .map_err(|e| nostro2::errors::NostrErrors::SignatureError(e.to_string()))?
+                .nip_44_encrypt(&response.to_string(), signer_pk)?
                 .to_string(),
             pubkey: self.public_key(),
             ..Default::default()

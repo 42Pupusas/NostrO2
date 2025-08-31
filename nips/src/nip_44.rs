@@ -4,91 +4,38 @@ use hmac::Mac;
 use secp256k1::rand::RngCore;
 use zeroize::Zeroize;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Nip44Error {
-    CustomError(String),
-    ConversionError(std::convert::Infallible),
-    StandardError(Box<dyn std::error::Error>),
-    SharedSecretError(String),
-    DecryptionError(String),
-    EncryptionError(String),
+    #[error("Shared secret error")]
+    SharedSecretError,
+    #[error("Hex decoding error {0}")]
+    FromHexError(#[from] hex::FromHexError),
+    #[error("Secp256k1 error {0}")]
+    Secp256k1Error(#[from] secp256k1::Error),
+    #[error("Nostr note error {0}")]
+    NostrNoteError(#[from] nostro2::errors::NostrErrors),
+    #[error("Invalid input length")]
     InvalidLength,
-    Base64DecodingError(base64::DecodeError),
-    FromUtf8Error(std::string::FromUtf8Error),
+    #[error("Base64 decoding error {0}")]
+    Base64DecodingError(#[from] base64::DecodeError),
+    #[error("UTF-8 conversion error {0}")]
+    FromUtf8Error(#[from] std::str::Utf8Error),
+    #[error("HKDF key derivation failed")]
     HkdfError,
+    #[error("HMAC failure")]
     HmacError,
-    SliceError,
+    #[error("ChaCha20 slice error")]
+    SliceError(#[from] chacha20::cipher::InvalidLength),
+    #[error("Invalid length prefix")]
+    InvalidPrefixLen,
+    #[error("Decryption error {0}")]
+    FromArrayError(#[from] std::array::TryFromSliceError),
+    #[error("Buffer too small")]
+    BufferTooSmall,
+    #[error("Encryption error {0}")]
+    FromIntError(#[from] std::num::TryFromIntError),
 }
 
-impl std::fmt::Display for Nip44Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CustomError(e) => write!(f, "Custom error: {e}"),
-            Self::ConversionError(e) => write!(f, "Conversion error: {e}"),
-            Self::StandardError(e) => write!(f, "Standard error: {e}"),
-            Self::SharedSecretError(e) => write!(f, "Shared secret error: {e}"),
-            Self::DecryptionError(e) => write!(f, "Decryption error: {e}"),
-            Self::EncryptionError(e) => write!(f, "Encryption error: {e}"),
-            Self::InvalidLength => write!(f, "Invalid input length"),
-            Self::Base64DecodingError(e) => write!(f, "Base64 decoding error: {e}"),
-            Self::HkdfError => write!(f, "HKDF key derivation failed"),
-            Self::HmacError => write!(f, "HMAC failure"),
-            Self::SliceError => write!(f, "ChaCha20 slice error"),
-            Self::FromUtf8Error(e) => write!(f, "UTF-8 conversion error: {e}"),
-        }
-    }
-}
-impl std::error::Error for Nip44Error {}
-impl From<hex::FromHexError> for Nip44Error {
-    fn from(e: hex::FromHexError) -> Self {
-        Self::SharedSecretError(e.to_string())
-    }
-}
-impl From<std::convert::Infallible> for Nip44Error {
-    fn from(e: std::convert::Infallible) -> Self {
-        Self::ConversionError(e)
-    }
-}
-impl From<Box<dyn std::error::Error>> for Nip44Error {
-    fn from(e: Box<dyn std::error::Error>) -> Self {
-        Self::StandardError(e)
-    }
-}
-impl From<std::num::TryFromIntError> for Nip44Error {
-    fn from(e: std::num::TryFromIntError) -> Self {
-        Self::DecryptionError(e.to_string())
-    }
-}
-impl From<secp256k1::Error> for Nip44Error {
-    fn from(e: secp256k1::Error) -> Self {
-        Self::SharedSecretError(e.to_string())
-    }
-}
-impl From<chacha20::cipher::InvalidLength> for Nip44Error {
-    fn from(_: chacha20::cipher::InvalidLength) -> Self {
-        Self::SliceError
-    }
-}
-impl From<chacha20::cipher::StreamCipherError> for Nip44Error {
-    fn from(_: chacha20::cipher::StreamCipherError) -> Self {
-        Self::SliceError
-    }
-}
-impl From<base64::DecodeSliceError> for Nip44Error {
-    fn from(_: base64::DecodeSliceError) -> Self {
-        Self::SliceError
-    }
-}
-impl From<base64::DecodeError> for Nip44Error {
-    fn from(e: base64::DecodeError) -> Self {
-        Self::Base64DecodingError(e)
-    }
-}
-impl From<std::string::FromUtf8Error> for Nip44Error {
-    fn from(e: std::string::FromUtf8Error) -> Self {
-        Self::FromUtf8Error(e)
-    }
-}
 pub struct MacComponents<'a> {
     nonce: zeroize::Zeroizing<[u8; 12]>,
     ciphertext: &'a [u8],
@@ -199,10 +146,7 @@ pub trait Nip44 {
         // Zeroize sensitive data after use
         decoded.zeroize();
 
-        Ok(std::str::from_utf8(decrypted)
-            .map_err(|_| Nip44Error::SliceError)?
-            .to_string()
-            .into())
+        Ok(std::str::from_utf8(decrypted)?.to_string().into())
     }
     /// Encrypts bytes with the given key and nonce using `ChaCha20`.
     ///
@@ -237,7 +181,7 @@ pub trait Nip44 {
         }
 
         if buffer.len() < ciphertext.len() {
-            return Err(Nip44Error::DecryptionError("Buffer too small".into()));
+            return Err(Nip44Error::InvalidLength);
         }
 
         buffer[..ciphertext.len()].copy_from_slice(ciphertext);
@@ -246,13 +190,13 @@ pub trait Nip44 {
         cipher.apply_keystream(&mut buffer[..ciphertext.len()]);
 
         if ciphertext.len() < 2 {
-            return Err(Nip44Error::DecryptionError("Too short".into()));
+            return Err(Nip44Error::InvalidLength);
         }
 
         let len = u16::from_be_bytes([buffer[0], buffer[1]]) as usize;
 
         if len > ciphertext.len() - 2 {
-            return Err(Nip44Error::DecryptionError("Invalid prefix len".into()));
+            return Err(Nip44Error::InvalidPrefixLen);
         }
 
         // Zeroize key, nonce, and buffer after use
@@ -287,11 +231,7 @@ pub trait Nip44 {
             return Err(Nip44Error::InvalidLength);
         }
         Ok(MacComponents {
-            nonce: zeroize::Zeroizing::new(
-                decoded[1..13]
-                    .try_into()
-                    .map_err(|_| Nip44Error::SliceError)?,
-            ),
+            nonce: zeroize::Zeroizing::new(decoded[1..13].try_into()?),
             ciphertext: &decoded[13..decoded.len() - 32],
         })
     }
@@ -313,15 +253,13 @@ pub trait Nip44 {
     /// - `EncryptionError`: if the plaintext is empty or too long.
     fn pad_string<'a>(plaintext: &[u8], buffer: &'a mut [u8]) -> Result<&'a mut [u8], Nip44Error> {
         if plaintext.is_empty() || plaintext.len() > 65535 {
-            return Err(Nip44Error::EncryptionError(
-                "Invalid plaintext length".into(),
-            ));
+            return Err(Nip44Error::InvalidLength);
         }
 
         let total_len = (plaintext.len() + 2).next_power_of_two().max(32);
 
         if buffer.len() < total_len {
-            return Err(Nip44Error::EncryptionError("Buffer too small".into()));
+            return Err(Nip44Error::BufferTooSmall);
         }
 
         let len_bytes = u16::try_from(plaintext.len())?.to_be_bytes();
@@ -374,9 +312,7 @@ mod tests {
         ) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip44Error> {
             let shared_point =
                 secp256k1::ecdh::SharedSecret::new(&self.receiver_pk, &self.sender_sk);
-            let shared_point_slice: [u8; 32] = shared_point.as_ref().try_into().map_err(|_| {
-                Nip44Error::SharedSecretError("Shared secret slice is wrong length".into())
-            })?;
+            let shared_point_slice: [u8; 32] = shared_point.as_ref().try_into()?;
             Ok(shared_point_slice.into())
         }
     }

@@ -20,7 +20,7 @@ pub struct NostrKeypair {
     extractable: bool,
 }
 impl NostrKeypair {
-    pub fn set_extractable(&mut self, extractable: bool) {
+    pub const fn set_extractable(&mut self, extractable: bool) {
         self.extractable = extractable;
     }
     #[must_use]
@@ -224,7 +224,10 @@ impl nostro2_nips::Nip04 for NostrKeypair {
         &self,
         public_key_string: &str,
     ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip04Error> {
-        Ok(self.shared_point(public_key_string)?.into())
+        Ok(self
+            .shared_point(public_key_string)
+            .map_err(|_| nostro2_nips::Nip04Error::SharedSecretError)?
+            .into())
     }
 }
 impl nostro2_nips::Nip44 for NostrKeypair {
@@ -232,7 +235,10 @@ impl nostro2_nips::Nip44 for NostrKeypair {
         &self,
         public_key_string: &str,
     ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip44Error> {
-        Ok(self.shared_point(public_key_string)?.into())
+        Ok(self
+            .shared_point(public_key_string)
+            .map_err(|_| nostro2_nips::Nip44Error::SharedSecretError)?
+            .into())
     }
 }
 impl nostro2_nips::Nip17 for NostrKeypair {}

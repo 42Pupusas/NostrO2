@@ -19,4 +19,5 @@ hex.workspace = true
 nostro2.workspace = true
 nostro2-nips.workspace = true
 secp256k1.workspace = true
+thiserror.workspace = true
 zeroize.workspace = true
