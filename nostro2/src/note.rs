@@ -97,7 +97,6 @@ impl NostrNote {
                 .iter()
                 .fold(String::new(), |mut acc, byte| {
                     write!(acc, "{byte:02x}").unwrap();
-                    // acc.push_str(&format!("{byte:02x}"));
                     acc
                 }),
         );
@@ -159,25 +158,32 @@ impl NostrNote {
     }
 }
 impl core::str::FromStr for NostrNote {
-    type Err = serde_json::Error;
+    type Err = crate::errors::NostrErrors;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
+        Ok(serde_json::from_str(s)?)
     }
 }
 impl TryFrom<serde_json::Value> for NostrNote {
-    type Error = serde_json::Error;
+    type Error = crate::errors::NostrErrors;
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
-        serde_json::from_value(value)
+        Ok(serde_json::from_value(value)?)
     }
 }
 impl TryFrom<&serde_json::Value> for NostrNote {
-    type Error = serde_json::Error;
+    type Error = crate::errors::NostrErrors;
     fn try_from(value: &serde_json::Value) -> Result<Self, Self::Error> {
-        serde_json::from_value(value.clone())
+        Ok(serde_json::from_value(value.clone())?)
     }
 }
 impl From<NostrNote> for serde_json::Value {
     fn from(note: NostrNote) -> Self {
         serde_json::to_value(note).expect("Failed to serialize NostrNote.")
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl From<NostrNote> for js_sys::wasm_bindgen::JsValue {
+    fn from(note: NostrNote) -> Self {
+        let json = serde_json::to_string(&note).expect("Failed to serialize NostrNote.");
+        js_sys::JSON::parse(&json).expect("Failed to parse NostrNote.")
     }
 }

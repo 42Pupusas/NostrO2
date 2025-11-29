@@ -48,9 +48,9 @@ mod tests {
     fn test_create_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let unsigned_note = NostrNote {
-            pubkey: PUB.to_string(),
+            pubkey: Some(PUB.into()),
             kind: 300,
-            content: content_of_note.to_string(),
+            content: content_of_note.into(),
             ..Default::default()
         };
         assert!(!unsigned_note.verify());
@@ -60,9 +60,9 @@ mod tests {
     fn test_create_tagged_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let mut signed_note = NostrNote {
-            pubkey: PUB.to_string(),
+            pubkey: Some(PUB.into()),
             kind: 300,
-            content: content_of_note.to_string(),
+            content: content_of_note.into(),
             ..Default::default()
         };
         signed_note.tags.add_custom_tag("t", "test");

@@ -19,7 +19,7 @@ pub use nip_44::*;
 pub use nip_46::*;
 pub use nip_59::*;
 pub use nip_82::*;
-
+#[cfg(test)]
 mod tests {
     pub struct NipTester {
         pub private_key: secp256k1::Keypair,

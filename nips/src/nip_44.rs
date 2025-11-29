@@ -226,7 +226,7 @@ pub trait Nip44 {
     ///
     /// # Errors
     /// - `InvalidLength`: if the input is too short to contain required components.
-    fn extract_components(decoded: &[u8]) -> Result<MacComponents, Nip44Error> {
+    fn extract_components(decoded: &[u8]) -> Result<MacComponents<'_>, Nip44Error> {
         if decoded.len() < 1 + 12 + 32 {
             return Err(Nip44Error::InvalidLength);
         }

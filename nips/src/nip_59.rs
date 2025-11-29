@@ -1,5 +1,8 @@
 #[derive(Debug)]
 pub enum Nip59Error {
+    MissingPubkey,
+    MissingId,
+    MissingSig,
     Nip44Error(crate::nip_44::Nip44Error),
     SerializationError(serde_json::Error),
     ParseError(String),
