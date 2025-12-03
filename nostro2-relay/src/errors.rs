@@ -3,6 +3,7 @@ pub enum NostrRelayError {
     Tungstenite(Box<tokio_tungstenite::tungstenite::Error>),
     Serde(serde_json::Error),
     TokioSend(Box<tokio::sync::broadcast::error::SendError<nostro2::NostrClientEvent>>),
+    SendError,
 }
 impl std::fmt::Display for NostrRelayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

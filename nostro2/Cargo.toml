@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT"
@@ -18,7 +18,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
-# [target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
 

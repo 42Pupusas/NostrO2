@@ -48,7 +48,7 @@ mod tests {
     fn test_create_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let unsigned_note = NostrNote {
-            pubkey: Some(PUB.into()),
+            pubkey: PUB.into(),
             kind: 300,
             content: content_of_note.into(),
             ..Default::default()
@@ -60,7 +60,7 @@ mod tests {
     fn test_create_tagged_note() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
         let mut signed_note = NostrNote {
-            pubkey: Some(PUB.into()),
+            pubkey: PUB.into(),
             kind: 300,
             content: content_of_note.into(),
             ..Default::default()

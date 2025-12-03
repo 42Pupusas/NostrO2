@@ -34,7 +34,7 @@ impl NostrPool {
                     loop {
                         tokio::select! {
                             Ok(msg) = sink.recv() => {
-                                if let Err(e) = relay.send(msg).await {
+                                if let Err(e) = relay.send(msg) {
                                     eprintln!("Failed to send message: {e}");
                                 }
                             },

@@ -1,25 +1,15 @@
 use futures_util::{SinkExt, StreamExt};
+
 #[derive(Clone)]
 pub struct NostrRelay {
-    stream: std::sync::Arc<
-        tokio::sync::Mutex<
-            futures_util::stream::SplitStream<
-                tokio_tungstenite::WebSocketStream<
-                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-                >,
-            >,
+    /// Channel for receiving raw messages from the reader task
+    receiver: std::sync::Arc<
+        tokio::sync::RwLock<
+            tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Utf8Bytes>,
         >,
     >,
-    sink: std::sync::Arc<
-        tokio::sync::Mutex<
-            futures_util::stream::SplitSink<
-                tokio_tungstenite::WebSocketStream<
-                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-                >,
-                tokio_tungstenite::tungstenite::Message,
-            >,
-        >,
-    >,
+    /// Channel for sending messages to the writer task
+    sender: tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Utf8Bytes>,
 }
 impl NostrRelay {
     /// Creates a new relay connection to the given URL.
@@ -33,19 +23,67 @@ impl NostrRelay {
             Some(
                 tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
                     .max_write_buffer_size(5 << 20) // 5 MiB
-                    .max_frame_size(Some(256 << 10)) // 64 KiB
-                    .max_message_size(Some(5 << 20)) // 2 MiB
-                    .read_buffer_size(8 << 10) // 8 KiB
-                    .write_buffer_size(8 << 10), // 8 KiB
+                    .max_frame_size(Some(256 << 10)) // 256 KiB
+                    .max_message_size(Some(5 << 20)) // 5 MiB
+                    .read_buffer_size(4 << 20) // 128 KiB (increased from 8 KiB)
+                    .write_buffer_size(4 << 20), // 128 KiB (increased from 8 KiB)
             ),
             false,
         )
         .await?;
 
-        let (sink, stream) = futures_util::StreamExt::split(websocket);
+        let (mut sink, mut stream) = futures_util::StreamExt::split(websocket);
+
+        // Create channels for communication
+        let (incoming_tx, incoming_rx) =
+            tokio::sync::mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Utf8Bytes>();
+        let (outgoing_tx, mut outgoing_rx) =
+            tokio::sync::mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Utf8Bytes>();
+
+        // Spawn reader task - continuously pumps messages from WebSocket to channel
+        tokio::spawn(async move {
+            while let Some(msg) = stream.next().await {
+                match msg {
+                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                        if incoming_tx.send(text).is_err() {
+                            // Receiver dropped, exit task
+                            break;
+                        }
+                    }
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                        // Connection closed
+                        break;
+                    }
+                    Err(_) => {
+                        // Error reading from stream
+                        break;
+                    }
+                    _ => {
+                        // Ignore other message types (binary, ping, pong)
+                    }
+                }
+            }
+        });
+
+        // Spawn writer task - continuously sends messages from channel to WebSocket
+        tokio::spawn(async move {
+            while let Some(msg) = outgoing_rx.recv().await {
+                if sink
+                    .send(tokio_tungstenite::tungstenite::Message::Text(msg))
+                    .await
+                    .is_err()
+                {
+                    // Error writing to sink, exit task
+                    break;
+                }
+            }
+            // Flush remaining messages before closing
+            let _ = sink.flush().await;
+        });
+
         Ok(Self {
-            stream: std::sync::Arc::new(stream.into()),
-            sink: std::sync::Arc::new(sink.into()),
+            receiver: std::sync::Arc::new(tokio::sync::RwLock::new(incoming_rx)),
+            sender: outgoing_tx,
         })
     }
     /// Sends a message to the relay.
@@ -54,63 +92,80 @@ impl NostrRelay {
     /// # Errors
     ///
     /// Returns an error if the message fails to send.
-    pub async fn send<T>(&self, msg: T) -> Result<(), crate::errors::NostrRelayError>
+    pub fn send<T>(&self, msg: T) -> Result<(), crate::errors::NostrRelayError>
     where
         T: Into<nostro2::NostrClientEvent> + Send + Sync,
     {
         let msg: nostro2::NostrClientEvent = msg.into();
+        // Pre-serialize JSON before sending to writer task
         let msg_str = serde_json::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
-        self.sink.lock().await.send(msg_str.into()).await?;
+        self.sender
+            .send(msg_str.into())
+            .map_err(|_| crate::errors::NostrRelayError::SendError)?;
         Ok(())
     }
-    /// Feeds a message to the relay, without flushing.
-    /// Use for batching messages to be sent later.
+    /// Sends multiple messages to the relay.
+    /// Messages are pre-serialized and sent through the writer task.
     /// Message must implement `Into<NostrClientEvent>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the message fails to send.
-    pub async fn send_all<St, T>(&self, stream: St) -> Result<(), crate::errors::NostrRelayError>
+    /// Returns an error if any message fails to send.
+    pub async fn send_all<St, T>(
+        &self,
+        mut stream: St,
+    ) -> Result<(), crate::errors::NostrRelayError>
     where
         T: Into<nostro2::NostrClientEvent> + Send + Sync + std::fmt::Debug,
         St: futures_util::Stream<Item = T> + Unpin + Sized,
     {
-        let mut stream = stream.map(|msg: T| {
+        while let Some(msg) = stream.next().await {
             let msg: nostro2::NostrClientEvent = msg.into();
-            serde_json::to_string(&msg)
-                .map(std::convert::Into::into)
-                .map_err(|_| tokio_tungstenite::tungstenite::Error::Utf8)
-        });
-        self.sink.lock().await.send_all(&mut stream).await?;
-        Ok(())
-    }
-    /// Flushes the sink, sending all buffered messages to the relay.
-    /// # Errors
-    /// Returns an error if the sink fails to flush.
-    pub async fn flush(&self) -> Result<(), crate::errors::NostrRelayError> {
-        self.sink.lock().await.flush().await?;
+            let msg_str =
+                serde_json::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+            self.sender
+                .send(msg_str.into())
+                .map_err(|_| crate::errors::NostrRelayError::SendError)?;
+        }
         Ok(())
     }
 
     /// Receives a message from the relay.
+    /// Pulls raw text from the reader task's channel and parses it.
     ///
     /// # Errors
     ///
-    /// Returns an error if the message fails to receive, due to the stream being closed.
-    /// Should never failed to parse the message, as it is guaranteed to be a valid
-    /// `NostrRelayEvent`.
+    /// Returns None if the stream is closed or the message fails to parse.
     pub async fn recv(&self) -> Option<nostro2::NostrRelayEvent> {
-        Some(
-            self.stream
-                .lock()
-                .await
-                .next()
-                .await?
-                .ok()?
-                .to_text()
-                .ok()?
-                .parse()
-                .unwrap_or(nostro2::NostrRelayEvent::Ping),
-        )
+        let msg_text = self.receiver.write().await.recv().await?;
+        // Parse raw string to NostrRelayEvent
+        msg_text
+            .parse()
+            .ok()
+            .or(Some(nostro2::NostrRelayEvent::Ping))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn test_relay() {
+        let time = std::time::Instant::now();
+        println!("Connecting to relay...");
+        let relay = NostrRelay::new("wss://relay.damus.io").await.unwrap();
+        let subscription = nostro2::NostrSubscription {
+            kinds: vec![1].into(),
+            limit: 5000.into(),
+            ..Default::default()
+        };
+        relay.send(subscription).unwrap();
+        println!("Connected in {:?}", time.elapsed());
+        while let Some(msg) = relay.recv().await {
+            if let nostro2::NostrRelayEvent::EndOfSubscription(..) = msg {
+                break;
+            }
+        }
+        println!("Done in {:?}", time.elapsed());
     }
 }
