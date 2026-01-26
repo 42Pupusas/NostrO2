@@ -1,6 +1,5 @@
 use nostro2::NostrSigner;
 use nostro2_nips::{Nip04, Nip44, Nip59};
-use zeroize::Zeroize;
 
 use crate::errors::NostrKeypairError;
 
@@ -24,10 +23,12 @@ impl NostrKeypair {
         self.extractable = extractable;
     }
     #[must_use]
+    #[inline]
     pub fn public_key_slice(&self) -> [u8; 32] {
         self.keypair.public_key().x_only_public_key().0.serialize()
     }
     #[must_use]
+    #[inline]
     pub fn public_key(&self) -> String {
         hex::encode(self.keypair.x_only_public_key().0.serialize())
     }
@@ -65,14 +66,12 @@ impl NostrKeypair {
         peer_pubkey: &str,
         encryption_scheme: &EncryptionScheme,
     ) -> Result<(), NostrKeypairError> {
-        let mut buffer: zeroize::Zeroizing<Vec<u8>> = zeroize::Zeroizing::new(Vec::new());
         match encryption_scheme {
             EncryptionScheme::Nip04 => self.nip04_encrypt_note(note, peer_pubkey)?,
             EncryptionScheme::Nip44 => {
                 self.nip44_encrypt_note(note, peer_pubkey)?;
             }
         }
-        buffer.zeroize();
         self.sign_nostr_note(note)?;
         Ok(())
     }
@@ -151,6 +150,7 @@ impl NostrKeypair {
         Ok(point)
     }
     #[must_use]
+    #[inline]
     pub fn secret_key(&self) -> [u8; 32] {
         let mut out = [0_u8; 32];
         if self.extractable {
@@ -268,9 +268,11 @@ impl nostro2::NostrSigner for NostrKeypair {
             extractable,
         }
     }
+    #[inline]
     fn public_key(&self) -> String {
         hex::encode(self.keypair.x_only_public_key().0.serialize())
     }
+    #[inline]
     fn secret_key(&self) -> String {
         hex::encode(self.keypair.secret_key().secret_bytes())
     }

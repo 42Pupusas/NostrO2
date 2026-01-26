@@ -1,5 +1,4 @@
 use crate::tags::NostrTags;
-use std::fmt::Write as _;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct NostrNote {
@@ -44,9 +43,10 @@ impl NostrNote {
         Some(string)
     }
     #[must_use]
+    #[inline]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
         let mut id_bytes = [0_u8; 32];
-        let id = Self::hex_decode(self.id.as_ref()?);
+        let id = hex::decode(self.id.as_ref()?).ok()?;
         if id.len() != 32 {
             return None;
         }
@@ -54,9 +54,10 @@ impl NostrNote {
         Some(id_bytes)
     }
     /// Returns the signature as a byte array
+    #[inline]
     fn sig_bytes(&self) -> Option<[u8; 64]> {
         let mut sig_bytes = [0_u8; 64];
-        let sig = Self::hex_decode(self.sig.as_ref()?);
+        let sig = hex::decode(self.sig.as_ref()?).ok()?;
         if sig.len() != 64 {
             return None;
         }
@@ -64,9 +65,10 @@ impl NostrNote {
         Some(sig_bytes)
     }
     /// Returns the public key as a byte array
+    #[inline]
     fn pubkey_bytes(&self) -> [u8; 32] {
         let mut pubkey_bytes = [0_u8; 32];
-        let pubkey = Self::hex_decode(&self.pubkey);
+        let pubkey = hex::decode(&self.pubkey).unwrap_or_default();
         if pubkey.len() != 32 {
             return pubkey_bytes;
         }
@@ -91,15 +93,7 @@ impl NostrNote {
         let json_str = serde_json::to_string(&serialized_data)?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(json_str.as_bytes());
-        self.id = Some(
-            hasher
-                .finalize()
-                .iter()
-                .fold(String::new(), |mut acc, byte| {
-                    write!(acc, "{byte:02x}").unwrap();
-                    acc
-                }),
-        );
+        self.id = Some(hex::encode(hasher.finalize()));
         Ok(())
     }
     /// Used to verify the signature of the note
@@ -121,31 +115,30 @@ impl NostrNote {
     /// Used to verify the content of the note
     ///
     /// Rebuilds the note and rehashes the content to verify the id
+    #[inline]
     fn verify_content(&self) -> bool {
-        let mut copied_note = Self {
-            content: self.content.to_string(),
-            pubkey: self.pubkey.to_string(),
-            created_at: self.created_at,
-            kind: self.kind,
-            tags: self.tags.clone(),
-            ..Default::default()
-        };
-        if copied_note.serialize_id().is_err() {
+        use sha2::Digest as _;
+
+        let serialized_data = (
+            0,
+            &*self.pubkey,
+            self.created_at,
+            self.kind,
+            &self.tags,
+            &*self.content,
+        );
+        let Ok(json_str) = serde_json::to_string(&serialized_data) else {
             return false;
-        }
-        self.id == copied_note.id
+        };
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(json_str.as_bytes());
+        let computed_id = hex::encode(hasher.finalize());
+        self.id.as_ref() == Some(&computed_id)
     }
     #[must_use]
+    #[inline]
     pub fn verify(&self) -> bool {
         self.verify_signature().is_ok_and(|t| t) && self.verify_content()
-    }
-    /// Generic function to decode a hex string into a byte vector
-    fn hex_decode(hex_string: &str) -> Vec<u8> {
-        hex_string
-            .as_bytes()
-            .chunks(2)
-            .filter_map(|b| u8::from_str_radix(core::str::from_utf8(b).ok()?, 16).ok())
-            .collect()
     }
     /// Creates a JSON encoded string from the `NostrNote` struct
     ///

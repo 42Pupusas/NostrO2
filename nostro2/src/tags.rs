@@ -65,33 +65,61 @@ impl NostrTags {
         self.0.push(tags);
     }
     #[must_use]
+    #[inline]
     pub fn first_tagged_pubkey(&self) -> Option<String> {
+        self.first_tagged_pubkey_ref().map(String::from)
+    }
+    #[must_use]
+    #[inline]
+    pub fn first_tagged_pubkey_ref(&self) -> Option<&str> {
         self.0
             .iter()
             .find(|tag_list| tag_list.first().is_some_and(|tag| tag == "p"))
-            .and_then(|tag_list| tag_list.get(1).cloned())
+            .and_then(|tag_list| tag_list.get(1).map(String::as_str))
     }
     #[must_use]
+    #[inline]
     pub fn first_tagged_event(&self) -> Option<String> {
+        self.first_tagged_event_ref().map(String::from)
+    }
+    #[must_use]
+    #[inline]
+    pub fn first_tagged_event_ref(&self) -> Option<&str> {
         self.0
             .iter()
             .find(|tag_list| tag_list.first().is_some_and(|tag| tag == "e"))
-            .and_then(|tag_list| tag_list.get(1).cloned())
+            .and_then(|tag_list| tag_list.get(1).map(String::as_str))
     }
     #[must_use]
+    #[inline]
     pub fn first_parameter(&self) -> Option<String> {
+        self.first_parameter_ref().map(String::from)
+    }
+    #[must_use]
+    #[inline]
+    pub fn first_parameter_ref(&self) -> Option<&str> {
         self.0
             .iter()
             .find(|tag_list| tag_list.first().is_some_and(|tag| tag == "d"))
-            .and_then(|tag_list| tag_list.get(1).cloned())
+            .and_then(|tag_list| tag_list.get(1).map(String::as_str))
     }
     #[must_use]
+    #[inline]
     pub fn find_tags(&self, tag_type: &str) -> Vec<String> {
         self.0
             .iter()
             .filter(|tag_list| tag_list.first().is_some_and(|tag| tag == tag_type))
             .flat_map(|tag_list| tag_list.iter().cloned())
             .skip(1)
+            .collect()
+    }
+    #[must_use]
+    #[inline]
+    pub fn find_tags_ref(&self, tag_type: &str) -> Vec<&str> {
+        self.0
+            .iter()
+            .filter(|tag_list| tag_list.first().is_some_and(|tag| tag == tag_type))
+            .flat_map(|tag_list| tag_list.iter().skip(1).map(String::as_str))
             .collect()
     }
 }
