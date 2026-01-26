@@ -6,13 +6,95 @@
     clippy::pedantic,
     clippy::nursery
 )]
-
-/// # `NostrO2`
-///
-/// `nostr_o2` is a library for interacting with the `Nostr` protocol.
-///
-/// It contains the data structures described in NIP-01, with full serde support,
-/// and type conversion between common formats.
+//! # NostrO2
+//!
+//! Simple yet powerful Rust library for the Nostr protocol.
+//!
+//! `nostro2` provides the core data structures and types for working with Nostr,
+//! as defined in NIP-01. It focuses on type safety, ergonomics, and performance
+//! with full serde support and zero-copy operations where possible.
+//!
+//! ## Quick Start
+//!
+//! ### Creating Notes
+//!
+//! ```rust
+//! use nostro2::NostrNote;
+//!
+//! // Simple text note
+//! let note = NostrNote::text_note("Hello, Nostr!");
+//!
+//! // Using the builder
+//! let note = NostrNote::builder()
+//!     .content("Hello, Nostr!")
+//!     .kind(1)
+//!     .tag_pubkey("abc123...")
+//!     .build();
+//!
+//! // Metadata note
+//! let metadata = r#"{"name":"Alice","about":"Nostr user"}"#;
+//! let note = NostrNote::metadata(metadata);
+//! ```
+//!
+//! ### Creating Subscriptions
+//!
+//! ```rust
+//! use nostro2::NostrSubscription;
+//!
+//! // Filter for text notes from specific authors
+//! let filter = NostrSubscription::new()
+//!     .kind(1)
+//!     .author("pubkey1...")
+//!     .author("pubkey2...")
+//!     .limit(10);
+//! ```
+//!
+//! ### Working with Tags
+//!
+//! ```rust
+//! use nostro2::NostrTags;
+//!
+//! let tags = NostrTags::new()
+//!     .with_pubkey("abc123...", None)
+//!     .with_event("event123...")
+//!     .with_tag("t", "nostr");
+//!
+//! // Tags behave like Vec
+//! assert_eq!(tags.len(), 3);
+//! ```
+//!
+//! ### Validation
+//!
+//! ```rust
+//! use nostro2::validation;
+//!
+//! if validation::is_valid_pubkey("abc123...") {
+//!     // Valid hex-encoded public key
+//! }
+//! ```
+//!
+//! ## Features
+//!
+//! - **NIP-01 Data Structures**: Complete implementation of core Nostr types
+//! - **Serde Support**: Full serialization/deserialization with serde
+//! - **Builder Patterns**: Ergonomic APIs for constructing notes and filters
+//! - **Type Safety**: Strong typing with comprehensive error handling
+//! - **WASM Compatible**: Works in browser environments
+//! - **Zero-Copy Operations**: Non-allocating variants for performance
+//!
+//! ## Error Handling
+//!
+//! The crate uses a [`Result`](type.Result.html) type alias for convenience:
+//!
+//! ```rust
+//! use nostro2::{NostrNote, Result};
+//!
+//! fn create_note() -> Result<NostrNote> {
+//!     let mut note = NostrNote::text_note("Hello");
+//!     note.serialize_id()?;
+//!     Ok(note)
+//! }
+//! ```
 pub mod errors;
 mod note;
 mod relay_events;

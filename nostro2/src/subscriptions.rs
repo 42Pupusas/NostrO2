@@ -1,3 +1,26 @@
+/// Subscription filter for querying Nostr events
+///
+/// Filters allow clients to request specific events from relays based on various criteria.
+/// All filter fields are optional and combined with AND logic.
+///
+/// # Examples
+///
+/// ```rust
+/// use nostro2::NostrSubscription;
+///
+/// // Get recent text notes from specific authors
+/// let filter = NostrSubscription::new()
+///     .kinds(vec![1])
+///     .authors(vec!["pubkey1...".to_string(), "pubkey2...".to_string()])
+///     .limit(20)
+///     .since(1234567890);
+///
+/// // Filter by tags
+/// let filter = NostrSubscription::new()
+///     .kind(1)
+///     .tag("#p", "pubkey...")
+///     .tag("#t", "nostr");
+/// ```
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct NostrSubscription {
     #[serde(skip_serializing_if = "Option::is_none")]

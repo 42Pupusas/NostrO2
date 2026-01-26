@@ -1,3 +1,20 @@
+//! Tag types and collections for Nostr notes
+//!
+//! This module provides types for working with Nostr tags as specified in NIP-01.
+//! Tags are used to add metadata, references, and relationships to notes.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use nostro2::NostrTags;
+//!
+//! let tags = NostrTags::new()
+//!     .with_pubkey("abc123...", None)
+//!     .with_event("event123...")
+//!     .with_tag("t", "nostr");
+//! ```
+
+/// Tag type identifiers for Nostr protocol
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub enum NostrTag {
     #[serde(rename = "p")]
@@ -32,6 +49,29 @@ impl AsRef<str> for NostrTag {
     }
 }
 
+/// Collection of tags attached to a Nostr note
+///
+/// Tags are represented as a vector of string vectors, where each inner vector
+/// represents a single tag with the tag type as the first element.
+///
+/// # Examples
+///
+/// ```rust
+/// use nostro2::NostrTags;
+///
+/// // Create tags using the builder pattern
+/// let tags = NostrTags::new()
+///     .with_pubkey("abc123...", None)
+///     .with_event("event123...")
+///     .with_tag("t", "nostr");
+///
+/// // Or convert from Vec<Vec<String>>
+/// let raw = vec![
+///     vec!["p".to_string(), "abc123...".to_string()],
+///     vec!["e".to_string(), "event123...".to_string()],
+/// ];
+/// let tags: NostrTags = raw.into();
+/// ```
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash, Default)]
 pub struct NostrTags(pub Vec<Vec<String>>);
 

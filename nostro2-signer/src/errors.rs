@@ -1,3 +1,8 @@
+//! Error types for the nostro2-signer crate
+//!
+//! This module contains all error types that can be returned by keypair and signing operations.
+
+/// Errors that can occur when working with Nostr keypairs and cryptographic operations
 #[derive(Debug, thiserror::Error)]
 pub enum NostrKeypairError {
     #[error("Invalid key")]

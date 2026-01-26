@@ -3,16 +3,54 @@ use nostro2_nips::{Nip04, Nip44, Nip59};
 
 use crate::errors::NostrKeypairError;
 
+/// Encryption scheme for encrypted Nostr messages
+///
+/// Nostr supports multiple encryption standards for private messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionScheme {
+    /// NIP-04: Legacy encryption (deprecated, use Nip44)
     Nip04,
+    /// NIP-44: Modern encryption standard
     Nip44,
 }
+
+/// Gift wrap scheme for sealed sender privacy (NIP-59)
+///
+/// Gift wrapping provides sender privacy by encrypting notes in multiple layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GiftwrapScheme {
+    /// Persistent event (kind < 10000)
     Persistent,
+    /// Replaceable event (kind 10000-19999)
     Replaceable,
+    /// Ephemeral event (kind 20000-29999)
     Ephemeral,
+    /// Parameterized replaceable event with d-tag
     Parameterized(String),
 }
+
+/// Nostr keypair for signing and encryption operations
+///
+/// A keypair consists of a secp256k1 key pair and an extractability flag.
+/// Non-extractable keypairs (default) prevent accidental key export, providing
+/// better security for keys stored in memory.
+///
+/// # Examples
+///
+/// ```rust
+/// use nostro2_signer::NostrKeypair;
+/// use nostro2::NostrSigner;
+///
+/// // Create new random keypair
+/// let keypair = NostrKeypair::new();
+///
+/// // Get public key
+/// let pubkey = keypair.pubkey();
+///
+/// // Create extractable keypair (allows key export)
+/// let keypair = NostrKeypair::new_extractable();
+/// let nsec = keypair.nsec().unwrap();
+/// ```
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct NostrKeypair {
     keypair: secp256k1::Keypair,

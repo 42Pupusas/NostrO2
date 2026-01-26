@@ -1,5 +1,35 @@
 use crate::tags::NostrTags;
 
+/// A Nostr note (event) as defined by NIP-01
+///
+/// Notes are the fundamental data structure in the Nostr protocol. They represent
+/// all types of events including text notes, metadata, direct messages, and more.
+///
+/// # Structure
+///
+/// - `pubkey`: Author's public key (32-byte hex string)
+/// - `created_at`: Unix timestamp in seconds
+/// - `kind`: Event type (see [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md))
+/// - `tags`: Array of tags for metadata and references
+/// - `content`: Event content (format depends on kind)
+/// - `id`: Event ID (SHA256 hash of serialized event)
+/// - `sig`: Schnorr signature over the event ID
+///
+/// # Examples
+///
+/// ```rust
+/// use nostro2::NostrNote;
+///
+/// // Simple text note
+/// let note = NostrNote::text_note("Hello, Nostr!");
+///
+/// // Builder pattern
+/// let note = NostrNote::builder()
+///     .content("Hello!")
+///     .kind(1)
+///     .tag_pubkey("abc123...")
+///     .build();
+/// ```
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
