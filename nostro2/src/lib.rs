@@ -20,7 +20,7 @@ mod subscriptions;
 mod tags;
 pub mod validation;
 
-pub use note::NostrNote;
+pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent};
 pub use subscriptions::NostrSubscription;
 pub use tags::NostrTag;
@@ -103,5 +103,82 @@ mod tests {
             signed_note.tags.first_tagged_pubkey(),
             Some(PUB.to_string())
         );
+    }
+
+    #[test]
+    fn test_note_builder() {
+        let note = NostrNote::builder()
+            .content("Hello, Nostr!")
+            .kind(1)
+            .tag_pubkey("abc123")
+            .tag_event("event123")
+            .tag("t", "nostr")
+            .build();
+
+        assert_eq!(note.content, "Hello, Nostr!");
+        assert_eq!(note.kind, 1);
+        assert_eq!(note.tags.len(), 3);
+    }
+
+    #[test]
+    fn test_text_note() {
+        let note = NostrNote::text_note("Hello, world!");
+        assert_eq!(note.kind, 1);
+        assert_eq!(note.content, "Hello, world!");
+    }
+
+    #[test]
+    fn test_metadata_note() {
+        let metadata = r#"{"name":"Alice"}"#;
+        let note = NostrNote::metadata(metadata);
+        assert_eq!(note.kind, 0);
+        assert_eq!(note.content, metadata);
+    }
+
+    #[test]
+    fn test_with_kind() {
+        let note = NostrNote::with_kind(4);
+        assert_eq!(note.kind, 4);
+    }
+
+    #[test]
+    fn test_with_timestamp() {
+        let note = NostrNote::text_note("Hello")
+            .with_timestamp(1234567890);
+        assert_eq!(note.created_at, 1234567890);
+    }
+
+    #[test]
+    fn test_with_content() {
+        let note = NostrNote::with_kind(1)
+            .with_content("New content");
+        assert_eq!(note.content, "New content");
+    }
+
+    #[test]
+    fn test_note_now() {
+        let timestamp = NostrNote::now();
+        assert!(timestamp > 0);
+        // Should be recent (after 2020-01-01)
+        assert!(timestamp > 1577836800);
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        let note = NostrNote::builder()
+            .kind(1)
+            .content("Test")
+            .timestamp(1234567890)
+            .tag_pubkey("pubkey1")
+            .tag_event("event1")
+            .tag_parameter("param1")
+            .tag("custom", "value")
+            .tag_relay("wss://relay.example.com")
+            .build();
+
+        assert_eq!(note.kind, 1);
+        assert_eq!(note.content, "Test");
+        assert_eq!(note.created_at, 1234567890);
+        assert_eq!(note.tags.len(), 5);
     }
 }

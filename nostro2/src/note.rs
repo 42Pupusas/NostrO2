@@ -35,13 +35,123 @@ impl Default for NostrNote {
     }
 }
 impl NostrNote {
+    /// Create a builder for constructing a NostrNote
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nostro2::NostrNote;
+    ///
+    /// let note = NostrNote::builder()
+    ///     .content("Hello, Nostr!")
+    ///     .kind(1)
+    ///     .build();
+    /// ```
     #[must_use]
-    pub fn get_note_hrp(&self) -> Option<String> {
-        let hrp = bech32::Hrp::parse("note").ok()?;
-        let note_data = self.id.as_ref()?;
-        let string = bech32::encode::<bech32::Bech32>(hrp, note_data.as_bytes()).ok()?;
-        Some(string)
+    pub fn builder() -> NostrNoteBuilder {
+        NostrNoteBuilder::default()
     }
+
+    /// Create a text note (kind 1) with the given content
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nostro2::NostrNote;
+    ///
+    /// let note = NostrNote::text_note("Hello, Nostr!");
+    /// assert_eq!(note.kind, 1);
+    /// ```
+    #[must_use]
+    pub fn text_note(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            kind: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Create a metadata note (kind 0) with the given content
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nostro2::NostrNote;
+    ///
+    /// let metadata = r#"{"name":"Alice","about":"Nostr user"}"#;
+    /// let note = NostrNote::metadata(metadata);
+    /// assert_eq!(note.kind, 0);
+    /// ```
+    #[must_use]
+    pub fn metadata(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            kind: 0,
+            ..Default::default()
+        }
+    }
+
+    /// Create a note with the specified kind
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nostro2::NostrNote;
+    ///
+    /// let note = NostrNote::with_kind(4); // Encrypted DM
+    /// assert_eq!(note.kind, 4);
+    /// ```
+    #[must_use]
+    pub fn with_kind(kind: u32) -> Self {
+        Self {
+            kind,
+            ..Default::default()
+        }
+    }
+
+    /// Get the current timestamp in the appropriate format for the platform
+    ///
+    /// Returns Unix timestamp (seconds since epoch)
+    #[must_use]
+    pub fn now() -> i64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            (js_sys::Date::now() / 1000.0) as i64
+        }
+    }
+
+    /// Set the timestamp and return self for chaining
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nostro2::NostrNote;
+    ///
+    /// let note = NostrNote::text_note("Hello")
+    ///     .with_timestamp(1234567890);
+    /// assert_eq!(note.created_at, 1234567890);
+    /// ```
+    #[must_use]
+    pub fn with_timestamp(mut self, timestamp: i64) -> Self {
+        self.created_at = timestamp;
+        self
+    }
+
+    /// Set the content and return self for chaining
+    #[must_use]
+    pub fn with_content(mut self, content: impl Into<String>) -> Self {
+        self.content = content.into();
+        self
+    }
+
     #[must_use]
     #[inline]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
@@ -173,6 +283,95 @@ impl From<NostrNote> for serde_json::Value {
         serde_json::to_value(note).expect("Failed to serialize NostrNote.")
     }
 }
+/// Builder for constructing NostrNote instances
+///
+/// # Example
+///
+/// ```
+/// use nostro2::NostrNote;
+///
+/// let note = NostrNote::builder()
+///     .content("Hello, Nostr!")
+///     .kind(1)
+///     .tag_pubkey("abc123...")
+///     .build();
+/// ```
+#[derive(Debug, Default)]
+pub struct NostrNoteBuilder {
+    note: NostrNote,
+}
+
+impl NostrNoteBuilder {
+    /// Set the content of the note
+    #[must_use]
+    pub fn content(mut self, content: impl Into<String>) -> Self {
+        self.note.content = content.into();
+        self
+    }
+
+    /// Set the kind of the note
+    #[must_use]
+    pub fn kind(mut self, kind: u32) -> Self {
+        self.note.kind = kind;
+        self
+    }
+
+    /// Set the timestamp of the note
+    #[must_use]
+    pub fn timestamp(mut self, timestamp: i64) -> Self {
+        self.note.created_at = timestamp;
+        self
+    }
+
+    /// Add a pubkey tag (p-tag)
+    #[must_use]
+    pub fn tag_pubkey(mut self, pubkey: &str) -> Self {
+        self.note.tags.add_pubkey_tag(pubkey, None);
+        self
+    }
+
+    /// Add a pubkey tag with a relay hint
+    #[must_use]
+    pub fn tag_pubkey_with_relay(mut self, pubkey: &str, relay: &str) -> Self {
+        self.note.tags.add_pubkey_tag(pubkey, Some(relay));
+        self
+    }
+
+    /// Add an event tag (e-tag)
+    #[must_use]
+    pub fn tag_event(mut self, event_id: &str) -> Self {
+        self.note.tags.add_event_tag(event_id);
+        self
+    }
+
+    /// Add a parameter tag (d-tag)
+    #[must_use]
+    pub fn tag_parameter(mut self, parameter: &str) -> Self {
+        self.note.tags.add_parameter_tag(parameter);
+        self
+    }
+
+    /// Add a custom tag
+    #[must_use]
+    pub fn tag(mut self, tag_type: &str, value: &str) -> Self {
+        self.note.tags.add_custom_tag(tag_type, value);
+        self
+    }
+
+    /// Add a relay tag (r-tag)
+    #[must_use]
+    pub fn tag_relay(mut self, url: &str) -> Self {
+        self.note.tags.add_relay_tag(url);
+        self
+    }
+
+    /// Build the NostrNote
+    #[must_use]
+    pub fn build(self) -> NostrNote {
+        self.note
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 impl From<NostrNote> for js_sys::wasm_bindgen::JsValue {
     fn from(note: NostrNote) -> Self {
