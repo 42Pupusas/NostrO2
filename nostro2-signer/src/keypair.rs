@@ -565,10 +565,10 @@ mod tests {
     #[test]
     fn test_named_constructors() {
         let kp1 = NostrKeypair::new();
-        assert_eq!(kp1.secret_key(), [0u8; 32]); // Not extractable
+        assert_eq!(kp1.secret_key(), [0_u8; 32]); // Not extractable
 
         let kp2 = NostrKeypair::new_extractable();
-        assert_ne!(kp2.secret_key(), [0u8; 32]); // Extractable
+        assert_ne!(kp2.secret_key(), [0_u8; 32]); // Extractable
 
         let hex = "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8";
         let kp3 = NostrKeypair::from_hex(hex, true).unwrap();

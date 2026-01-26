@@ -5,7 +5,7 @@
     clippy::pedantic,
     clippy::nursery
 )]
-//! # NostrO2 Signer
+//! # `NostrO2` Signer
 //!
 //! Key management and signing for the Nostr protocol.
 //!
@@ -133,7 +133,7 @@ pub extern crate nostro2_nips;
 pub use bip39::Language;
 pub use keypair::{EncryptionScheme, GiftwrapScheme, NostrKeypair};
 
-/// Convenience type alias for Results with NostrKeypairError
+/// Convenience type alias for Results with `NostrKeypairError`
 pub type Result<T> = std::result::Result<T, errors::NostrKeypairError>;
 
 pub static SECP: std::sync::LazyLock<secp256k1::Secp256k1<secp256k1::SignOnly>> =

@@ -6,7 +6,7 @@
     clippy::pedantic,
     clippy::nursery
 )]
-//! # NostrO2
+//! # `NostrO2`
 //!
 //! Simple yet powerful Rust library for the Nostr protocol.
 //!
@@ -107,7 +107,7 @@ pub use relay_events::{NostrClientEvent, NostrRelayEvent};
 pub use subscriptions::NostrSubscription;
 pub use tags::NostrTag;
 
-/// Convenience type alias for Results with NostrErrors
+/// Convenience type alias for Results with `NostrErrors`
 pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
 
 pub trait NostrSigner {

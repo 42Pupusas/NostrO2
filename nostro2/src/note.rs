@@ -65,7 +65,7 @@ impl Default for NostrNote {
     }
 }
 impl NostrNote {
-    /// Create a builder for constructing a NostrNote
+    /// Create a builder for constructing a `NostrNote`
     ///
     /// # Example
     ///
@@ -152,8 +152,8 @@ impl NostrNote {
                 .unwrap_or(0)
         }
         #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::cast_possible_truncation)]
         {
-            #[allow(clippy::cast_possible_truncation)]
             (js_sys::Date::now() / 1000.0) as i64
         }
     }
@@ -170,7 +170,7 @@ impl NostrNote {
     /// assert_eq!(note.created_at, 1234567890);
     /// ```
     #[must_use]
-    pub fn with_timestamp(mut self, timestamp: i64) -> Self {
+    pub const fn with_timestamp(mut self, timestamp: i64) -> Self {
         self.created_at = timestamp;
         self
     }
@@ -313,7 +313,7 @@ impl From<NostrNote> for serde_json::Value {
         serde_json::to_value(note).expect("Failed to serialize NostrNote.")
     }
 }
-/// Builder for constructing NostrNote instances
+/// Builder for constructing `NostrNote` instances
 ///
 /// # Example
 ///
@@ -341,14 +341,14 @@ impl NostrNoteBuilder {
 
     /// Set the kind of the note
     #[must_use]
-    pub fn kind(mut self, kind: u32) -> Self {
+    pub const fn kind(mut self, kind: u32) -> Self {
         self.note.kind = kind;
         self
     }
 
     /// Set the timestamp of the note
     #[must_use]
-    pub fn timestamp(mut self, timestamp: i64) -> Self {
+    pub const fn timestamp(mut self, timestamp: i64) -> Self {
         self.note.created_at = timestamp;
         self
     }
@@ -395,7 +395,7 @@ impl NostrNoteBuilder {
         self
     }
 
-    /// Build the NostrNote
+    /// Build the `NostrNote`
     #[must_use]
     pub fn build(self) -> NostrNote {
         self.note

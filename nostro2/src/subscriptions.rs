@@ -125,21 +125,21 @@ impl NostrSubscription {
 
     /// Set the limit
     #[must_use]
-    pub fn limit(mut self, limit: u32) -> Self {
+    pub const fn limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
         self
     }
 
     /// Set the since timestamp
     #[must_use]
-    pub fn since(mut self, since: u64) -> Self {
+    pub const fn since(mut self, since: u64) -> Self {
         self.since = Some(since);
         self
     }
 
     /// Set the until timestamp
     #[must_use]
-    pub fn until(mut self, until: u64) -> Self {
+    pub const fn until(mut self, until: u64) -> Self {
         self.until = Some(until);
         self
     }
