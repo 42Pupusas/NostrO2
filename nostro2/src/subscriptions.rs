@@ -35,6 +35,13 @@ impl std::str::FromStr for NostrSubscription {
     }
 }
 impl NostrSubscription {
+    /// Create a new empty subscription filter
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a tag filter
     pub fn add_tag(&mut self, tag: &str, value: &str) {
         if let Some(tags) = &mut self.tags {
             if let Some(tag_values) = tags.get_mut(tag) {
@@ -47,6 +54,78 @@ impl NostrSubscription {
             tags.insert(tag.to_string(), vec![value.to_string()]);
             self.tags = Some(tags);
         }
+    }
+
+    /// Set authors filter (replaces existing)
+    #[must_use]
+    pub fn authors(mut self, authors: Vec<String>) -> Self {
+        self.authors = Some(authors);
+        self
+    }
+
+    /// Add a single author to the filter
+    #[must_use]
+    pub fn author(mut self, author: impl Into<String>) -> Self {
+        self.authors
+            .get_or_insert_with(Vec::new)
+            .push(author.into());
+        self
+    }
+
+    /// Set event IDs filter (replaces existing)
+    #[must_use]
+    pub fn ids(mut self, ids: Vec<String>) -> Self {
+        self.ids = Some(ids);
+        self
+    }
+
+    /// Add a single event ID to the filter
+    #[must_use]
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.ids.get_or_insert_with(Vec::new).push(id.into());
+        self
+    }
+
+    /// Set kinds filter (replaces existing)
+    #[must_use]
+    pub fn kinds(mut self, kinds: Vec<u32>) -> Self {
+        self.kinds = Some(kinds);
+        self
+    }
+
+    /// Add a single kind to the filter
+    #[must_use]
+    pub fn kind(mut self, kind: u32) -> Self {
+        self.kinds.get_or_insert_with(Vec::new).push(kind);
+        self
+    }
+
+    /// Set the limit
+    #[must_use]
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set the since timestamp
+    #[must_use]
+    pub fn since(mut self, since: u64) -> Self {
+        self.since = Some(since);
+        self
+    }
+
+    /// Set the until timestamp
+    #[must_use]
+    pub fn until(mut self, until: u64) -> Self {
+        self.until = Some(until);
+        self
+    }
+
+    /// Add a tag filter (chainable)
+    #[must_use]
+    pub fn tag(mut self, tag: &str, value: &str) -> Self {
+        self.add_tag(tag, value);
+        self
     }
 }
 
@@ -88,5 +167,26 @@ mod tests {
                 "#q": ["value2"]
             })
         );
+    }
+
+    #[test]
+    fn test_subscription_builder() {
+        let filter = NostrSubscription::new()
+            .kind(1)
+            .author("abc123")
+            .limit(10)
+            .since(1234567890);
+
+        assert_eq!(filter.kinds, Some(vec![1]));
+        assert_eq!(filter.authors, Some(vec!["abc123".to_string()]));
+        assert_eq!(filter.limit, Some(10));
+        assert_eq!(filter.since, Some(1234567890));
+    }
+
+    #[test]
+    fn test_subscription_builder_multiple_kinds() {
+        let filter = NostrSubscription::new().kind(1).kind(4).kinds(vec![0, 3]);
+
+        assert_eq!(filter.kinds, Some(vec![0, 3]));
     }
 }

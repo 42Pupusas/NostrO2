@@ -18,10 +18,15 @@ mod note;
 mod relay_events;
 mod subscriptions;
 mod tags;
+pub mod validation;
+
 pub use note::NostrNote;
 pub use relay_events::{NostrClientEvent, NostrRelayEvent};
 pub use subscriptions::NostrSubscription;
 pub use tags::NostrTag;
+
+/// Convenience type alias for Results with NostrErrors
+pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
 
 pub trait NostrSigner {
     /// Sign a Nostr note
@@ -30,8 +35,7 @@ pub trait NostrSigner {
     ///
     /// Returns an error if the note cannot be signed
     /// or if the keypair is invalid
-    fn sign_nostr_note(&self, note: &mut crate::note::NostrNote)
-        -> Result<(), errors::NostrErrors>;
+    fn sign_nostr_note(&self, note: &mut crate::note::NostrNote) -> Result<()>;
     fn generate(extractable: bool) -> Self;
     fn public_key(&self) -> String;
     fn secret_key(&self) -> String;

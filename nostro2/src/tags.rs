@@ -34,17 +34,78 @@ impl AsRef<str> for NostrTag {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash, Default)]
 pub struct NostrTags(pub Vec<Vec<String>>);
+
 impl AsRef<[Vec<String>]> for NostrTags {
     fn as_ref(&self) -> &[Vec<String>] {
         &self.0
     }
 }
+
 impl AsMut<[Vec<String>]> for NostrTags {
     fn as_mut(&mut self) -> &mut [Vec<String>] {
         &mut self.0
     }
 }
+
+impl std::ops::Deref for NostrTags {
+    type Target = Vec<Vec<String>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for NostrTags {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Vec<Vec<String>>> for NostrTags {
+    fn from(tags: Vec<Vec<String>>) -> Self {
+        Self(tags)
+    }
+}
+
+impl From<NostrTags> for Vec<Vec<String>> {
+    fn from(tags: NostrTags) -> Self {
+        tags.0
+    }
+}
+
 impl NostrTags {
+    /// Create a new empty tags collection
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Chainable method to add a pubkey tag
+    #[must_use]
+    pub fn with_pubkey(mut self, pubkey: &str, relay: Option<&str>) -> Self {
+        self.add_pubkey_tag(pubkey, relay);
+        self
+    }
+
+    /// Chainable method to add an event tag
+    #[must_use]
+    pub fn with_event(mut self, event_id: &str) -> Self {
+        self.add_event_tag(event_id);
+        self
+    }
+
+    /// Chainable method to add a custom tag
+    #[must_use]
+    pub fn with_tag(mut self, tag_type: &str, value: &str) -> Self {
+        self.add_custom_tag(tag_type, value);
+        self
+    }
+
+    /// Add a relay tag
+    pub fn add_relay_tag(&mut self, url: &str) {
+        self.0.push(vec!["r".to_owned(), url.to_owned()]);
+    }
+
     pub fn add_custom_tag(&mut self, tag_type: &str, tag: &str) {
         let tags = vec![tag_type.to_owned(), tag.to_owned()];
         self.0.push(tags);
@@ -126,29 +187,50 @@ impl NostrTags {
 
 #[cfg(test)]
 mod tests {
-    //use super::*;
-    //use serde_json::json;
+    use super::*;
 
-    // #[test]
-    // fn test_serialize_tag_list() {
-    //     let tag_list = TagList {
-    //         tag_type: NostrTag::Pubkey,
-    //         tags: vec!["tag1".to_string(), "tag2".to_string()],
-    //     };
-    //     let serialized = serde_json::to_string(&tag_list).unwrap();
-    //     assert_eq!(serialized, r#"["p","tag1","tag2"]"#,);
-    // }
+    #[test]
+    fn test_tags_deref() {
+        let mut tags = NostrTags::new();
+        tags.push(vec!["p".to_string(), "abc123".to_string()]);
 
-    // #[test]
-    // fn test_deserialize_tag_list() {
-    //     let data = r#"["p","tag1","tag2"]"#;
-    //     let deserialized: TagList = serde_json::from_str(data).unwrap();
-    //     assert_eq!(
-    //         deserialized,
-    //         TagList {
-    //             tag_type: NostrTag::Pubkey,
-    //             tags: vec!["tag1".to_string(), "tag2".to_string()],
-    //         }
-    //     );
-    // }
+        // Should be able to use Vec methods via Deref
+        assert_eq!(tags.len(), 1);
+        assert!(!tags.is_empty());
+        assert_eq!(tags[0][0], "p");
+    }
+
+    #[test]
+    fn test_tags_from_vec() {
+        let raw_tags = vec![
+            vec!["p".to_string(), "abc123".to_string()],
+            vec!["e".to_string(), "event123".to_string()],
+        ];
+
+        let tags: NostrTags = raw_tags.clone().into();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags.as_ref(), raw_tags.as_slice());
+    }
+
+    #[test]
+    fn test_tags_builder() {
+        let tags = NostrTags::new()
+            .with_pubkey("abc123", None)
+            .with_event("event123")
+            .with_tag("t", "test");
+
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags.first_tagged_pubkey_ref(), Some("abc123"));
+        assert_eq!(tags.first_tagged_event_ref(), Some("event123"));
+    }
+
+    #[test]
+    fn test_add_relay_tag() {
+        let mut tags = NostrTags::new();
+        tags.add_relay_tag("wss://relay.example.com");
+
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0][0], "r");
+        assert_eq!(tags[0][1], "wss://relay.example.com");
+    }
 }

@@ -19,9 +19,80 @@ pub struct NostrKeypair {
     extractable: bool,
 }
 impl NostrKeypair {
+    /// Create a new random keypair (non-extractable by default)
+    #[must_use]
+    pub fn new() -> Self {
+        Self::generate(false)
+    }
+
+    /// Create a new random keypair that allows key extraction
+    #[must_use]
+    pub fn new_extractable() -> Self {
+        Self::generate(true)
+    }
+
+    /// Create from hex-encoded private key
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hex string is invalid or the wrong length
+    pub fn from_hex(hex: &str, extractable: bool) -> Result<Self, NostrKeypairError> {
+        let bytes = hex::decode(hex)?;
+        let mut keypair = Self::try_from(bytes.as_slice())?;
+        keypair.extractable = extractable;
+        Ok(keypair)
+    }
+
+    /// Create from nsec bech32 string
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bech32 string is invalid
+    pub fn from_nsec(nsec: &str, extractable: bool) -> Result<Self, NostrKeypairError> {
+        if !nsec.starts_with("nsec") {
+            return Err(NostrKeypairError::HrpParseError);
+        }
+        let (hrp, data) = bech32::decode(nsec)?;
+        if hrp.to_string() != "nsec" {
+            return Err(NostrKeypairError::HrpParseError);
+        }
+        let mut keypair = Self::try_from(data.as_slice())?;
+        keypair.extractable = extractable;
+        Ok(keypair)
+    }
+
+    /// Create from mnemonic phrase
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mnemonic is invalid
+    pub fn from_mnemonic(
+        mnemonic: &str,
+        language: bip39::Language,
+        extractable: bool,
+    ) -> Result<Self, NostrKeypairError> {
+        Self::parse_mnemonic(mnemonic, language, extractable)
+    }
+
+    /// Set whether the keypair allows key extraction
     pub const fn set_extractable(&mut self, extractable: bool) {
         self.extractable = extractable;
     }
+
+    /// Get public key as bytes (alias for `public_key_slice`)
+    #[must_use]
+    #[inline]
+    pub fn pubkey_bytes(&self) -> [u8; 32] {
+        self.public_key_slice()
+    }
+
+    /// Get public key as hex string (alias for `public_key`)
+    #[must_use]
+    #[inline]
+    pub fn pubkey(&self) -> String {
+        self.public_key()
+    }
+
     #[must_use]
     #[inline]
     pub fn public_key_slice(&self) -> [u8; 32] {
@@ -291,16 +362,37 @@ impl TryFrom<&[u8]> for NostrKeypair {
 impl std::str::FromStr for NostrKeypair {
     type Err = NostrKeypairError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        // Try nsec first (most specific)
         if value.starts_with("nsec") {
-            let (hrp, data) = bech32::decode(value)?;
-            if hrp.to_string() != "nsec" {
-                return Err(NostrKeypairError::HrpParseError);
+            if let Ok(keypair) = Self::from_nsec(value, false) {
+                return Ok(keypair);
             }
-            Self::try_from(data.as_slice())
-        } else {
-            let hex = hex::decode(value)?;
-            Self::try_from(hex.as_slice())
         }
+
+        // Try hex (64 characters)
+        if value.len() == 64 {
+            if let Ok(keypair) = Self::from_hex(value, false) {
+                return Ok(keypair);
+            }
+        }
+
+        // Try mnemonic (try available languages)
+        let languages = [bip39::Language::English, bip39::Language::Spanish];
+
+        for language in languages {
+            if let Ok(keypair) = Self::from_mnemonic(value, language, false) {
+                return Ok(keypair);
+            }
+        }
+
+        // If nothing worked, return an error
+        Err(NostrKeypairError::InvalidKey)
+    }
+}
+
+impl Default for NostrKeypair {
+    fn default() -> Self {
+        Self::new()
     }
 }
 impl TryFrom<bip39::Mnemonic> for NostrKeypair {
@@ -430,5 +522,50 @@ mod tests {
                 .public_key(),
             user_keys.public_key()
         );
+    }
+
+    #[test]
+    fn test_named_constructors() {
+        let kp1 = NostrKeypair::new();
+        assert_eq!(kp1.secret_key(), [0u8; 32]); // Not extractable
+
+        let kp2 = NostrKeypair::new_extractable();
+        assert_ne!(kp2.secret_key(), [0u8; 32]); // Extractable
+
+        let hex = "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8";
+        let kp3 = NostrKeypair::from_hex(hex, true).unwrap();
+        assert_eq!(
+            kp3.pubkey(),
+            "689403d3808274889e371cfe53c2d78eb05743a964cc60d3b2e55824e8fe740a"
+        );
+    }
+
+    #[test]
+    fn test_from_str_tries_all_formats() {
+        // Test hex
+        let hex = "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8";
+        let kp1 = hex.parse::<NostrKeypair>().unwrap();
+        assert_eq!(
+            kp1.pubkey(),
+            "689403d3808274889e371cfe53c2d78eb05743a964cc60d3b2e55824e8fe740a"
+        );
+
+        // Test nsec
+        let nsec = "nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53";
+        let kp2 = nsec.parse::<NostrKeypair>().unwrap();
+        assert_eq!(kp2.pubkey(), kp1.pubkey());
+
+        // Test mnemonic
+        let kp3 = NostrKeypair::new_extractable();
+        let mnemonic = kp3.mnemonic(bip39::Language::English).unwrap();
+        let kp4 = mnemonic.parse::<NostrKeypair>().unwrap();
+        assert_eq!(kp4.pubkey(), kp3.pubkey());
+    }
+
+    #[test]
+    fn test_pubkey_alias() {
+        let kp = NostrKeypair::new();
+        assert_eq!(kp.pubkey(), kp.public_key());
+        assert_eq!(kp.pubkey_bytes(), kp.public_key_slice());
     }
 }
