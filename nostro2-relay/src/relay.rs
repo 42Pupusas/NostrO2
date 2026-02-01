@@ -153,18 +153,18 @@ mod tests {
     async fn test_relay() {
         let time = std::time::Instant::now();
         println!("Connecting to relay...");
-        let relay = NostrRelay::new("wss://relay.damus.io").await.unwrap();
+        let relay = NostrRelay::new("wss://relay.illuminodes.com")
+            .await
+            .unwrap();
         let subscription = nostro2::NostrSubscription {
-            kinds: vec![1].into(),
-            limit: 5000.into(),
+            kinds: vec![20001].into(),
+            // limit: 5000.into(),
             ..Default::default()
         };
         relay.send(subscription).unwrap();
         println!("Connected in {:?}", time.elapsed());
         while let Some(msg) = relay.recv().await {
-            if let nostro2::NostrRelayEvent::EndOfSubscription(..) = msg {
-                break;
-            }
+            println!("{msg:?}",);
         }
         println!("Done in {:?}", time.elapsed());
     }
