@@ -226,8 +226,8 @@ mod tests {
     #[test]
     fn test_with_timestamp() {
         let note = NostrNote::text_note("Hello")
-            .with_timestamp(1234567890);
-        assert_eq!(note.created_at, 1234567890);
+            .with_timestamp(1_234_567_890);
+        assert_eq!(note.created_at, 1_234_567_890);
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
         let timestamp = NostrNote::now();
         assert!(timestamp > 0);
         // Should be recent (after 2020-01-01)
-        assert!(timestamp > 1577836800);
+        assert!(timestamp > 1_577_836_800);
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
         let note = NostrNote::builder()
             .kind(1)
             .content("Test")
-            .timestamp(1234567890)
+            .timestamp(1_234_567_890)
             .tag_pubkey("pubkey1")
             .tag_event("event1")
             .tag_parameter("param1")
@@ -260,7 +260,7 @@ mod tests {
 
         assert_eq!(note.kind, 1);
         assert_eq!(note.content, "Test");
-        assert_eq!(note.created_at, 1234567890);
+        assert_eq!(note.created_at, 1_234_567_890);
         assert_eq!(note.tags.len(), 5);
     }
 }

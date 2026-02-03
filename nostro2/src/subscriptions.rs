@@ -198,12 +198,12 @@ mod tests {
             .kind(1)
             .author("abc123")
             .limit(10)
-            .since(1234567890);
+            .since(1_234_567_890);
 
         assert_eq!(filter.kinds, Some(vec![1]));
         assert_eq!(filter.authors, Some(vec!["abc123".to_string()]));
         assert_eq!(filter.limit, Some(10));
-        assert_eq!(filter.since, Some(1234567890));
+        assert_eq!(filter.since, Some(1_234_567_890));
     }
 
     #[test]

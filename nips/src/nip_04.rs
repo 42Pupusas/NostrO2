@@ -124,10 +124,10 @@ mod tests {
         let nip04 = NipTester::_peer_one();
         let nip04_peer = NipTester::_peer_two();
         let pubkey = nip04_peer.private_key.x_only_public_key().0.to_string();
-        let _peer_pubkey = nip04.private_key.x_only_public_key().0.to_string();
+        let peer_pubkey = nip04.private_key.x_only_public_key().0.to_string();
         let ciphertext = nip04.nip04_encrypt(CLEAR_TEXT, &pubkey).expect("");
         let decrypted = nip04_peer
-            .nip04_decrypt(&ciphertext, &_peer_pubkey)
+            .nip04_decrypt(&ciphertext, &peer_pubkey)
             .expect("Decryption failed");
         assert_eq!(decrypted, CLEAR_TEXT);
     }

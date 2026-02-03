@@ -14,7 +14,6 @@ pub use relay::NostrRelay;
 
 #[cfg(test)]
 mod tests {
-    use nostro2::NostrSigner;
 
     // #[tokio::test]
     // async fn test_relay() {
