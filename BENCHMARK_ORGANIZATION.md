@@ -108,13 +108,15 @@ echo "=== Relay Benchmarks ==="
 
 ### 1. Establish baselines
 ```bash
-# Protocol baseline
+# Protocol baselines (must specify --bench <name>)
 cd nostro2
-cargo bench -- --save-baseline protocol-v1
+cargo bench --bench serialization -- --save-baseline protocol-v1
+cargo bench --bench subscription -- --save-baseline protocol-v1
 
-# Relay baseline
+# Relay baselines
 cd ../nostro2-relay
-cargo bench -- --save-baseline relay-v1
+cargo bench --bench deduplication -- --save-baseline relay-v1
+cargo bench --bench relay_benchmarks -- --save-baseline relay-v1
 ```
 
 ### 2. Make changes
@@ -123,13 +125,15 @@ cargo bench -- --save-baseline relay-v1
 
 ### 3. Compare
 ```bash
-# After protocol changes
+# After protocol changes (compare against saved baseline)
 cd nostro2
-cargo bench -- --baseline protocol-v1
+cargo bench --bench serialization -- --baseline protocol-v1
+cargo bench --bench subscription -- --baseline protocol-v1
 
 # After relay changes
 cd nostro2-relay
-cargo bench -- --baseline relay-v1
+cargo bench --bench deduplication -- --baseline relay-v1
+cargo bench --bench relay_benchmarks -- --baseline relay-v1
 ```
 
 ---

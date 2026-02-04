@@ -25,12 +25,16 @@ cargo bench --bench relay_benchmarks -- "channel_throughput"
 
 ### Save baseline for comparison
 ```bash
-cargo bench -- --save-baseline my-baseline
+# Must specify --bench <name> to pass Criterion options
+cargo bench --bench deduplication -- --save-baseline my-baseline
+cargo bench --bench relay_benchmarks -- --save-baseline my-baseline
 ```
 
 ### Compare against baseline
 ```bash
-cargo bench -- --baseline my-baseline
+# Compare current run against saved baseline
+cargo bench --bench deduplication -- --baseline my-baseline
+cargo bench --bench relay_benchmarks -- --baseline my-baseline
 ```
 
 ## Benchmark Suites
@@ -100,14 +104,18 @@ Criterion produces HTML reports in `target/criterion/`. Open `target/criterion/r
 
 1. **Baseline current implementation:**
 ```bash
-cargo bench -- --save-baseline current
+# Save baseline for all relay benchmarks
+cargo bench --bench deduplication -- --save-baseline current
+cargo bench --bench relay_benchmarks -- --save-baseline current
 ```
 
 2. **Implement your new strategy** (e.g., different channel type, caching, etc.)
 
 3. **Run benchmarks and compare:**
 ```bash
-cargo bench -- --baseline current
+# Compare against saved baseline
+cargo bench --bench deduplication -- --baseline current
+cargo bench --bench relay_benchmarks -- --baseline current
 ```
 
 4. **Check HTML report:**

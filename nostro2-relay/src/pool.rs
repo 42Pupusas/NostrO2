@@ -49,7 +49,7 @@ impl NostrPool {
                                     }
                                     continue;
                                 }
-                                if let Err(e) = stream_send.send(msg.clone()) {
+                                if let Err(e) = stream_send.send(msg) {
                                     eprintln!("Failed to send message: {e}");
                                 }
                             },

@@ -24,11 +24,13 @@ cargo bench -- "sequential_insertions"
 # Quick run (fewer samples, faster)
 cargo bench -- --quick
 
-# Save baseline for comparison
-cargo bench -- --save-baseline my-implementation
+# Save baseline for comparison (must specify --bench <name>)
+cargo bench --bench deduplication -- --save-baseline my-implementation
+cargo bench --bench relay_benchmarks -- --save-baseline my-implementation
 
 # Compare against baseline
-cargo bench -- --baseline my-implementation
+cargo bench --bench deduplication -- --baseline my-implementation
+cargo bench --bench relay_benchmarks -- --baseline my-implementation
 ```
 
 ## Benchmark Suites
@@ -91,7 +93,9 @@ Reports include:
 
 1. **Baseline current implementation:**
 ```bash
-cargo bench -- --save-baseline current
+# Save baseline for each benchmark suite
+cargo bench --bench deduplication -- --save-baseline current
+cargo bench --bench relay_benchmarks -- --save-baseline current
 ```
 
 2. **Implement your new strategy** in a separate module
@@ -105,7 +109,8 @@ group.bench_function("strategy_new", |b| { /* test new */ });
 
 4. **Run and compare:**
 ```bash
-cargo bench --bench relay_benchmarks
+# Compare against saved baseline
+cargo bench --bench relay_benchmarks -- --baseline current
 ```
 
 5. **Review HTML report** to see side-by-side comparison
@@ -265,9 +270,17 @@ cargo bench -- --sample-size 10 # Custom sample count
 
 ## Next Steps
 
-1. **Establish baselines:** Run `cargo bench -- --save-baseline initial` now
+1. **Establish baselines:** Save initial performance metrics
+   ```bash
+   cargo bench --bench deduplication -- --save-baseline initial
+   cargo bench --bench relay_benchmarks -- --save-baseline initial
+   ```
 2. **Implement new strategy:** Code your experimental relay implementation
 3. **Compare:** Run benchmarks and check HTML reports
+   ```bash
+   cargo bench --bench deduplication -- --baseline initial
+   cargo bench --bench relay_benchmarks -- --baseline initial
+   ```
 4. **Iterate:** Use profiling data to identify bottlenecks
 5. **Document:** Record findings in benchmark comments
 

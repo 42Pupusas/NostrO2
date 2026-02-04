@@ -15,6 +15,14 @@ cargo bench --bench subscription
 # Run specific benchmark
 cargo bench -- "filter_by_author"
 cargo bench -- "client_event_serialization"
+
+# Save baseline (must specify --bench)
+cargo bench --bench serialization -- --save-baseline my-baseline
+cargo bench --bench subscription -- --save-baseline my-baseline
+
+# Compare against baseline
+cargo bench --bench serialization -- --baseline my-baseline
+cargo bench --bench subscription -- --baseline my-baseline
 ```
 
 ## Benchmark Suites
