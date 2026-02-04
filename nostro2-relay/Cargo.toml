@@ -21,3 +21,12 @@ serde_json.workspace = true
 
 [dev-dependencies]
 nostro2-signer.workspace = true
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "relay_benchmarks"
+harness = false
+
+[[bench]]
+name = "deduplication"
+harness = false

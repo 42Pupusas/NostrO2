@@ -103,9 +103,9 @@ mod tags;
 pub mod validation;
 
 pub use note::{NostrNote, NostrNoteBuilder};
-pub use relay_events::{NostrClientEvent, NostrRelayEvent};
+pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
-pub use tags::NostrTag;
+pub use tags::{NostrTag, NostrTags};
 
 /// Convenience type alias for Results with `NostrErrors`
 pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
