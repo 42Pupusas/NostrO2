@@ -1,0 +1,18 @@
+[package]
+name = "nostro2-ring-relay"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nostro2 = { workspace = true }
+quetzalcoatl = "0.1.0"
+tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+serde_json = { workspace = true }
+rustls = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "ring_pool"
+harness = false

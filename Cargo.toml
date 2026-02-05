@@ -4,7 +4,7 @@ resolver="2"
 members = [
     "nips",
     "nostro2",
-    "nostro2-relay",
+    "nostro2-relay", "nostro2-ring-relay",
     "nostro2-signer",
 ]
 
@@ -48,6 +48,7 @@ bip39 = { version = "2.1", features = ["spanish"] }
 futures-util = { version = "0.3", features = ["sink", "std"] }
 chrono = "0.4"
 tracing-test = "0.2"
+lru = "0.12"
 
 # Native platform TCP
 tokio = { version = "^1.44" }
