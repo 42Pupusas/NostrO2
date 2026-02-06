@@ -1,5 +1,7 @@
 use nostro2::NostrRelayEvent;
-use quetzalcoatl::{Consumer, Producer, RingBuffer};
+use nostro2_cache::Cache;
+use quetzalcoatl::capacity::Capacity;
+use quetzalcoatl::mpsc::{Consumer, Producer, RingBuffer};
 use tungstenite::{connect, Message};
 
 /// Messages that flow through the ring buffer from relay threads to consumer
@@ -119,27 +121,62 @@ impl RelayConnection {
 /// Consumer side of the pool - reads events from all relays in a single thread
 pub struct PoolConsumer {
     consumer: Consumer<PoolMessage>,
+    dedup_cache: Cache,
 }
 
 impl PoolConsumer {
-    /// Create a new pool consumer
-    pub fn new(consumer: Consumer<PoolMessage>) -> Self {
-        Self { consumer }
+    /// Create a new pool consumer with deduplication cache
+    pub fn new(consumer: Consumer<PoolMessage>, cache_size: usize) -> Self {
+        Self {
+            consumer,
+            dedup_cache: Cache::new(cache_size),
+        }
     }
 
     /// Receive the next message from any relay (non-blocking)
     ///
-    /// Returns `Some(message)` if available, `None` if ring buffer is empty
+    /// Returns `Some(message)` if available and not a duplicate, `None` if ring buffer is empty
+    /// Automatically deduplicates NewNote events based on event ID
     pub fn try_recv(&mut self) -> Option<PoolMessage> {
-        self.consumer.pop()
+        loop {
+            match self.consumer.pop()? {
+                PoolMessage::RelayEvent {
+                    relay_url,
+                    event: NostrRelayEvent::NewNote(tag, sub_id, note),
+                } => {
+                    // Check for duplicate event ID
+                    if let Some(ref event_id) = note.id {
+                        if self.dedup_cache.insert(event_id.clone()) {
+                            // New event, return it
+                            return Some(PoolMessage::RelayEvent {
+                                relay_url,
+                                event: NostrRelayEvent::NewNote(tag, sub_id, note),
+                            });
+                        }
+                        // Duplicate, continue to next message
+                        continue;
+                    }
+                    // No ID, pass through
+                    return Some(PoolMessage::RelayEvent {
+                        relay_url,
+                        event: NostrRelayEvent::NewNote(tag, sub_id, note),
+                    });
+                }
+                other => {
+                    // Pass through non-NewNote messages
+                    return Some(other);
+                }
+            }
+        }
     }
 
     /// Blocking receive - spins until a message is available
     ///
     /// This is the main event loop for the consumer thread
+    /// Automatically deduplicates NewNote events based on event ID
     pub fn recv(&mut self) -> PoolMessage {
         loop {
-            if let Some(msg) = self.consumer.pop() {
+            if let Some(msg) = self.try_recv() {
                 return msg;
             }
             std::hint::spin_loop();
@@ -154,14 +191,16 @@ pub struct RelayPool {
 }
 
 impl RelayPool {
-    /// Create a new relay pool with the specified ring buffer capacity
+    /// Create a new relay pool with the specified ring buffer and cache capacity
     ///
-    /// The capacity should be large enough to handle bursts of events from all relays
-    pub fn new(capacity: usize) -> Self {
-        let (producer, consumer) = RingBuffer::new(capacity).split();
+    /// # Arguments
+    /// * `ring_capacity` - Ring buffer size for event throughput
+    /// * `cache_size` - Deduplication cache size (default: 10,000)
+    pub fn new(ring_capacity: usize, cache_size: usize) -> Self {
+        let (producer, consumer) = RingBuffer::new(Capacity::at_least(ring_capacity)).split();
         Self {
             connections: Vec::new(),
-            consumer: PoolConsumer::new(consumer),
+            consumer: PoolConsumer::new(consumer, cache_size),
         }
     }
 
@@ -190,9 +229,13 @@ impl RelayPool {
 }
 
 /// Helper function to create a new pool and producer for spawning connections
-pub fn create_pool(capacity: usize) -> (PoolConsumer, Producer<PoolMessage>) {
-    let (producer, consumer) = RingBuffer::new(capacity).split();
-    (PoolConsumer::new(consumer), producer)
+///
+/// # Arguments
+/// * `ring_capacity` - Ring buffer size for event throughput
+/// * `cache_size` - Deduplication cache size
+pub fn create_pool(ring_capacity: usize, cache_size: usize) -> (PoolConsumer, Producer<PoolMessage>) {
+    let (producer, consumer) = RingBuffer::new(Capacity::at_least(ring_capacity)).split();
+    (PoolConsumer::new(consumer, cache_size), producer)
 }
 
 #[cfg(test)]
@@ -201,13 +244,13 @@ mod tests {
 
     #[test]
     fn test_pool_creation() {
-        let pool = RelayPool::new(1024);
+        let pool = RelayPool::new(1024, 10_000);
         assert_eq!(pool.connection_count(), 0);
     }
 
     #[test]
     fn test_create_pool_helper() {
-        let (_consumer, _producer) = create_pool(1024);
+        let (_consumer, _producer) = create_pool(1024, 10_000);
         // Just testing that it compiles and runs
     }
 }

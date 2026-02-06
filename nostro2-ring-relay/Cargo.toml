@@ -5,14 +5,29 @@ edition = "2024"
 
 [dependencies]
 nostro2 = { workspace = true }
-quetzalcoatl = "0.1.0"
+nostro2-cache = { path = "../nostro2-cache" }
+quetzalcoatl = "0.2.1"
 tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 serde_json = { workspace = true }
 rustls = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+nostro2-relay = { path = "../nostro2-relay" }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [[bench]]
 name = "ring_pool"
+harness = false
+
+[[bench]]
+name = "throughput_comparison"
+harness = false
+
+[[bench]]
+name = "max_throughput"
+harness = false
+
+[[bench]]
+name = "large_payload"
 harness = false
