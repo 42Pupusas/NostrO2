@@ -4,6 +4,8 @@ use quetzalcoatl::broadcast;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{Consumer, Producer, RingBuffer};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
@@ -41,21 +43,25 @@ impl PoolSender {
     pub fn send<T: Into<nostro2::NostrClientEvent>>(&self, msg: T) -> Result<(), String> {
         let client_event: nostro2::NostrClientEvent = msg.into();
         let json = serde_json::to_string(&client_event).map_err(|e| e.to_string())?;
-        self.producer.push(json).map_err(|json| json)
+        self.producer.push(json)
     }
 
     /// Send a raw pre-serialized JSON string to all relays.
     ///
     /// Use this when you've already serialized the message.
     pub fn send_raw(&self, json: String) -> Result<(), String> {
-        self.producer.push(json).map_err(|json| json)
+        self.producer.push(json)
     }
 }
 
-/// Handle to a relay WebSocket connection running in its own thread
+/// Handle to a relay WebSocket connection running in its own thread.
+///
+/// Each connection runs in a dedicated OS thread with non-blocking I/O.
+/// The thread can be signaled to shut down via an atomic flag.
 pub struct RelayConnection {
     relay_url: String,
-    thread_handle: std::thread::JoinHandle<()>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl RelayConnection {
@@ -67,10 +73,12 @@ impl RelayConnection {
         relay_url: String,
         mut producer: Producer<PoolMessage>,
         outbound: broadcast::Consumer<String>,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         let url = relay_url.clone();
+        let shutdown_clone = Arc::clone(&shutdown);
         let thread_handle = std::thread::spawn(move || {
-            match Self::run_connection(&url, &mut producer, outbound) {
+            match Self::run_connection(&url, &mut producer, outbound, &shutdown_clone) {
                 Ok(()) => {
                     let _ = producer.push(PoolMessage::ConnectionClosed {
                         relay_url: url.clone(),
@@ -88,7 +96,31 @@ impl RelayConnection {
 
         Self {
             relay_url,
-            thread_handle,
+            thread_handle: Some(thread_handle),
+            shutdown,
+        }
+    }
+
+    /// Returns `true` if the connection thread has exited.
+    pub fn is_finished(&self) -> bool {
+        self.thread_handle
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+    }
+
+    /// Signal the connection thread to shut down gracefully.
+    ///
+    /// The thread will send a WebSocket Close frame and exit within one
+    /// poll cycle (~1ms). Does not block.
+    pub fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    /// Signal shutdown and block until the thread exits.
+    fn shutdown_and_join(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
         }
     }
 
@@ -97,11 +129,12 @@ impl RelayConnection {
     /// 1. Connects and performs WebSocket handshake (blocking)
     /// 2. Sends the initial subscription (blocking)
     /// 3. Switches to non-blocking mode
-    /// 4. Loops: try read inbound → drain outbound broadcast → sleep if idle
+    /// 4. Loops: check shutdown → try read inbound → drain outbound → sleep if idle
     fn run_connection(
         url: &str,
         producer: &mut Producer<PoolMessage>,
         mut outbound: broadcast::Consumer<String>,
+        shutdown: &AtomicBool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Install default crypto provider for this thread (required for rustls 0.23+)
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -124,6 +157,12 @@ impl RelayConnection {
         set_nonblocking(&socket, true)?;
 
         loop {
+            // Check shutdown signal (Relaxed — no need for immediate visibility)
+            if shutdown.load(Ordering::Relaxed) {
+                let _ = socket.send(Message::Close(None));
+                break;
+            }
+
             let mut had_work = false;
 
             // 1. Try reading inbound (returns WouldBlock instantly if empty)
@@ -195,6 +234,15 @@ impl RelayConnection {
     /// Get the relay URL
     pub fn relay_url(&self) -> &str {
         &self.relay_url
+    }
+}
+
+impl Drop for RelayConnection {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -323,11 +371,54 @@ impl RelayPool {
     ///
     /// Spawns a new thread that connects to the relay, reads inbound events,
     /// and sends outbound messages from the broadcast ring.
+    ///
+    /// Automatically cleans up dead connections first to free broadcast slots.
     pub fn add_relay(&mut self, relay_url: String) {
+        self.cleanup();
+        let shutdown = Arc::new(AtomicBool::new(false));
         let bc_consumer = self.broadcast_consumer.clone();
         let mpsc_producer = self.mpsc_producer.clone();
-        let connection = RelayConnection::spawn(relay_url, mpsc_producer, bc_consumer);
+        let connection =
+            RelayConnection::spawn(relay_url, mpsc_producer, bc_consumer, shutdown);
         self.connections.push(connection);
+    }
+
+    /// Remove a relay from the pool by URL.
+    ///
+    /// Signals the relay thread to shut down and blocks until it exits (~1-2ms).
+    /// The broadcast consumer slot is freed immediately.
+    ///
+    /// Returns `true` if the relay was found and removed.
+    pub fn remove_relay(&mut self, relay_url: &str) -> bool {
+        if let Some(pos) = self
+            .connections
+            .iter()
+            .position(|c| c.relay_url == relay_url)
+        {
+            let mut conn = self.connections.swap_remove(pos);
+            conn.shutdown_and_join();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove dead connections from the pool.
+    ///
+    /// Joins finished threads and frees their broadcast consumer slots.
+    /// Called automatically by [`add_relay`], but can be called explicitly
+    /// to update [`connection_count`].
+    pub fn cleanup(&mut self) {
+        self.connections.retain_mut(|conn| {
+            if conn.is_finished() {
+                if let Some(handle) = conn.thread_handle.take() {
+                    let _ = handle.join();
+                }
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// Get a cloneable sender handle for broadcasting to all relays.
@@ -347,9 +438,43 @@ impl RelayPool {
         self.consumer.try_recv()
     }
 
-    /// Get the number of relay connections
+    /// Get the total number of connections (including dead ones not yet cleaned up).
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+
+    /// Get the number of connections whose threads are still running.
+    pub fn active_connection_count(&self) -> usize {
+        self.connections.iter().filter(|c| !c.is_finished()).count()
+    }
+
+    /// Get the relay URLs of all connections in the pool.
+    pub fn relay_urls(&self) -> Vec<&str> {
+        self.connections.iter().map(|c| c.relay_url.as_str()).collect()
+    }
+
+    /// Get the relay URLs of only active (thread still running) connections.
+    pub fn active_relay_urls(&self) -> Vec<&str> {
+        self.connections
+            .iter()
+            .filter(|c| !c.is_finished())
+            .map(|c| c.relay_url.as_str())
+            .collect()
+    }
+}
+
+impl Drop for RelayPool {
+    fn drop(&mut self) {
+        // Phase 1: Signal all threads to shut down (they exit in parallel)
+        for conn in &self.connections {
+            conn.request_shutdown();
+        }
+        // Phase 2: Join all threads
+        for conn in &mut self.connections {
+            if let Some(handle) = conn.thread_handle.take() {
+                let _ = handle.join();
+            }
+        }
     }
 }
 
@@ -410,5 +535,103 @@ mod tests {
         // Both senders are valid clones
         assert!(!sender.producer.is_full());
         assert!(!sender2.producer.is_full());
+    }
+
+    #[test]
+    fn test_shutdown_flag_stops_thread() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+        let handle = std::thread::spawn(move || {
+            while !shutdown_clone.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        assert!(!handle.is_finished());
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_cleanup_removes_dead_connections() {
+        // Connect to an invalid address — thread will fail fast
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        assert_eq!(pool.connection_count(), 1);
+
+        // Wait for the thread to fail and exit
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        pool.cleanup();
+        assert_eq!(pool.connection_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_relay() {
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        assert_eq!(pool.connection_count(), 1);
+
+        assert!(pool.remove_relay("ws://127.0.0.1:1"));
+        assert_eq!(pool.connection_count(), 0);
+
+        // Removing a non-existent relay returns false
+        assert!(!pool.remove_relay("ws://127.0.0.1:2"));
+    }
+
+    #[test]
+    fn test_active_connection_count() {
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+        // Invalid address — thread will die quickly
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        pool.add_relay("ws://127.0.0.1:2".to_string());
+        assert_eq!(pool.connection_count(), 2);
+
+        // Wait for threads to fail
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // connection_count still 2 (stale), active_connection_count is 0
+        assert_eq!(pool.connection_count(), 2);
+        assert_eq!(pool.active_connection_count(), 0);
+
+        // cleanup brings connection_count in sync
+        pool.cleanup();
+        assert_eq!(pool.connection_count(), 0);
+    }
+
+    #[test]
+    fn test_relay_urls() {
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        pool.add_relay("ws://127.0.0.1:2".to_string());
+
+        let urls = pool.relay_urls();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"ws://127.0.0.1:1"));
+        assert!(urls.contains(&"ws://127.0.0.1:2"));
+    }
+
+    #[test]
+    fn test_pool_drop_joins_threads() {
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        pool.add_relay("ws://127.0.0.1:2".to_string());
+        // Drop should signal shutdown and join — no panic
+        drop(pool);
+    }
+
+    #[test]
+    fn test_add_after_remove_reuses_slots() {
+        // max_relays=2 means only 2 broadcast consumer slots available
+        let mut pool = RelayPool::new(1024, 10_000, 64, 2);
+        pool.add_relay("ws://127.0.0.1:1".to_string());
+        pool.add_relay("ws://127.0.0.1:2".to_string());
+
+        // Remove one — frees a broadcast consumer slot via blocking join
+        pool.remove_relay("ws://127.0.0.1:1");
+        assert_eq!(pool.connection_count(), 1);
+
+        // Add a new relay — should reuse the freed slot without panic
+        pool.add_relay("ws://127.0.0.1:3".to_string());
+        assert!(pool.relay_urls().contains(&"ws://127.0.0.1:3"));
     }
 }
