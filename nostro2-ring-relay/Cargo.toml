@@ -6,15 +6,16 @@ edition = "2024"
 [dependencies]
 nostro2 = { workspace = true }
 nostro2-cache = { path = "../nostro2-cache" }
-quetzalcoatl = "0.2.1"
-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+quetzalcoatl = "0.3.0"
+tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 serde_json = { workspace = true }
 rustls = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 nostro2-relay = { path = "../nostro2-relay" }
-tokio = { workspace = true, features = ["rt", "macros"] }
+nostro2-signer = { path = "../nostro2-signer" }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [[bench]]
 name = "ring_pool"

@@ -1,15 +1,19 @@
-use nostro2_ring_relay::{create_pool, PoolMessage, RelayConnection};
+use nostro2_ring_relay::{PoolMessage, RelayPool};
 use std::time::Instant;
 
 fn main() {
-    println!("=== Ring Buffer Relay - Race to 3000 Events ===\n");
+    println!("=== Ring Buffer Relay - Bidirectional Test ===\n");
 
     let start_time = Instant::now();
 
-    // Create ring buffer
-    let (mut consumer, producer) = create_pool(4096);
+    // Create relay pool with bidirectional messaging
+    // ring_capacity=4096, cache_size=10K, broadcast_capacity=64, max_relays=20
+    let mut pool = RelayPool::new(4096, 10_000, 64, 20);
 
-    // List of relays from nostr.watch
+    // Get a sender handle (cloneable for multi-threaded use)
+    let _sender = pool.sender();
+
+    // List of relays
     let relays = vec![
         "wss://relay.damus.io",
         "wss://relay.primal.net",
@@ -35,11 +39,10 @@ fn main() {
 
     println!("Connecting to {} relays...", relays.len());
 
-    // Spawn connection threads
-    let _connections: Vec<_> = relays
-        .into_iter()
-        .map(|url| RelayConnection::spawn(url.to_string(), producer.clone()))
-        .collect();
+    // Spawn relay connections — each gets a broadcast consumer clone
+    for url in &relays {
+        pool.add_relay(url.to_string());
+    }
 
     let mut event_count = 0;
     let mut relay_counts = std::collections::HashMap::new();
@@ -49,7 +52,7 @@ fn main() {
 
     // Race to 3000 events
     while event_count < target {
-        match consumer.recv() {
+        match pool.recv() {
             PoolMessage::RelayEvent { relay_url, .. } => {
                 event_count += 1;
                 *relay_counts.entry(relay_url).or_insert(0) += 1;
@@ -71,9 +74,17 @@ fn main() {
     println!("\n=== RESULTS ===");
     println!("Total events: {}", event_count);
     println!("Total time: {:?}", total_time);
-    println!("Events/sec: {:.1}", event_count as f64 / total_time.as_secs_f64());
+    println!(
+        "Events/sec: {:.1}",
+        event_count as f64 / total_time.as_secs_f64()
+    );
     println!("\nDistribution:");
     for (relay, count) in relay_counts {
-        println!("  {}: {} ({:.1}%)", relay, count, (count as f64 / event_count as f64) * 100.0);
+        println!(
+            "  {}: {} ({:.1}%)",
+            relay,
+            count,
+            (count as f64 / event_count as f64) * 100.0
+        );
     }
 }

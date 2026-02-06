@@ -1,9 +1,36 @@
-#[derive(Debug, Clone, Default)]
-struct SeenNotes(std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Option<String>>>>);
+/// LRU cache for deduplicating event IDs across multiple relays.
+///
+/// Events are automatically evicted when the cache reaches capacity,
+/// removing the least recently used entries. This prevents unbounded
+/// memory growth in long-running relay pools.
+#[derive(Debug, Clone)]
+struct SeenNotes(std::sync::Arc<tokio::sync::Mutex<lru::LruCache<Option<String>, ()>>>);
+
 impl SeenNotes {
+    /// Create a new SeenNotes cache with the specified capacity.
+    ///
+    /// # Arguments
+    /// * `capacity` - Maximum number of event IDs to cache (default: 10,000)
+    pub fn new(capacity: usize) -> Self {
+        Self(std::sync::Arc::new(tokio::sync::Mutex::new(
+            lru::LruCache::new(std::num::NonZeroUsize::new(capacity).unwrap())
+        )))
+    }
+
+    /// Add an event ID to the cache.
+    ///
+    /// Returns `true` if this is a new event (not seen before),
+    /// `false` if the event was already in the cache.
     pub async fn add(&self, id: Option<String>) -> bool {
-        let mut seen = self.0.lock().await;
-        seen.insert(id)
+        let mut cache = self.0.lock().await;
+        // put() returns None if key didn't exist, Some(old_value) if it did
+        cache.put(id, ()).is_none()
+    }
+}
+
+impl Default for SeenNotes {
+    fn default() -> Self {
+        Self::new(10_000)
     }
 }
 #[derive(Clone)]
@@ -16,14 +43,33 @@ pub struct NostrPool {
     >,
 }
 impl NostrPool {
+    /// Create a new relay pool with default settings.
+    ///
+    /// Uses a deduplication cache size of 10,000 events.
     #[must_use]
     pub fn new(relays: &[&str]) -> Self {
+        Self::with_cache_size(relays, 10_000)
+    }
+
+    /// Create a new relay pool with a custom deduplication cache size.
+    ///
+    /// # Arguments
+    /// * `relays` - Array of relay WebSocket URLs to connect to
+    /// * `cache_size` - Maximum number of event IDs to cache for deduplication
+    ///
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::NostrPool;
+    ///
+    /// // Pool with 50K event cache (higher memory, fewer duplicates)
+    /// let pool = NostrPool::with_cache_size(&["wss://relay.example.com"], 50_000);
+    /// ```
+    #[must_use]
+    pub fn with_cache_size(relays: &[&str], cache_size: usize) -> Self {
         let (stream_tx, stream) =
             tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
         let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
-        let seen = SeenNotes(std::sync::Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashSet::new(),
-        )));
+        let seen = SeenNotes::new(cache_size);
         for url in relays {
             let mut sink = sink_rx.resubscribe();
             let stream_send = stream_tx.clone();

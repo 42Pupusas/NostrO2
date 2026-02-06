@@ -1,30 +1,38 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Simulates the SeenNotes structure used in NostrPool
-#[derive(Debug, Clone, Default)]
-struct SeenNotes(Arc<Mutex<HashSet<Option<String>>>>);
+/// Simulates the SeenNotes structure used in NostrPool (now with LRU cache)
+#[derive(Debug, Clone)]
+struct SeenNotes(Arc<Mutex<lru::LruCache<Option<String>, ()>>>);
 
 impl SeenNotes {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(HashSet::new())))
+    fn new(capacity: usize) -> Self {
+        Self(Arc::new(Mutex::new(
+            lru::LruCache::new(std::num::NonZeroUsize::new(capacity).unwrap())
+        )))
     }
 
     async fn add(&self, id: Option<String>) -> bool {
-        let mut seen = self.0.lock().await;
-        seen.insert(id)
+        let mut cache = self.0.lock().await;
+        // Returns None if new, Some(()) if already existed
+        cache.put(id, ()).is_none()
     }
 
     async fn contains(&self, id: &Option<String>) -> bool {
-        let seen = self.0.lock().await;
-        seen.contains(id)
+        let cache = self.0.lock().await;
+        cache.contains(id)
     }
 
     async fn len(&self) -> usize {
-        let seen = self.0.lock().await;
-        seen.len()
+        let cache = self.0.lock().await;
+        cache.len()
+    }
+}
+
+impl Default for SeenNotes {
+    fn default() -> Self {
+        Self::new(10_000)
     }
 }
 
@@ -40,7 +48,7 @@ fn bench_sequential_insertions(c: &mut Criterion) {
     for size in [100, 1000, 10_000, 100_000].iter() {
         group.bench_with_input(BenchmarkId::new("unique", size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let seen = SeenNotes::new();
+                let seen = SeenNotes::new(100_000);
                 for i in 0..size {
                     seen.add(generate_event_id(i)).await;
                 }
@@ -50,7 +58,7 @@ fn bench_sequential_insertions(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("duplicates", size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let seen = SeenNotes::new();
+                let seen = SeenNotes::new(100_000);
                 // Insert half unique, then repeat
                 for i in 0..(size / 2) {
                     seen.add(generate_event_id(i)).await;
@@ -71,9 +79,9 @@ fn bench_lookup_performance(c: &mut Criterion) {
     let mut group = c.benchmark_group("lookup_performance");
 
     for size in [100, 1000, 10_000, 100_000].iter() {
-        // Pre-populate the HashSet
+        // Pre-populate the LRU cache (use size * 2 to avoid eviction during test)
         let seen = runtime.block_on(async {
-            let seen = SeenNotes::new();
+            let seen = SeenNotes::new(*size * 2);
             for i in 0..*size {
                 seen.add(generate_event_id(i)).await;
             }
@@ -114,7 +122,7 @@ fn bench_concurrent_insertions(c: &mut Criterion) {
     for num_tasks in [2, 4, 8, 16].iter() {
         group.bench_with_input(BenchmarkId::new("tasks", num_tasks), num_tasks, |b, &num_tasks| {
             b.to_async(&runtime).iter(|| async move {
-                let seen = SeenNotes::new();
+                let seen = SeenNotes::new(100_000);
                 let tasks: Vec<_> = (0..num_tasks)
                     .map(|task_id| {
                         let seen = seen.clone();
@@ -145,9 +153,9 @@ fn bench_concurrent_mixed_operations(c: &mut Criterion) {
     group.sample_size(20);
 
     for num_tasks in [2, 4, 8].iter() {
-        // Pre-populate with some data
+        // Pre-populate with some data (use larger capacity for mixed ops)
         let seen = runtime.block_on(async {
-            let seen = SeenNotes::new();
+            let seen = SeenNotes::new(10_000);
             for i in 0..5000 {
                 seen.add(generate_event_id(i)).await;
             }
@@ -194,10 +202,11 @@ fn bench_insertion_single_op(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("single_operation");
 
-    // Benchmark the cost of a single insert operation at different HashSet sizes
+    // Benchmark the cost of a single insert operation at different LRU cache sizes
     for size in [0, 100, 1000, 10_000, 100_000].iter() {
         let seen = runtime.block_on(async {
-            let seen = SeenNotes::new();
+            let capacity = if *size == 0 { 100 } else { *size * 2 };
+            let seen = SeenNotes::new(capacity);
             for i in 0..*size {
                 seen.add(generate_event_id(i)).await;
             }
@@ -239,12 +248,66 @@ fn bench_memory_overhead(c: &mut Criterion) {
     for size in [10_000, 50_000, 100_000].iter() {
         group.bench_with_input(BenchmarkId::new("allocate", size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async move {
-                let seen = SeenNotes::new();
+                let seen = SeenNotes::new(100_000);
                 for i in 0..size {
                     seen.add(generate_event_id(i)).await;
                 }
                 let len = seen.len().await;
                 black_box(len)
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_lru_eviction(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut group = c.benchmark_group("lru_eviction");
+
+    // Test cache behavior when exceeding capacity
+    for capacity in [100, 1000, 5000].iter() {
+        group.bench_with_input(BenchmarkId::new("exceed_capacity", capacity), capacity, |b, &capacity| {
+            b.to_async(&runtime).iter(|| async move {
+                let seen = SeenNotes::new(capacity);
+
+                // Fill cache to capacity
+                for i in 0..capacity {
+                    seen.add(generate_event_id(i)).await;
+                }
+
+                // Add more events (should evict old ones)
+                for i in capacity..(capacity * 2) {
+                    seen.add(generate_event_id(i)).await;
+                }
+
+                // Verify cache size is still at capacity
+                let len = seen.len().await;
+                assert_eq!(len, capacity);
+                black_box(len)
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_cache_size_impact(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut group = c.benchmark_group("cache_size_impact");
+
+    // Compare performance with different cache sizes
+    for capacity in [1000, 10_000, 50_000, 100_000].iter() {
+        group.bench_with_input(BenchmarkId::new("insertions", capacity), capacity, |b, &capacity| {
+            b.to_async(&runtime).iter(|| async move {
+                let seen = SeenNotes::new(capacity);
+
+                // Insert half the capacity
+                for i in 0..(capacity / 2) {
+                    seen.add(generate_event_id(i)).await;
+                }
+
+                black_box(seen.len().await)
             });
         });
     }
@@ -260,5 +323,7 @@ criterion_group!(
     bench_concurrent_mixed_operations,
     bench_insertion_single_op,
     bench_memory_overhead,
+    bench_lru_eviction,
+    bench_cache_size_impact,
 );
 criterion_main!(deduplication_benches);

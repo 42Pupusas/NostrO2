@@ -18,6 +18,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 nostro2.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs", "std", "tls12"], default-features = false }
 serde_json.workspace = true
+lru.workspace = true
 
 [dev-dependencies]
 nostro2-signer.workspace = true
