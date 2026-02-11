@@ -126,11 +126,13 @@
 //! - Uses audited `secp256k1` library
 //! - Optional key extraction protection
 pub mod errors;
+pub mod k256_keypair;
 pub mod keypair;
 pub extern crate nostro2;
 pub extern crate nostro2_nips;
 
 pub use bip39::Language;
+pub use k256_keypair::K256Keypair;
 pub use keypair::{EncryptionScheme, GiftwrapScheme, NostrKeypair};
 
 /// Convenience type alias for Results with `NostrKeypairError`

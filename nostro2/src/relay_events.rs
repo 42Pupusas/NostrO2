@@ -71,20 +71,38 @@ impl From<&super::note::NostrNote> for NostrClientEvent {
 }
 impl From<super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: super::subscriptions::NostrSubscription) -> Self {
-        use secp256k1::rand::Rng;
+        // Generate unique subscription ID using timestamp
+        #[cfg(not(target_arch = "wasm32"))]
+        let sub_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos().to_string())
+            .unwrap_or_else(|_| "0".to_string());
+
+        #[cfg(target_arch = "wasm32")]
+        let sub_id = (js_sys::Date::now() * 1_000_000.0) as u128;
+
         Self::Subscribe(
             RelayEventTag::Req,
-            secp256k1::rand::thread_rng().gen::<u64>().to_string(),
+            sub_id.to_string(),
             subscription,
         )
     }
 }
 impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: &super::subscriptions::NostrSubscription) -> Self {
-        use secp256k1::rand::Rng;
+        // Generate unique subscription ID using timestamp
+        #[cfg(not(target_arch = "wasm32"))]
+        let sub_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos().to_string())
+            .unwrap_or_else(|_| "0".to_string());
+
+        #[cfg(target_arch = "wasm32")]
+        let sub_id = (js_sys::Date::now() * 1_000_000.0) as u128;
+
         Self::Subscribe(
             RelayEventTag::Req,
-            secp256k1::rand::thread_rng().gen::<u64>().to_string(),
+            sub_id.to_string(),
             subscription.clone(),
         )
     }

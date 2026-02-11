@@ -15,4 +15,8 @@ pub enum NostrErrors {
     MissingSignature,
     #[error("No pubkey found on note")]
     MissingPubkey,
+    #[error("Invalid public key")]
+    InvalidPublicKey,
+    #[error("Invalid signature")]
+    InvalidSignature,
 }

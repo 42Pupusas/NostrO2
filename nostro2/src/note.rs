@@ -281,6 +281,27 @@ impl NostrNote {
     pub fn verify(&self) -> bool {
         self.verify_signature().is_ok_and(|t| t) && self.verify_content()
     }
+    /// Verifies the signature using the k256 crate (pure Rust)
+    fn verify_signature_k256(&self) -> Result<bool, crate::errors::NostrErrors> {
+        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        let id = self
+            .id_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingId)?;
+        let sig = self
+            .sig_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingSignature)?;
+        let verifying_key = VerifyingKey::from_bytes(&self.pubkey_bytes())
+            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
+        let signature = Signature::try_from(sig.as_slice())
+            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        Ok(verifying_key.verify_prehash(&id, &signature).is_ok())
+    }
+    /// Verify the note using the k256 crate (pure Rust implementation)
+    #[must_use]
+    #[inline]
+    pub fn verify_k256(&self) -> bool {
+        self.verify_signature_k256().is_ok_and(|t| t) && self.verify_content()
+    }
     /// Creates a JSON encoded string from the `NostrNote` struct
     ///
     /// # Errors
