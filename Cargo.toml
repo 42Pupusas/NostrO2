@@ -17,12 +17,12 @@ serde-wasm-bindgen = "0.6"
 thiserror = "2.0.16"
 
 # nostro2 = { path = "nostro2" }
-nostro2 = { path = "nostro2", version = "0.4.3" }
+nostro2 = { path = "nostro2", version = "0.5.0" }
 # nostro2-nips = { path = "nips" }
-nostro2-nips = { path = "nips", version = "0.1.8" }
+nostro2-nips = { path = "nips", version = "0.2.0" }
 
 # nostro2-signer = { path = "nostro2-signer" }
-nostro2-signer = { path = "nostro2-signer", version = "0.2.2" }
+nostro2-signer = { path = "nostro2-signer", version = "0.3.0" }
 
 # nostro2-cache = { path = "nostro2-cache" }
 nostro2-cache = { path = "nostro2-cache", version = "0.1.0" }
