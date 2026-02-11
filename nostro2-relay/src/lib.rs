@@ -10,7 +10,7 @@ mod pool;
 mod relay;
 pub extern crate nostro2;
 pub use pool::NostrPool;
-pub use relay::NostrRelay;
+pub use relay::{NostrRelay, ReconnectConfig};
 
 #[cfg(test)]
 mod tests {

@@ -1,38 +1,3 @@
-/// LRU cache for deduplicating event IDs across multiple relays.
-///
-/// Events are automatically evicted when the cache reaches capacity,
-/// removing the least recently used entries. This prevents unbounded
-/// memory growth in long-running relay pools.
-#[derive(Debug, Clone)]
-struct SeenNotes(std::sync::Arc<tokio::sync::Mutex<lru::LruCache<Option<String>, ()>>>);
-
-impl SeenNotes {
-    /// Create a new SeenNotes cache with the specified capacity.
-    ///
-    /// # Arguments
-    /// * `capacity` - Maximum number of event IDs to cache (default: 10,000)
-    pub fn new(capacity: usize) -> Self {
-        Self(std::sync::Arc::new(tokio::sync::Mutex::new(
-            lru::LruCache::new(std::num::NonZeroUsize::new(capacity).unwrap())
-        )))
-    }
-
-    /// Add an event ID to the cache.
-    ///
-    /// Returns `true` if this is a new event (not seen before),
-    /// `false` if the event was already in the cache.
-    pub async fn add(&self, id: Option<String>) -> bool {
-        let mut cache = self.0.lock().await;
-        // put() returns None if key didn't exist, Some(old_value) if it did
-        cache.put(id, ()).is_none()
-    }
-}
-
-impl Default for SeenNotes {
-    fn default() -> Self {
-        Self::new(10_000)
-    }
-}
 #[derive(Clone)]
 pub struct NostrPool {
     // _urls: std::collections::HashSet<String>,
@@ -45,10 +10,88 @@ pub struct NostrPool {
 impl NostrPool {
     /// Create a new relay pool with default settings.
     ///
-    /// Uses a deduplication cache size of 10,000 events.
+    /// Uses a deduplication cache size of 10,000 events and default reconnection settings.
     #[must_use]
     pub fn new(relays: &[&str]) -> Self {
         Self::with_cache_size(relays, 10_000)
+    }
+
+    /// Create a new relay pool with custom cache size and reconnection settings.
+    ///
+    /// # Arguments
+    /// * `relays` - Array of relay WebSocket URLs to connect to
+    /// * `cache_size` - Maximum number of event IDs to cache for deduplication
+    /// * `reconnect_config` - Configuration for automatic reconnection
+    ///
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::{NostrPool, ReconnectConfig};
+    /// use std::time::Duration;
+    ///
+    /// let config = ReconnectConfig {
+    ///     max_retries: 5,
+    ///     initial_delay: Duration::from_secs(2),
+    ///     max_delay: Duration::from_secs(60),
+    ///     backoff_multiplier: 2.0,
+    /// };
+    /// let pool = NostrPool::with_config(&["wss://relay.example.com"], 10_000, config);
+    /// ```
+    #[must_use]
+    pub fn with_config(
+        relays: &[&str],
+        cache_size: usize,
+        reconnect_config: &crate::relay::ReconnectConfig,
+    ) -> Self {
+        let (stream_tx, stream) =
+            tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
+        let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
+        let seen = nostro2_cache::Cache::new(cache_size);
+        for url in relays {
+            let mut sink = sink_rx.resubscribe();
+            let stream_send = stream_tx.clone();
+            let seen = seen.clone();
+            let url = (*url).to_string();
+            let reconnect_config = reconnect_config.clone();
+            tokio::task::spawn(async move {
+                if let Ok(relay) = crate::relay::NostrRelay::with_reconnect(&url, reconnect_config).await {
+                    loop {
+                        tokio::select! {
+                            Ok(msg) = sink.recv() => {
+                                if let Err(e) = relay.send(msg) {
+                                    eprintln!("Failed to send message: {e}");
+                                }
+                            },
+                            Some(msg) = relay.recv() => {
+                                if let nostro2::NostrRelayEvent::NewNote(.., ref note) =
+                                    msg
+                                {
+                                    if let Some(ref id) = note.id {
+                                        if seen.insert(id.clone()) {
+                                            if let Err(e) = stream_send.send(msg.clone()) {
+                                                eprintln!("Failed to send message: {e}");
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if let Err(e) = stream_send.send(msg) {
+                                    eprintln!("Failed to send message: {e}");
+                                }
+                            },
+                            else => {
+                                eprintln!("Relay connection closed");
+                                break;
+                            }
+
+                        }
+                    }
+                }
+            });
+        }
+        Self {
+            stream: std::sync::Arc::new(tokio::sync::RwLock::new(stream)),
+            sink,
+        }
     }
 
     /// Create a new relay pool with a custom deduplication cache size.
@@ -69,7 +112,7 @@ impl NostrPool {
         let (stream_tx, stream) =
             tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
         let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
-        let seen = SeenNotes::new(cache_size);
+        let seen = nostro2_cache::Cache::new(cache_size);
         for url in relays {
             let mut sink = sink_rx.resubscribe();
             let stream_send = stream_tx.clone();
@@ -88,9 +131,11 @@ impl NostrPool {
                                 if let nostro2::NostrRelayEvent::NewNote(.., ref note) =
                                     msg
                                 {
-                                    if seen.add(note.id.clone()).await {
-                                        if let Err(e) = stream_send.send(msg.clone()) {
-                                            eprintln!("Failed to send message: {e}");
+                                    if let Some(ref id) = note.id {
+                                        if seen.insert(id.clone()) {
+                                            if let Err(e) = stream_send.send(msg.clone()) {
+                                                eprintln!("Failed to send message: {e}");
+                                            }
                                         }
                                     }
                                     continue;

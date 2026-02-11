@@ -20,7 +20,7 @@ rustls = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-nostro2-relay = { path = "../nostro2-relay", version = "0.2.0" }
+nostro2-relay = { path = "../nostro2-relay", version = "0.3.0" }
 nostro2-signer = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
