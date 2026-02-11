@@ -1,0 +1,31 @@
+[package]
+name = "nostro2-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+nostro2.workspace = true
+nostro2-signer.workspace = true
+nostro2-cache.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "verification"
+harness = false
+
+[[bench]]
+name = "serialization"
+harness = false
+
+[[bench]]
+name = "subscription"
+harness = false
+
+[[bench]]
+name = "crypto_comparison"
+harness = false
+
+[[bench]]
+name = "deduplication"
+harness = false

@@ -22,19 +22,4 @@ thiserror.workspace = true
 ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
 
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-nostro2-signer.workspace = true
-
-[[bench]]
-name = "serialization"
-harness = false
-
-[[bench]]
-name = "subscription"
-harness = false
-
-[[bench]]
-name = "verification"
-harness = false
 

@@ -5,7 +5,7 @@ members = [
     "nips",
     "nostro2", "nostro2-cache",
     "nostro2-relay", "nostro2-ring-relay",
-    "nostro2-signer",
+    "nostro2-signer", "nostro2-benchmarks",
 ]
 
 [workspace.dependencies]

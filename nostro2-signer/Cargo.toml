@@ -23,9 +23,3 @@ rand_core.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "crypto_comparison"
-harness = false
