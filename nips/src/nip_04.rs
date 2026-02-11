@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose, Engine as _};
-use secp256k1::rand::{thread_rng, Rng};
+use rand_core::{OsRng, RngCore};
 use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error)]
@@ -8,8 +8,6 @@ pub enum Nip04Error {
     InvalidLength,
     #[error("Shared secret error")]
     FromHexError(#[from] hex::FromHexError),
-    #[error("Secp256k1 error {0}")]
-    Secp256k1Error(#[from] secp256k1::Error),
     #[error("Shared secret error")]
     SharedSecretError,
     #[error("Base64 decoding error {0}")]
@@ -45,7 +43,8 @@ pub trait Nip04 {
         plaintext: &'a str,
         pubkey: &'a str,
     ) -> Result<std::borrow::Cow<'a, str>, Nip04Error> {
-        let iv = thread_rng().gen::<[u8; 16]>();
+        let mut iv = [0_u8; 16];
+        OsRng.fill_bytes(&mut iv);
         let mut shared_secret = self.shared_secret(pubkey)?;
         let mut cipher = libaes::Cipher::new_256(&shared_secret);
         shared_secret.zeroize();
@@ -116,6 +115,7 @@ pub trait Nip04 {
 #[cfg(test)]
 mod tests {
     use crate::tests::NipTester;
+    use nostro2::NostrSigner;
 
     use super::*;
     const CLEAR_TEXT: &str = "{\"id\":\"2fm12v\",\"method\":\"connect\",\"params\":[\"62dfdb53ea2282ef478f7cdbf77938ec1add74b2bcbc8d862cfe1df24ac72cba\",\"\",\"sign_event:1985,sign_event:3,sign_event:30000\"]}";
@@ -123,8 +123,8 @@ mod tests {
     fn nip_04() {
         let nip04 = NipTester::_peer_one();
         let nip04_peer = NipTester::_peer_two();
-        let pubkey = nip04_peer.private_key.x_only_public_key().0.to_string();
-        let peer_pubkey = nip04.private_key.x_only_public_key().0.to_string();
+        let pubkey = nip04_peer.public_key();
+        let peer_pubkey = nip04.public_key();
         let ciphertext = nip04.nip04_encrypt(CLEAR_TEXT, &pubkey).expect("");
         let decrypted = nip04_peer
             .nip04_decrypt(&ciphertext, &peer_pubkey)
@@ -136,7 +136,7 @@ mod tests {
         let peer1 = NipTester::_peer_one();
         let peer2 = NipTester::_peer_two();
         let peer3 = NipTester::_peer_three();
-        let pubkey = peer2.private_key.x_only_public_key().0.to_string();
+        let pubkey = peer2.public_key();
         let ciphertext = peer1.nip04_encrypt(CLEAR_TEXT, &pubkey).unwrap();
 
         match peer3.nip04_decrypt(&ciphertext, &pubkey) {
@@ -172,8 +172,8 @@ mod tests {
     fn empty_plaintext_roundtrip() {
         let peer1 = NipTester::_peer_one();
         let peer2 = NipTester::_peer_two();
-        let pubkey = peer2.private_key.x_only_public_key().0.to_string();
-        let pubkey2 = peer1.private_key.x_only_public_key().0.to_string();
+        let pubkey = peer2.public_key();
+        let pubkey2 = peer1.public_key();
         let ciphertext = peer1.nip04_encrypt("", &pubkey).unwrap();
         let decrypted = peer2.nip04_decrypt(&ciphertext, &pubkey2).unwrap();
         assert_eq!(decrypted, "");
@@ -190,8 +190,8 @@ mod tests {
         ];
         let peer1 = NipTester::_peer_one();
         let peer2 = NipTester::_peer_two();
-        let pubkey = peer2.private_key.x_only_public_key().0.to_string();
-        let pubkey2 = peer1.private_key.x_only_public_key().0.to_string();
+        let pubkey = peer2.public_key();
+        let pubkey2 = peer1.public_key();
         for &text in &texts {
             let ciphertext = peer1.nip04_encrypt(text, &pubkey).unwrap();
             let decrypted = peer2.nip04_decrypt(&ciphertext, &pubkey2).unwrap();

@@ -10,23 +10,19 @@ fn create_signed_note() -> NostrNote {
     note
 }
 
-fn bench_verify_secp256k1(c: &mut Criterion) {
+/// Benchmark k256 (pure Rust) signature verification
+///
+/// Note: This now uses k256 by default (post-migration from secp256k1).
+/// Historical benchmarks showed k256 at ~94µs vs secp256k1 at ~67µs (1.4x slower),
+/// which was accepted for WASM compatibility and pure Rust benefits.
+fn bench_verify_k256(c: &mut Criterion) {
     let note = create_signed_note();
-    assert!(note.verify(), "secp256k1 verify sanity check");
+    assert!(note.verify(), "k256 verify sanity check");
 
-    c.bench_function("verify_secp256k1", |b| {
+    c.bench_function("verify_k256", |b| {
         b.iter(|| black_box(&note).verify());
     });
 }
 
-fn bench_verify_k256(c: &mut Criterion) {
-    let note = create_signed_note();
-    assert!(note.verify_k256(), "k256 verify sanity check");
-
-    c.bench_function("verify_k256", |b| {
-        b.iter(|| black_box(&note).verify_k256());
-    });
-}
-
-criterion_group!(verification_benches, bench_verify_secp256k1, bench_verify_k256);
+criterion_group!(verification_benches, bench_verify_k256);
 criterion_main!(verification_benches);

@@ -17,12 +17,12 @@ serde-wasm-bindgen = "0.6"
 thiserror = "2.0.16"
 
 # nostro2 = { path = "nostro2" }
-nostro2 = { version = "0.4.3" }
+nostro2 = { path = "nostro2", version = "0.4.3" }
 # nostro2-nips = { path = "nips" }
-nostro2-nips = { version = "0.1.8" }
+nostro2-nips = { path = "nips", version = "0.1.8" }
 
 # nostro2-signer = { path = "nostro2-signer" }
-nostro2-signer = {  version = "0.2.2" }
+nostro2-signer = { path = "nostro2-signer", version = "0.2.2" }
 
 # nostro2-cache = { path = "nostro2-cache" }
 nostro2-cache = { path = "nostro2-cache", version = "0.1.0" }
@@ -31,7 +31,7 @@ nostro2-cache = { path = "nostro2-cache", version = "0.1.0" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
-# Cryptography 
+# Cryptography
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
 chacha20 = "0.9"
@@ -40,8 +40,8 @@ hkdf = "0.12"
 hmac = "0.12"
 libaes = "0.7"
 k256 = { version = "0.13.4", features = ["schnorr", "ecdh"] }
+rand = "0.8"
 rand_core = { version = "0.6", features = ["getrandom"] }
-secp256k1 = { version = "0.30.0", features = ["std", "alloc"] }
 sha2 = "0.10.8"
 zeroize = "1.8.1"
 

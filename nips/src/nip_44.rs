@@ -1,7 +1,7 @@
 use base64::engine::{general_purpose, Engine as _};
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use hmac::Mac;
-use secp256k1::rand::RngCore;
+use rand_core::RngCore;
 use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error)]
@@ -10,8 +10,6 @@ pub enum Nip44Error {
     SharedSecretError,
     #[error("Hex decoding error {0}")]
     FromHexError(#[from] hex::FromHexError),
-    #[error("Secp256k1 error {0}")]
-    Secp256k1Error(#[from] secp256k1::Error),
     #[error("Nostr note error {0}")]
     NostrNoteError(#[from] nostro2::errors::NostrErrors),
     #[error("Invalid input length")]
@@ -277,7 +275,7 @@ pub trait Nip44 {
     #[must_use]
     fn generate_nonce() -> zeroize::Zeroizing<[u8; 12]> {
         let mut nonce = [0_u8; 12];
-        secp256k1::rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand_core::OsRng.fill_bytes(&mut nonce);
         nonce.into()
     }
     #[must_use]
@@ -298,46 +296,17 @@ pub trait Nip44 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
-
-    struct TestNip44 {
-        sender_sk: SecretKey,
-        receiver_pk: PublicKey,
-    }
-
-    impl Nip44 for TestNip44 {
-        fn shared_secret(
-            &self,
-            _peer_pubkey: &str,
-        ) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip44Error> {
-            let shared_point =
-                secp256k1::ecdh::SharedSecret::new(&self.receiver_pk, &self.sender_sk);
-            let shared_point_slice: [u8; 32] = shared_point.as_ref().try_into()?;
-            Ok(shared_point_slice.into())
-        }
-    }
+    use nostro2::NostrSigner;
 
     #[test]
     fn test_encrypt_decrypt_success() {
-        let secp = Secp256k1::new();
-
-        // Simulate two parties
-        let sender_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-        let receiver_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-
-        let sender = TestNip44 {
-            sender_sk: sender_kp.secret_key(),
-            receiver_pk: receiver_kp.public_key(),
-        };
-
-        let receiver = TestNip44 {
-            sender_sk: receiver_kp.secret_key(),
-            receiver_pk: sender_kp.public_key(),
-        };
+        // Use the NipTester from lib.rs which uses k256
+        let sender = crate::tests::NipTester::generate(false);
+        let receiver = crate::tests::NipTester::generate(false);
 
         let plaintext = "Hello NIP-44 encryption!";
-        let receiver_pk = receiver.receiver_pk.to_string();
-        let sender_pk = sender.receiver_pk.to_string();
+        let receiver_pk = receiver.public_key();
+        let sender_pk = sender.public_key();
         let ciphertext = sender.nip_44_encrypt(plaintext, &receiver_pk).unwrap();
         let decrypted = receiver.nip_44_decrypt(&ciphertext, &sender_pk).unwrap();
 
@@ -346,54 +315,31 @@ mod tests {
 
     #[test]
     fn test_invalid_decryption_key() {
-        let secp = Secp256k1::new();
-
-        let sender_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-        let receiver_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-        let wrong_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-
-        let sender = TestNip44 {
-            sender_sk: sender_kp.secret_key(),
-            receiver_pk: receiver_kp.public_key(),
-        };
-
-        let wrong_receiver = TestNip44 {
-            sender_sk: wrong_kp.secret_key(),
-            receiver_pk: sender_kp.public_key(),
-        };
+        let sender = crate::tests::NipTester::generate(false);
+        let receiver = crate::tests::NipTester::generate(false);
+        let wrong_receiver = crate::tests::NipTester::generate(false);
 
         let plaintext = "Hello NIP-44 encryption!";
-        let receiver_pk = wrong_receiver.receiver_pk.to_string();
-        let sender_pk = sender.receiver_pk.to_string();
+        let receiver_pk = receiver.public_key();
+        let sender_pk = sender.public_key();
         let ciphertext = sender.nip_44_encrypt(plaintext, &receiver_pk).unwrap();
         let result = wrong_receiver.nip_44_decrypt(&ciphertext, &sender_pk);
 
         assert!(result.is_err());
     }
+
     use std::fmt::Write as _;
     #[test]
     fn encrypt_very_large_note() {
-        let secp = Secp256k1::new();
-        let sender_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-        let receiver_kp = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-
-        let sender = TestNip44 {
-            sender_sk: sender_kp.secret_key(),
-            receiver_pk: receiver_kp.public_key(),
-        };
-
-        let receiver = TestNip44 {
-            sender_sk: receiver_kp.secret_key(),
-            receiver_pk: sender_kp.public_key(),
-        };
+        let sender = crate::tests::NipTester::generate(false);
+        let receiver = crate::tests::NipTester::generate(false);
 
         let mut plaintext = String::new();
         for i in 0..15329 {
-            // plaintext.push_str(&format!("{i}"));
             let _ = write!(plaintext, "{i}");
         }
-        let receiver_pk = receiver.receiver_pk.to_string();
-        let sender_pk = sender.receiver_pk.to_string();
+        let receiver_pk = receiver.public_key();
+        let sender_pk = sender.public_key();
         let ciphertext = sender.nip_44_encrypt(&plaintext, &receiver_pk).unwrap();
         let decrypted = receiver.nip_44_decrypt(&ciphertext, &sender_pk).unwrap();
 

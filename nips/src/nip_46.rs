@@ -1,4 +1,4 @@
-use secp256k1::rand::Rng;
+use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,7 +79,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
             content: self
                 .nip_44_encrypt(
                     &Nip46Request {
-                        id: secp256k1::rand::thread_rng()
+                        id: rand::thread_rng()
                             .gen_range(0..=u8::MAX)
                             .to_string(),
                         method,

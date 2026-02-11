@@ -75,15 +75,14 @@ impl From<super::subscriptions::NostrSubscription> for NostrClientEvent {
         #[cfg(not(target_arch = "wasm32"))]
         let sub_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_string())
-            .unwrap_or_else(|_| "0".to_string());
+            .map_or_else(|_| "0".to_string(), |d| d.as_nanos().to_string());
 
         #[cfg(target_arch = "wasm32")]
-        let sub_id = (js_sys::Date::now() * 1_000_000.0) as u128;
+        let sub_id = ((js_sys::Date::now() * 1_000_000.0) as u128).to_string();
 
         Self::Subscribe(
             RelayEventTag::Req,
-            sub_id.to_string(),
+            sub_id,
             subscription,
         )
     }
@@ -94,15 +93,14 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
         #[cfg(not(target_arch = "wasm32"))]
         let sub_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_string())
-            .unwrap_or_else(|_| "0".to_string());
+            .map_or_else(|_| "0".to_string(), |d| d.as_nanos().to_string());
 
         #[cfg(target_arch = "wasm32")]
-        let sub_id = (js_sys::Date::now() * 1_000_000.0) as u128;
+        let sub_id = ((js_sys::Date::now() * 1_000_000.0) as u128).to_string();
 
         Self::Subscribe(
             RelayEventTag::Req,
-            sub_id.to_string(),
+            sub_id,
             subscription.clone(),
         )
     }

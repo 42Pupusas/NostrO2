@@ -20,7 +20,6 @@ k256.workspace = true
 nostro2.workspace = true
 nostro2-nips.workspace = true
 rand_core.workspace = true
-secp256k1 = { workspace = true, features = ["rand"] }
 thiserror.workspace = true
 zeroize.workspace = true
 

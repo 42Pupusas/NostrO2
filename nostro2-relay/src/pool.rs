@@ -34,7 +34,7 @@ impl NostrPool {
     ///     max_delay: Duration::from_secs(60),
     ///     backoff_multiplier: 2.0,
     /// };
-    /// let pool = NostrPool::with_config(&["wss://relay.example.com"], 10_000, config);
+    /// let pool = NostrPool::with_config(&["wss://relay.example.com"], 10_000, &config);
     /// ```
     #[must_use]
     pub fn with_config(

@@ -26,15 +26,21 @@
 //! // Generate extractable keypair (allows exporting private key)
 //! let keypair = NostrKeypair::new_extractable();
 //!
-//! // From hex private key
-//! let keypair = NostrKeypair::from_hex("abc123...", true)?;
+//! // From hex private key (64 hex characters)
+//! let keypair = NostrKeypair::from_hex(
+//!     "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8",
+//!     true
+//! )?;
 //!
 //! // From nsec
-//! let keypair = NostrKeypair::from_nsec("nsec1...", true)?;
+//! let keypair = NostrKeypair::from_nsec(
+//!     "nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53",
+//!     true
+//! )?;
 //!
-//! // From mnemonic
+//! // From mnemonic (12 or 24 words)
 //! let keypair = NostrKeypair::from_mnemonic(
-//!     "word1 word2 ...",
+//!     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
 //!     Language::English,
 //!     true
 //! )?;
@@ -70,16 +76,18 @@
 //!     .with_content("Secret message");
 //!
 //! // Encrypt and sign
+//! let bob_pk = bob.pubkey();
 //! alice.sign_encrypted_note(
 //!     &mut dm,
-//!     &bob.pubkey(),
+//!     &bob_pk,
 //!     &EncryptionScheme::Nip44
 //! )?;
 //!
 //! // Decrypt
+//! let alice_pk = alice.pubkey();
 //! let decrypted = bob.decrypt_note(
 //!     &dm,
-//!     &alice.pubkey(),
+//!     &alice_pk,
 //!     &EncryptionScheme::Nip44
 //! )?;
 //! assert_eq!(decrypted, "Secret message");
@@ -123,20 +131,18 @@
 //!
 //! - Keys are zeroized on drop when using extractable mode
 //! - Constant-time operations for cryptographic primitives
-//! - Uses audited `secp256k1` library
+//! - Uses pure Rust `k256` library for WASM compatibility
 //! - Optional key extraction protection
 pub mod errors;
 pub mod k256_keypair;
-pub mod keypair;
 pub extern crate nostro2;
 pub extern crate nostro2_nips;
 
 pub use bip39::Language;
-pub use k256_keypair::K256Keypair;
-pub use keypair::{EncryptionScheme, GiftwrapScheme, NostrKeypair};
+pub use k256_keypair::{EncryptionScheme, GiftwrapScheme, K256Keypair};
+
+/// Type alias for compatibility - `K256Keypair` is now the default
+pub type NostrKeypair = K256Keypair;
 
 /// Convenience type alias for Results with `NostrKeypairError`
 pub type Result<T> = std::result::Result<T, errors::NostrKeypairError>;
-
-pub static SECP: std::sync::LazyLock<secp256k1::Secp256k1<secp256k1::SignOnly>> =
-    std::sync::LazyLock::new(secp256k1::Secp256k1::signing_only);

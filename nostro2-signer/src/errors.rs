@@ -23,8 +23,6 @@ pub enum NostrKeypairError {
     Nip44Error(#[from] nostro2_nips::Nip44Error),
     #[error("Nip59 error {0}")]
     Nip59Error(#[from] nostro2_nips::Nip59Error),
-    #[error("Secp256k1 error {0}")]
-    Secp256k1Error(#[from] secp256k1::Error),
     #[error("K256 error {0}")]
     K256Error(#[from] k256::elliptic_curve::Error),
     #[error("Conversion error {0}")]
