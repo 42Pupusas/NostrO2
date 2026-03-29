@@ -1,7 +1,6 @@
 use base64::engine::{general_purpose, Engine as _};
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use hmac::Mac;
-use rand_core::RngCore;
 use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error)]
@@ -275,7 +274,7 @@ pub trait Nip44 {
     #[must_use]
     fn generate_nonce() -> zeroize::Zeroizing<[u8; 12]> {
         let mut nonce = [0_u8; 12];
-        rand_core::OsRng.fill_bytes(&mut nonce);
+        getrandom::fill(&mut nonce).expect("getrandom failed");
         nonce.into()
     }
     #[must_use]

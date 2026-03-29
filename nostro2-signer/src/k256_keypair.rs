@@ -84,7 +84,8 @@ impl K256Keypair {
     /// Returns an error if the hex string is invalid or the key is malformed
     pub fn from_hex(hex: &str, extractable: bool) -> Result<Self, NostrKeypairError> {
         let bytes = hex::decode(hex)?;
-        let field_bytes = k256::FieldBytes::from_slice(&bytes);
+        let field_bytes: &k256::FieldBytes = bytes.as_slice().try_into()
+            .map_err(|_| NostrKeypairError::InvalidKey)?;
         let signing_key =
             k256::schnorr::SigningKey::from_bytes(field_bytes).map_err(|_| NostrKeypairError::InvalidKey)?;
         Ok(Self {
@@ -360,7 +361,8 @@ impl std::str::FromStr for K256Keypair {
 impl TryFrom<&[u8]> for K256Keypair {
     type Error = NostrKeypairError;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let field_bytes = k256::FieldBytes::from_slice(value);
+        let field_bytes: &k256::FieldBytes = value.try_into()
+            .map_err(|_| NostrKeypairError::InvalidKey)?;
         let signing_key =
             k256::schnorr::SigningKey::from_bytes(field_bytes).map_err(|_| NostrKeypairError::InvalidKey)?;
         Ok(Self {
@@ -418,8 +420,7 @@ impl NostrSigner for K256Keypair {
         note: &mut nostro2::NostrNote,
     ) -> Result<(), nostro2::errors::NostrErrors> {
         note.pubkey = self.public_key();
-        note.serialize_id()?;
-        let id = note.id_bytes().unwrap_or([0_u8; 32]);
+        let id = note.serialize_id_raw()?;
         let sig = self
             .signing_key
             .sign_prehash(&id)
@@ -429,7 +430,16 @@ impl NostrSigner for K256Keypair {
     }
 
     fn generate(extractable: bool) -> Self {
-        let signing_key = k256::schnorr::SigningKey::random(&mut rand_core::OsRng);
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret).expect("getrandom failed");
+        let field_bytes = k256::FieldBytes::from(secret);
+        // Loop in the astronomically unlikely case of an invalid scalar
+        let signing_key = loop {
+            if let Ok(sk) = k256::schnorr::SigningKey::from_bytes(&field_bytes) {
+                break sk;
+            }
+            getrandom::fill(&mut secret).expect("getrandom failed");
+        };
         Self {
             signing_key,
             extractable,

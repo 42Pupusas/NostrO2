@@ -77,8 +77,7 @@ mod tests {
             note: &mut nostro2::NostrNote,
         ) -> Result<(), nostro2::errors::NostrErrors> {
             note.pubkey = self.public_key();
-            note.serialize_id()?;
-            let id = note.id_bytes().unwrap_or([0_u8; 32]);
+            let id = note.serialize_id_raw()?;
             let sig = self
                 .signing_key
                 .sign_prehash(&id)
@@ -87,8 +86,12 @@ mod tests {
             Ok(())
         }
         fn generate(_extractable: bool) -> Self {
+            let mut secret = [0u8; 32];
+            getrandom::fill(&mut secret).expect("getrandom failed");
+            let field_bytes = k256::FieldBytes::from(secret);
             Self {
-                signing_key: k256::schnorr::SigningKey::random(&mut rand_core::OsRng),
+                signing_key: k256::schnorr::SigningKey::from_bytes(&field_bytes)
+                    .expect("invalid key bytes"),
             }
         }
         fn public_key(&self) -> String {

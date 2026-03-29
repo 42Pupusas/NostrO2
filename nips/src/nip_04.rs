@@ -1,5 +1,4 @@
 use base64::{engine::general_purpose, Engine as _};
-use rand_core::{OsRng, RngCore};
 use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,7 +43,7 @@ pub trait Nip04 {
         pubkey: &'a str,
     ) -> Result<std::borrow::Cow<'a, str>, Nip04Error> {
         let mut iv = [0_u8; 16];
-        OsRng.fill_bytes(&mut iv);
+        getrandom::fill(&mut iv).expect("getrandom failed");
         let mut shared_secret = self.shared_secret(pubkey)?;
         let mut cipher = libaes::Cipher::new_256(&shared_secret);
         shared_secret.zeroize();

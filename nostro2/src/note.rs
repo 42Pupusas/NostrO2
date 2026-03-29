@@ -217,10 +217,10 @@ impl NostrNote {
         pubkey_bytes
     }
 
-    /// # Errors
-    ///
-    /// Will return `Err` if `serde` cannot serialize the data
-    pub fn serialize_id(&mut self) -> Result<(), crate::errors::NostrErrors> {
+    /// Compute the SHA256 hash of the canonical event serialization directly,
+    /// without allocating an intermediate JSON string.
+    #[inline]
+    fn compute_id_bytes(&self) -> Result<[u8; 32], crate::errors::NostrErrors> {
         use sha2::Digest as _;
 
         let serialized_data = (
@@ -231,11 +231,32 @@ impl NostrNote {
             &self.tags,
             &*self.content,
         );
-        let json_str = serde_json::to_string(&serialized_data)?;
         let mut hasher = sha2::Sha256::new();
-        hasher.update(json_str.as_bytes());
-        self.id = Some(hex::encode(hasher.finalize()));
+        serde_json::to_writer(Sha256Writer(&mut hasher), &serialized_data)?;
+        Ok(hasher.finalize().into())
+    }
+
+    /// # Errors
+    ///
+    /// Will return `Err` if `serde` cannot serialize the data
+    pub fn serialize_id(&mut self) -> Result<(), crate::errors::NostrErrors> {
+        let hash = self.compute_id_bytes()?;
+        self.id = Some(hex::encode(hash));
         Ok(())
+    }
+
+    /// Compute and set the event ID, returning the raw 32-byte hash.
+    ///
+    /// This avoids a hex-decode round-trip when the caller needs the raw bytes
+    /// immediately (e.g., for signing).
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if `serde` cannot serialize the data
+    pub fn serialize_id_raw(&mut self) -> Result<[u8; 32], crate::errors::NostrErrors> {
+        let hash = self.compute_id_bytes()?;
+        self.id = Some(hex::encode(hash));
+        Ok(hash)
     }
     /// Used to verify the signature of the note
     ///
@@ -248,7 +269,7 @@ impl NostrNote {
         let sig = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
-        let verifying_key = VerifyingKey::from_bytes(&self.pubkey_bytes())
+        let verifying_key = VerifyingKey::from_bytes((&self.pubkey_bytes()).into())
             .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
         let signature = Signature::try_from(sig.as_slice())
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
@@ -256,26 +277,17 @@ impl NostrNote {
     }
     /// Used to verify the content of the note
     ///
-    /// Rebuilds the note and rehashes the content to verify the id
+    /// Rebuilds the note and rehashes the content to verify the id.
+    /// Compares raw bytes to avoid hex encoding overhead.
     #[inline]
     fn verify_content(&self) -> bool {
-        use sha2::Digest as _;
-
-        let serialized_data = (
-            0,
-            &*self.pubkey,
-            self.created_at,
-            self.kind,
-            &self.tags,
-            &*self.content,
-        );
-        let Ok(json_str) = serde_json::to_string(&serialized_data) else {
+        let Some(stored_id) = self.id_bytes() else {
             return false;
         };
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(json_str.as_bytes());
-        let computed_id = hex::encode(hasher.finalize());
-        self.id.as_ref() == Some(&computed_id)
+        let Ok(computed_id) = self.compute_id_bytes() else {
+            return false;
+        };
+        stored_id == computed_id
     }
     /// Verify the note's signature and content
     ///
@@ -283,7 +295,7 @@ impl NostrNote {
     #[must_use]
     #[inline]
     pub fn verify(&self) -> bool {
-        self.verify_signature().is_ok_and(|t| t) && self.verify_content()
+        self.verify_content() && self.verify_signature().is_ok_and(|t| t)
     }
     /// Creates a JSON encoded string from the `NostrNote` struct
     ///
@@ -295,6 +307,22 @@ impl NostrNote {
         Ok(serde_json::to_string(self)?)
     }
 }
+/// Zero-alloc adapter: feeds `serde_json::to_writer` output directly into SHA-256.
+struct Sha256Writer<'a>(&'a mut sha2::Sha256);
+
+impl std::io::Write for Sha256Writer<'_> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use sha2::Digest as _;
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl core::str::FromStr for NostrNote {
     type Err = crate::errors::NostrErrors;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

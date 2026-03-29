@@ -20,6 +20,7 @@ k256.workspace = true
 nostro2.workspace = true
 nostro2-nips.workspace = true
 rand_core.workspace = true
+getrandom = "0.4"
 thiserror.workspace = true
 zeroize.workspace = true
 

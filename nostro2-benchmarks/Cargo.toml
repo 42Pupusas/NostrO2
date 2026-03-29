@@ -9,6 +9,8 @@ nostro2.workspace = true
 nostro2-signer.workspace = true
 nostro2-cache.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
+serde_json.workspace = true
+nostr = "0.44"
 
 [[bench]]
 name = "verification"
@@ -28,4 +30,8 @@ harness = false
 
 [[bench]]
 name = "deduplication"
+harness = false
+
+[[bench]]
+name = "nostr_comparison"
 harness = false
