@@ -1,0 +1,63 @@
+{
+	auto_https disable_redirects
+}
+
+:10900 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9900
+}
+
+:10901 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9901
+}
+
+:10902 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9902
+}
+
+:10903 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9903
+}
+
+:10904 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9904
+}
+
+:10905 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9905
+}
+
+:10906 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9906
+}
+
+:10907 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9907
+}
+
+:10908 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9908
+}
+
+:10909 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9909
+}
+
+:10910 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9910
+}
+
+:10911 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9911
+}

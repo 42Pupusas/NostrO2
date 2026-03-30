@@ -502,14 +502,6 @@ fn main() {
 
     let mut results: Vec<TestResult> = Vec::new();
 
-    // Phase 1: Ring relay (tungstenite)
-    let ring_result = test_ring_relay();
-    print_result(&ring_result);
-    results.push(ring_result);
-
-    println!("\n--- Pausing 5s ---\n");
-    std::thread::sleep(Duration::from_secs(5));
-
     // Phase 2: kTLS relay (if feature enabled)
     #[cfg(feature = "uring")]
     {
@@ -520,6 +512,14 @@ fn main() {
         println!("\n--- Pausing 5s ---\n");
         std::thread::sleep(Duration::from_secs(5));
     }
+    // Phase 1: Ring relay (tungstenite)
+    let ring_result = test_ring_relay();
+    print_result(&ring_result);
+    results.push(ring_result);
+
+    println!("\n--- Pausing 5s ---\n");
+    std::thread::sleep(Duration::from_secs(5));
+
 
     // Phase 3: Async relay (tokio)
     let async_result = test_async_relay();
