@@ -4,16 +4,18 @@ use nostro2_signer::NostrKeypair;
 use std::time::{Duration, Instant};
 
 const TEST_RELAYS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
     "wss://relay.illuminodes.com",
     "wss://nos.lol",
-    "wss://nostr.wine",
-    "wss://relay.nostr.band",
     "wss://nostr.mom",
     "wss://relay.snort.social",
     "wss://nostr-pub.wellorder.net",
-    "wss://relay.current.fyi",
+    "wss://relay.jerseyplebs.com",
+    "wss://relay.primal.net",
+    "wss://relay.bostr.shop",
+    "wss://relay.albylabs.com",
+    "wss://relay.bitcoindistrict.org",
+    "wss://relay.nsite.run",
+    "wss://git.shakespeare.diy",
 ];
 
 /// Stats collected per reporting interval
@@ -39,7 +41,7 @@ struct TestResult {
 }
 
 fn test_ring_relay() -> TestResult {
-    println!("=== Ring Relay (lock-free) ===");
+    println!("=== Ring Relay (tungstenite, lock-free rings) ===");
 
     let mut pool = RelayPool::new(4096, 10_000, 16384, TEST_RELAYS.len());
     let sender = pool.sender();
@@ -51,109 +53,98 @@ fn test_ring_relay() -> TestResult {
 
     std::thread::sleep(Duration::from_secs(2));
 
-    let test_duration = Duration::from_secs(10);
-    let report_interval = Duration::from_secs(1);
-    let start = Instant::now();
-    let mut last_report = Instant::now();
+    // Send subscription (no longer hardcoded in the connection loop)
+    let subscription = nostro2::NostrSubscription {
+        kinds: vec![1].into(),
+        limit: Some(1000),
+        ..Default::default()
+    };
+    sender.send(subscription).unwrap();
 
-    let mut total_received: usize = 0;
-    let mut total_sent: usize = 0;
-    let mut total_send_errors: usize = 0;
-    let mut interval_received: usize = 0;
-    let mut interval_sent: usize = 0;
-    let mut interval_send_errors: usize = 0;
-    let mut snapshots: Vec<IntervalStats> = Vec::new();
+    let result = run_test("Ring Relay", &sender, || pool.try_recv());
 
-    println!("Running for {}s...\n", test_duration.as_secs());
+    // Explicit shutdown — drop in a separate thread with timeout
+    // to avoid blocking if tungstenite connections are stuck
+    std::thread::spawn(move || drop(pool));
+    std::thread::sleep(Duration::from_millis(500));
 
-    while start.elapsed() < test_duration {
-        match pool.try_recv() {
-            Some(PoolMessage::RelayEvent {
-                event: NostrRelayEvent::NewNote(_, _, ref note),
-                ..
-            }) => {
-                total_received += 1;
-                interval_received += 1;
+    result
+}
 
-                let throwaway = NostrKeypair::new();
-                let mut echo = nostro2::NostrNote {
-                    content: format!(
-                        "echo:{}:{}",
-                        note.id.as_deref().unwrap_or("?"),
-                        total_received,
-                    ),
-                    kind: 21000,
-                    ..Default::default()
-                };
+#[cfg(feature = "uring")]
+fn test_ktls_relay() -> TestResult {
+    use nostro2_ring_relay::uring::UringRelayConnection;
+    use quetzalcoatl::broadcast;
+    use quetzalcoatl::capacity::Capacity;
+    use quetzalcoatl::mpsc::RingBuffer;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
-                if throwaway.sign_note(&mut echo).is_ok() {
-                    match sender.send(echo) {
-                        Ok(()) => {
-                            total_sent += 1;
-                            interval_sent += 1;
-                        }
-                        Err(_) => {
-                            total_send_errors += 1;
-                            interval_send_errors += 1;
-                        }
-                    }
-                }
-            }
-            Some(PoolMessage::RelayEvent { .. }) => {
-                total_received += 1;
-                interval_received += 1;
-            }
-            Some(PoolMessage::ConnectionClosed { relay_url, error }) => {
-                if let Some(err) = error {
-                    eprintln!("  [ring closed] {}: {}", relay_url, err);
-                }
-            }
-            None => {
-                std::thread::sleep(Duration::from_micros(100));
-            }
-        }
+    println!("=== kTLS Relay (kernel TLS, split reader/writer) ===");
 
-        if last_report.elapsed() >= report_interval {
-            let elapsed = start.elapsed().as_secs();
-            let interval_secs = last_report.elapsed().as_secs_f64();
-            let recv_rate = interval_received as f64 / interval_secs;
-            let send_rate = interval_sent as f64 / interval_secs;
+    let (mpsc_producer, mut mpsc_consumer) =
+        RingBuffer::<PoolMessage>::new(Capacity::at_least(4096)).split();
 
-            snapshots.push(IntervalStats {
-                elapsed_secs: elapsed,
-                received: interval_received,
-                sent: interval_sent,
-                send_errors: interval_send_errors,
-                recv_rate,
-                send_rate,
-            });
+    let (bc_producer, bc_consumer) =
+        broadcast::RingBuffer::<String>::new(Capacity::at_least(16384), TEST_RELAYS.len() + 1)
+            .split();
 
-            println!(
-                "[{:>2}s] recv: {:>5} ({:>6.1}/s) | sent: {:>5} ({:>6.1}/s) | errors: {}",
-                elapsed, interval_received, recv_rate, interval_sent, send_rate, interval_send_errors,
-            );
-
-            interval_received = 0;
-            interval_sent = 0;
-            interval_send_errors = 0;
-            last_report = Instant::now();
+    let mut connections = Vec::new();
+    println!("Connecting to {} relays...", TEST_RELAYS.len());
+    for url in TEST_RELAYS {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        match UringRelayConnection::spawn(
+            url.to_string(),
+            mpsc_producer.clone(),
+            bc_consumer.clone(),
+            shutdown,
+        ) {
+            Ok(conn) => connections.push(conn),
+            Err(e) => eprintln!("  [ktls] failed to connect to {url}: {e}"),
         }
     }
+    println!("  Connected: {}/{}", connections.len(), TEST_RELAYS.len());
 
-    let total_elapsed = start.elapsed();
-    let avg_recv = total_received as f64 / total_elapsed.as_secs_f64();
-    let avg_send = total_sent as f64 / total_elapsed.as_secs_f64();
+    std::thread::sleep(Duration::from_secs(2));
 
-    TestResult {
-        label: "Ring Relay",
-        duration: total_elapsed,
-        total_received,
-        total_sent,
-        total_send_errors,
-        avg_recv_rate: avg_recv,
-        avg_send_rate: avg_send,
-        snapshots,
-    }
+    // Send subscription
+    let subscription = nostro2::NostrSubscription {
+        kinds: vec![1].into(),
+        limit: Some(1000),
+        ..Default::default()
+    };
+    let client_event: nostro2::NostrClientEvent = subscription.into();
+    let json = serde_json::to_string(&client_event).unwrap();
+    bc_producer.push(json).unwrap();
+
+    // Wrap bc_producer for the generic test harness
+    let sender = bc_producer;
+
+    let result = run_test_raw(
+        "kTLS Relay",
+        || mpsc_consumer.pop(),
+        |note| {
+            let throwaway = NostrKeypair::new();
+            let mut echo = nostro2::NostrNote {
+                content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
+                kind: 21000,
+                ..Default::default()
+            };
+            if throwaway.sign_note(&mut echo).is_ok() {
+                let client_event: nostro2::NostrClientEvent = echo.into();
+                if let Ok(json) = serde_json::to_string(&client_event) {
+                    return sender.push(json).is_ok();
+                }
+            }
+            false
+        },
+    );
+
+    // Shutdown in background to avoid blocking
+    std::thread::spawn(move || drop(connections));
+    std::thread::sleep(Duration::from_millis(500));
+
+    result
 }
 
 fn test_async_relay() -> TestResult {
@@ -190,7 +181,6 @@ fn test_async_relay() -> TestResult {
         println!("Running for {}s...\n", test_duration.as_secs());
 
         while start.elapsed() < test_duration {
-            // Use a short timeout so we can check elapsed and report intervals
             let recv_result = tokio::time::timeout(
                 Duration::from_millis(10),
                 pool.recv(),
@@ -230,13 +220,8 @@ fn test_async_relay() -> TestResult {
                     total_received += 1;
                     interval_received += 1;
                 }
-                Ok(None) => {
-                    // Channel closed
-                    break;
-                }
-                Err(_) => {
-                    // Timeout — no event ready
-                }
+                Ok(None) => break,
+                Err(_) => {}
             }
 
             if last_report.elapsed() >= report_interval {
@@ -283,6 +268,124 @@ fn test_async_relay() -> TestResult {
     })
 }
 
+/// Generic test runner for ring-buffer-based relays.
+fn run_test(
+    label: &'static str,
+    sender: &nostro2_ring_relay::PoolSender,
+    mut try_recv: impl FnMut() -> Option<PoolMessage>,
+) -> TestResult {
+    run_test_raw(
+        label,
+        &mut try_recv,
+        |note| {
+            let throwaway = NostrKeypair::new();
+            let mut echo = nostro2::NostrNote {
+                content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
+                kind: 21000,
+                ..Default::default()
+            };
+            if throwaway.sign_note(&mut echo).is_ok() {
+                return sender.send(echo).is_ok();
+            }
+            false
+        },
+    )
+}
+
+fn run_test_raw(
+    label: &'static str,
+    mut try_recv: impl FnMut() -> Option<PoolMessage>,
+    mut send_echo: impl FnMut(&nostro2::NostrNote) -> bool,
+) -> TestResult {
+    let test_duration = Duration::from_secs(10);
+    let report_interval = Duration::from_secs(1);
+    let start = Instant::now();
+    let mut last_report = Instant::now();
+
+    let mut total_received: usize = 0;
+    let mut total_sent: usize = 0;
+    let mut total_send_errors: usize = 0;
+    let mut interval_received: usize = 0;
+    let mut interval_sent: usize = 0;
+    let mut interval_send_errors: usize = 0;
+    let mut snapshots: Vec<IntervalStats> = Vec::new();
+
+    println!("Running for {}s...\n", test_duration.as_secs());
+
+    while start.elapsed() < test_duration {
+        match try_recv() {
+            Some(PoolMessage::RelayEvent {
+                event: NostrRelayEvent::NewNote(_, _, ref note),
+                ..
+            }) => {
+                total_received += 1;
+                interval_received += 1;
+
+                if send_echo(note) {
+                    total_sent += 1;
+                    interval_sent += 1;
+                } else {
+                    total_send_errors += 1;
+                    interval_send_errors += 1;
+                }
+            }
+            Some(PoolMessage::RelayEvent { .. }) => {
+                total_received += 1;
+                interval_received += 1;
+            }
+            Some(PoolMessage::ConnectionClosed { relay_url, error }) => {
+                if let Some(err) = error {
+                    eprintln!("  [{label} closed] {relay_url}: {err}");
+                }
+            }
+            None => {
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
+
+        if last_report.elapsed() >= report_interval {
+            let elapsed = start.elapsed().as_secs();
+            let interval_secs = last_report.elapsed().as_secs_f64();
+            let recv_rate = interval_received as f64 / interval_secs;
+            let send_rate = interval_sent as f64 / interval_secs;
+
+            snapshots.push(IntervalStats {
+                elapsed_secs: elapsed,
+                received: interval_received,
+                sent: interval_sent,
+                send_errors: interval_send_errors,
+                recv_rate,
+                send_rate,
+            });
+
+            println!(
+                "[{:>2}s] recv: {:>5} ({:>6.1}/s) | sent: {:>5} ({:>6.1}/s) | errors: {}",
+                elapsed, interval_received, recv_rate, interval_sent, send_rate, interval_send_errors,
+            );
+
+            interval_received = 0;
+            interval_sent = 0;
+            interval_send_errors = 0;
+            last_report = Instant::now();
+        }
+    }
+
+    let total_elapsed = start.elapsed();
+    let avg_recv = total_received as f64 / total_elapsed.as_secs_f64();
+    let avg_send = total_sent as f64 / total_elapsed.as_secs_f64();
+
+    TestResult {
+        label,
+        duration: total_elapsed,
+        total_received,
+        total_sent,
+        total_send_errors,
+        avg_recv_rate: avg_recv,
+        avg_send_rate: avg_send,
+        snapshots,
+    }
+}
+
 fn print_result(result: &TestResult) {
     println!("\n--- {} Interval Breakdown ---", result.label);
     println!(
@@ -314,78 +417,116 @@ fn print_result(result: &TestResult) {
     );
 }
 
-fn print_comparison(ring: &TestResult, async_: &TestResult) {
-    println!("\n{:=^60}", "");
-    println!("          COMPARISON: Ring vs Async Relay");
-    println!("{:=^60}", "");
-    println!(
-        "{:<20} | {:>15} | {:>15}",
-        "Metric", "Ring Relay", "Async Relay"
-    );
-    println!("{:->20}-+-{:->15}-+-{:->15}", "", "", "");
+fn print_comparison(results: &[&TestResult]) {
+    println!("\n{:=^80}", "");
+    println!("                        COMPARISON");
+    println!("{:=^80}", "");
 
-    println!(
-        "{:<20} | {:>15?} | {:>15?}",
-        "Duration", ring.duration, async_.duration,
-    );
-    println!(
-        "{:<20} | {:>15} | {:>15}",
-        "Total received", ring.total_received, async_.total_received,
-    );
-    println!(
-        "{:<20} | {:>15} | {:>15}",
-        "Total sent", ring.total_sent, async_.total_sent,
-    );
-    println!(
-        "{:<20} | {:>15} | {:>15}",
-        "Send errors", ring.total_send_errors, async_.total_send_errors,
-    );
-    println!(
-        "{:<20} | {:>13.1}/s | {:>13.1}/s",
-        "Avg recv rate", ring.avg_recv_rate, async_.avg_recv_rate,
-    );
-    println!(
-        "{:<20} | {:>13.1}/s | {:>13.1}/s",
-        "Avg send rate", ring.avg_send_rate, async_.avg_send_rate,
-    );
-
-    // Speedup calculations
-    if async_.avg_recv_rate > 0.0 {
-        let recv_speedup = ring.avg_recv_rate / async_.avg_recv_rate;
-        println!(
-            "\nRecv throughput:  Ring is {:.2}x {} async",
-            if recv_speedup >= 1.0 { recv_speedup } else { 1.0 / recv_speedup },
-            if recv_speedup >= 1.0 { "faster than" } else { "slower than" },
-        );
+    // Header
+    print!("{:<20}", "Metric");
+    for r in results {
+        print!(" | {:>15}", r.label);
     }
-    if async_.avg_send_rate > 0.0 {
-        let send_speedup = ring.avg_send_rate / async_.avg_send_rate;
-        println!(
-            "Send throughput:  Ring is {:.2}x {} async",
-            if send_speedup >= 1.0 { send_speedup } else { 1.0 / send_speedup },
-            if send_speedup >= 1.0 { "faster than" } else { "slower than" },
-        );
+    println!();
+    print!("{:->20}", "");
+    for _ in results {
+        print!("-+-{:->15}", "");
+    }
+    println!();
+
+    // Duration
+    print!("{:<20}", "Duration");
+    for r in results {
+        print!(" | {:>15.1?}", r.duration);
+    }
+    println!();
+
+    // Total received
+    print!("{:<20}", "Total received");
+    for r in results {
+        print!(" | {:>15}", r.total_received);
+    }
+    println!();
+
+    // Total sent
+    print!("{:<20}", "Total sent");
+    for r in results {
+        print!(" | {:>15}", r.total_sent);
+    }
+    println!();
+
+    // Send errors
+    print!("{:<20}", "Send errors");
+    for r in results {
+        print!(" | {:>15}", r.total_send_errors);
+    }
+    println!();
+
+    // Avg recv rate
+    print!("{:<20}", "Avg recv rate");
+    for r in results {
+        print!(" | {:>13.1}/s", r.avg_recv_rate);
+    }
+    println!();
+
+    // Avg send rate
+    print!("{:<20}", "Avg send rate");
+    for r in results {
+        print!(" | {:>13.1}/s", r.avg_send_rate);
+    }
+    println!();
+
+    // Speedup vs last (async)
+    if results.len() >= 2 {
+        let baseline = results.last().unwrap();
+        println!();
+        for r in &results[..results.len() - 1] {
+            if baseline.avg_recv_rate > 0.0 {
+                let speedup = r.avg_recv_rate / baseline.avg_recv_rate;
+                println!(
+                    "Recv: {} is {:.2}x {} {}",
+                    r.label,
+                    if speedup >= 1.0 { speedup } else { 1.0 / speedup },
+                    if speedup >= 1.0 { "faster than" } else { "slower than" },
+                    baseline.label,
+                );
+            }
+        }
     }
 }
 
 fn main() {
     println!("=== Bidirectional Relay Comparison ===");
     println!("Receive kind 1 notes, echo back kind 21000 (ephemeral) for each");
-    println!("Kind 21000 = ephemeral (relays won't persist these)");
     println!("Relays: {}\n", TEST_RELAYS.len());
 
-    // Phase 1: Ring relay
+    let mut results: Vec<TestResult> = Vec::new();
+
+    // Phase 1: Ring relay (tungstenite)
     let ring_result = test_ring_relay();
     print_result(&ring_result);
+    results.push(ring_result);
 
-    // Brief pause between tests
-    println!("\n--- Pausing 5s before async test ---\n");
+    println!("\n--- Pausing 5s ---\n");
     std::thread::sleep(Duration::from_secs(5));
 
-    // Phase 2: Async relay
+    // Phase 2: kTLS relay (if feature enabled)
+    #[cfg(feature = "uring")]
+    {
+        let ktls_result = test_ktls_relay();
+        print_result(&ktls_result);
+        results.push(ktls_result);
+
+        println!("\n--- Pausing 5s ---\n");
+        std::thread::sleep(Duration::from_secs(5));
+    }
+
+    // Phase 3: Async relay (tokio)
     let async_result = test_async_relay();
     print_result(&async_result);
+    results.push(async_result);
 
-    // Phase 3: Comparison
-    print_comparison(&ring_result, &async_result);
+    // Comparison
+    let refs: Vec<&TestResult> = results.iter().collect();
+    print_comparison(&refs);
 }

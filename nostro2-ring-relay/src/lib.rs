@@ -147,9 +147,7 @@ impl RelayConnection {
         set_nonblocking(&socket, true)?;
 
         loop {
-            // Check shutdown signal (Relaxed — no need for immediate visibility)
             if shutdown.load(Ordering::Relaxed) {
-                let _ = socket.send(Message::Close(None));
                 break;
             }
 
