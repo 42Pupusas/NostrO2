@@ -10,13 +10,32 @@ readme = "../README.md"
 categories = ["network-programming", "concurrency"]
 keywords = ["nostr", "relay", "ringbuffer", "lock-free", "websocket"]
 
+[features]
+default = []
+uring = [
+    "dep:io-uring",
+    "dep:libc",
+    "dep:rustls-native-certs",
+    "dep:base64",
+    "dep:rand",
+    "dep:ring",
+]
+
 [dependencies]
 nostro2 = { workspace = true }
 nostro2-cache = { path = "../nostro2-cache", version = "0.1.0" }
-quetzalcoatl = "0.3.0"
+quetzalcoatl = "0.5.0"
 tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 serde_json = { workspace = true }
 rustls = { workspace = true }
+
+# io_uring + kTLS (Linux-only, behind "uring" feature)
+io-uring = { version = "0.7", optional = true }
+libc = { version = "0.2", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+base64 = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

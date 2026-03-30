@@ -9,6 +9,9 @@ use std::sync::Arc;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
+#[cfg(feature = "uring")]
+pub mod uring;
+
 /// Messages that flow through the ring buffer from relay threads to consumer
 #[derive(Debug, Clone)]
 pub enum PoolMessage {
@@ -127,9 +130,8 @@ impl RelayConnection {
     /// Main connection loop — non-blocking, multiplexed read/write.
     ///
     /// 1. Connects and performs WebSocket handshake (blocking)
-    /// 2. Sends the initial subscription (blocking)
-    /// 3. Switches to non-blocking mode
-    /// 4. Loops: check shutdown → try read inbound → drain outbound → sleep if idle
+    /// 2. Switches to non-blocking mode
+    /// 3. Loops: check shutdown → try read inbound → drain outbound → sleep if idle
     fn run_connection(
         url: &str,
         producer: &mut Producer<PoolMessage>,
@@ -140,18 +142,6 @@ impl RelayConnection {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let (mut socket, _response) = connect(url)?;
-
-        // Subscribe to kind 1 events (text notes) with limit 1000
-        let subscription = nostro2::NostrSubscription {
-            kinds: vec![1].into(),
-            limit: Some(1000),
-            ..Default::default()
-        };
-
-        // Convert to NostrClientEvent and send (still blocking at this point)
-        let client_event: nostro2::NostrClientEvent = subscription.into();
-        let subscription_json = serde_json::to_string(&client_event)?;
-        socket.send(Message::Text(subscription_json.into()))?;
 
         // Switch to non-blocking for the multiplexed loop
         set_nonblocking(&socket, true)?;
