@@ -26,6 +26,8 @@ nostro2-relay = { path = "../nostro2-relay", version = "0.3.0" }
 nostro2-signer = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 tungstenite = { version = "0.26" }
+nostr-sdk = "0.44"
+futures-util = { workspace = true }
 
 [[bench]]
 name = "ring_pool"

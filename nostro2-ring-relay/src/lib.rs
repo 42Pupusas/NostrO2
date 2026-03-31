@@ -225,15 +225,18 @@ impl RelayPool {
 
         let global_shutdown = Arc::new(AtomicBool::new(false));
 
-        // Spawn one reader IO thread per core, each with its own SPSC event ring
-        let relays_per_shard = (max_relays / num_cores).max(4);
-        let mut reader_shards = Vec::with_capacity(num_cores);
-        let mut shard_consumers = Vec::with_capacity(num_cores);
+        // Spawn reader IO threads — one per core, capped at max_relays
+        // (no point having more shards than connections).
+        let num_shards = num_cores.min(max_relays).max(1);
+        let relays_per_shard = (max_relays / num_shards).max(4);
+        let capacity_per_shard = ring_capacity;
+        let mut reader_shards = Vec::with_capacity(num_shards);
+        let mut shard_consumers = Vec::with_capacity(num_shards);
 
-        for i in 0..num_cores {
+        for i in 0..num_shards {
             let (cmd_tx, cmd_rx) = RingBuffer::new(Capacity::at_least(relays_per_shard)).split();
             let (event_tx, event_rx) =
-                spsc::RingBuffer::new(Capacity::at_least(ring_capacity)).split();
+                spsc::RingBuffer::new(Capacity::at_least(capacity_per_shard)).split();
             shard_consumers.push(event_rx);
 
             let shutdown = Arc::clone(&global_shutdown);
@@ -378,9 +381,9 @@ impl RelayPool {
         self.connections.iter().filter(|c| !c.is_finished()).count()
     }
 
-    /// Get the number of reader IO threads (one per CPU core).
+    /// Get the number of reader IO threads.
     pub fn reader_thread_count(&self) -> usize {
-        self.num_cores
+        self.reader_shards.len()
     }
 
     /// Get the relay URLs of all connections in the pool.

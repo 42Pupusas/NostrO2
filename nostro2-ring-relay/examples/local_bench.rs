@@ -1,7 +1,8 @@
-//! Local throughput benchmark: measures pure I/O pipeline performance.
+//! Local throughput + memory benchmark with RSS sampling.
 //!
-//! Connects to a local Nostr relay through Caddy TLS proxy, receives 100K
-//! pre-generated events, and measures wall-clock throughput for each implementation.
+//! Connects to local Nostr relays through Caddy TLS proxy, receives 100K
+//! pre-generated events per relay, measures throughput and samples RSS
+//! every 100ms to show memory behavior over time.
 //!
 //! Prerequisites:
 //!   1. cargo run -p nostro2-ring-relay --example local_server
@@ -14,9 +15,10 @@ use nostro2::NostrRelayEvent;
 use nostro2_ring_relay::{PoolMessage, RelayPool};
 use std::time::{Duration, Instant};
 
-const NUM_RELAYS: usize = 12;
+const NUM_RELAYS: usize = 24;
 const BASE_PORT: u16 = 10900;
-const EVENTS_PER_RELAY: usize = 100_000;
+const EVENTS_PER_RELAY: usize = 500_000;
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
 fn relay_urls() -> Vec<String> {
     (0..NUM_RELAYS)
@@ -29,7 +31,31 @@ struct BenchResult {
     events_received: usize,
     elapsed: Duration,
     rate: f64,
+    mem_before_kb: usize,
+    mem_samples: Vec<(Duration, usize)>, // (elapsed, rss_kb)
 }
+
+/// Read VmRSS (resident set size) from /proc/self/status in KB.
+fn rss_kb() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let trimmed = rest.trim().strip_suffix("kB").unwrap_or(rest).trim();
+            return trimmed.parse().unwrap_or(0);
+        }
+    }
+    0
+}
+
+fn fmt_mem(kb: usize) -> String {
+    if kb >= 1024 {
+        format!("{:.1} MB", kb as f64 / 1024.0)
+    } else {
+        format!("{kb} KB")
+    }
+}
+
+// ── Ring Relay (kTLS + io_uring) ─────────────────────────────────────
 
 fn bench_ring_relay() -> BenchResult {
     let urls = relay_urls();
@@ -38,8 +64,11 @@ fn bench_ring_relay() -> BenchResult {
         urls.len()
     );
 
+    let mem_before = rss_kb();
+
     let mut pool = RelayPool::new(131072, 2_000_000, 1024, urls.len());
     let sender = pool.sender();
+    println!("  Reader threads: {}", pool.reader_thread_count());
     let mut connected = 0;
     for url in &urls {
         match pool.add_relay(url.clone()) {
@@ -58,21 +87,33 @@ fn bench_ring_relay() -> BenchResult {
     sender.send(subscription).unwrap();
 
     let expected = EVENTS_PER_RELAY * connected;
-    let result = drain_events("Ring Relay", expected, || pool.try_recv());
+    let (events_received, elapsed, rate, mem_samples) =
+        drain_ring_events(expected, mem_before, || pool.try_recv());
 
     std::thread::spawn(move || drop(pool));
     std::thread::sleep(Duration::from_millis(200));
 
-    result
+    BenchResult {
+        label: "Ring Relay",
+        events_received,
+        elapsed,
+        rate,
+        mem_before_kb: mem_before,
+        mem_samples,
+    }
 }
+
+// ── Async Relay (tokio / nostro2-relay) ──────────────────────────────
 
 fn bench_async_relay() -> BenchResult {
     let urls = relay_urls();
     let url_refs: Vec<&str> = urls.iter().map(|s| s.as_str()).collect();
     println!("=== Async Relay (tokio) — {} connections ===", urls.len());
 
+    let mem_before = rss_kb();
+
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    let (events_received, elapsed, rate, mem_samples) = rt.block_on(async {
         let pool = nostro2_relay::NostrPool::new(&url_refs);
 
         let subscription = nostro2::NostrSubscription {
@@ -88,16 +129,25 @@ fn bench_async_relay() -> BenchResult {
         let mut count = 0usize;
         let mut eose_count = 0usize;
         let mut last_print = Instant::now();
+        let mut last_sample = Instant::now();
+        let mut mem_samples = Vec::new();
+
+        mem_samples.push((Duration::ZERO, rss_kb()));
 
         loop {
             match pool.recv().await {
                 Some(NostrRelayEvent::NewNote(..)) => {
                     count += 1;
+                    if last_sample.elapsed() >= SAMPLE_INTERVAL {
+                        mem_samples.push((start.elapsed(), rss_kb()));
+                        last_sample = Instant::now();
+                    }
                     if last_print.elapsed() >= Duration::from_secs(1) {
                         let rate = count as f64 / start.elapsed().as_secs_f64();
                         println!(
-                            "  [{:.1}s] {count}/{expected} events ({rate:.0}/s)",
-                            start.elapsed().as_secs_f64()
+                            "  [{:.1}s] {count}/{expected} events ({rate:.0}/s) RSS: {}",
+                            start.elapsed().as_secs_f64(),
+                            fmt_mem(rss_kb()),
                         );
                         last_print = Instant::now();
                     }
@@ -114,28 +164,38 @@ fn bench_async_relay() -> BenchResult {
         }
 
         let elapsed = start.elapsed();
+        mem_samples.push((elapsed, rss_kb()));
         let rate = count as f64 / elapsed.as_secs_f64();
         println!("  Done: {count} events in {elapsed:.2?} ({rate:.0} events/s)\n");
+        (count, elapsed, rate, mem_samples)
+    });
 
-        BenchResult {
-            label: "Async Relay",
-            events_received: count,
-            elapsed,
-            rate,
-        }
-    })
+    drop(rt);
+    std::thread::sleep(Duration::from_millis(200));
+
+    BenchResult {
+        label: "Async Relay",
+        events_received,
+        elapsed,
+        rate,
+        mem_before_kb: mem_before,
+        mem_samples,
+    }
 }
 
-/// Drain events from a try_recv function until all EOSE received or timeout.
-fn drain_events(
-    label: &'static str,
+// ── Ring relay event drain with RSS sampling ─────────────────────────
+
+fn drain_ring_events(
     expected: usize,
+    mem_before: usize,
     mut try_recv: impl FnMut() -> Option<PoolMessage>,
-) -> BenchResult {
+) -> (usize, Duration, f64, Vec<(Duration, usize)>) {
     let start = Instant::now();
     let mut count = 0usize;
     let mut eose_count = 0usize;
     let mut last_print = Instant::now();
+    let mut last_sample = Instant::now();
+    let mut mem_samples = vec![(Duration::ZERO, mem_before)];
     let timeout = Duration::from_secs(60);
 
     loop {
@@ -150,11 +210,16 @@ fn drain_events(
                 ..
             }) => {
                 count += 1;
+                if last_sample.elapsed() >= SAMPLE_INTERVAL {
+                    mem_samples.push((start.elapsed(), rss_kb()));
+                    last_sample = Instant::now();
+                }
                 if last_print.elapsed() >= Duration::from_secs(1) {
                     let rate = count as f64 / start.elapsed().as_secs_f64();
                     println!(
-                        "  [{:.1}s] {count}/{expected} events ({rate:.0}/s)",
-                        start.elapsed().as_secs_f64()
+                        "  [{:.1}s] {count}/{expected} events ({rate:.0}/s) RSS: {}",
+                        start.elapsed().as_secs_f64(),
+                        fmt_mem(rss_kb()),
                     );
                     last_print = Instant::now();
                 }
@@ -180,23 +245,22 @@ fn drain_events(
     }
 
     let elapsed = start.elapsed();
+    mem_samples.push((elapsed, rss_kb()));
     let rate = count as f64 / elapsed.as_secs_f64();
     println!("  Done: {count} events in {elapsed:.2?} ({rate:.0} events/s) [{eose_count} EOSE]\n");
 
-    BenchResult {
-        label,
-        events_received: count,
-        elapsed,
-        rate,
-    }
+    (count, elapsed, rate, mem_samples)
 }
 
+// ── Main ─────────────────────────────────────────────────────────────
+
 fn main() {
-    println!("=== Local Throughput Benchmark ===");
+    println!("=== Local Throughput + Memory Benchmark ===");
     println!(
-        "Relays: {NUM_RELAYS} x {EVENTS_PER_RELAY} events = {} total per test\n",
+        "Relays: {NUM_RELAYS} x {EVENTS_PER_RELAY} events = {} total per test",
         NUM_RELAYS * EVENTS_PER_RELAY
     );
+    println!("Baseline RSS: {}\n", fmt_mem(rss_kb()));
 
     let mut results: Vec<BenchResult> = Vec::new();
 
@@ -205,38 +269,63 @@ fn main() {
 
     results.push(bench_ring_relay());
 
-    // Summary
-    println!("{:=^60}", "");
-    println!("                    RESULTS");
-    println!("{:=^60}", "");
+    // Summary table
+    println!("{:=^76}", "");
+    println!("                          RESULTS");
+    println!("{:=^76}", "");
     println!(
-        "{:<15} | {:>10} | {:>12} | {:>12}",
-        "Implementation", "Events", "Time", "Rate"
+        "{:<15} | {:>10} | {:>10} | {:>12} | {:>10} | {:>10}",
+        "Implementation", "Events", "Time", "Rate", "RSS +/-", "Peak RSS"
     );
-    println!("{:->15}-+-{:->10}-+-{:->12}-+-{:->12}", "", "", "", "");
+    println!(
+        "{:->15}-+-{:->10}-+-{:->10}-+-{:->12}-+-{:->10}-+-{:->10}",
+        "", "", "", "", "", ""
+    );
     for r in &results {
+        let peak = r.mem_samples.iter().map(|(_, kb)| *kb).max().unwrap_or(0);
+        let delta = peak as isize - r.mem_before_kb as isize;
+        let delta_str = if delta >= 0 {
+            format!("+{}", fmt_mem(delta as usize))
+        } else {
+            format!("-{}", fmt_mem((-delta) as usize))
+        };
         println!(
-            "{:<15} | {:>10} | {:>10.2?} | {:>10.0}/s",
-            r.label, r.events_received, r.elapsed, r.rate,
+            "{:<15} | {:>10} | {:>10.2?} | {:>10.0}/s | {:>10} | {:>10}",
+            r.label,
+            r.events_received,
+            r.elapsed,
+            r.rate,
+            delta_str,
+            fmt_mem(peak),
         );
     }
 
+    // Speedup
     if results.len() >= 2 {
+        println!();
         let fastest = results
             .iter()
             .max_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap())
             .unwrap();
-        let slowest = results
-            .iter()
-            .min_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap())
-            .unwrap();
-        if slowest.rate > 0.0 {
-            println!(
-                "\n{} is {:.2}x faster than {}",
-                fastest.label,
-                fastest.rate / slowest.rate,
-                slowest.label,
-            );
+        for r in &results {
+            if std::ptr::eq(r, fastest) {
+                println!("  {}: fastest", r.label);
+            } else if r.rate > 0.0 {
+                println!("  {}: {:.2}x slower", r.label, fastest.rate / r.rate);
+            }
+        }
+    }
+
+    // Memory timeline
+    println!("\n{:=^76}", "");
+    println!("                     MEMORY TIMELINE");
+    println!("{:=^76}", "");
+    for r in &results {
+        println!("\n  {}:", r.label);
+        println!("  {:>8} | {:>10}", "Time", "RSS");
+        println!("  {:->8}-+-{:->10}", "", "");
+        for (elapsed, kb) in &r.mem_samples {
+            println!("  {:>7.1}s | {:>10}", elapsed.as_secs_f64(), fmt_mem(*kb));
         }
     }
 }

@@ -61,3 +61,63 @@
 	tls /tmp/localhost.crt /tmp/localhost.key
 	reverse_proxy 127.0.0.1:9911
 }
+
+:10912 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9912
+}
+
+:10913 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9913
+}
+
+:10914 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9914
+}
+
+:10915 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9915
+}
+
+:10916 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9916
+}
+
+:10917 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9917
+}
+
+:10918 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9918
+}
+
+:10919 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9919
+}
+
+:10920 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9920
+}
+
+:10921 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9921
+}
+
+:10922 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9922
+}
+
+:10923 {
+	tls /tmp/localhost.crt /tmp/localhost.key
+	reverse_proxy 127.0.0.1:9923
+}
