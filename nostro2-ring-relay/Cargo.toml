@@ -12,7 +12,6 @@ keywords = ["nostr", "relay", "ringbuffer", "lock-free", "io-uring"]
 
 [dependencies]
 nostro2 = { workspace = true }
-nostro2-cache = { path = "../nostro2-cache", version = "0.1.0" }
 quetzalcoatl = "0.5.0"
 serde_json = { workspace = true }
 rustls = { workspace = true }
@@ -22,6 +21,7 @@ rustls-native-certs = "0.8"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+nostro2-cache = { path = "../nostro2-cache", version = "0.1.0" }
 nostro2-relay = { path = "../nostro2-relay", version = "0.3.0" }
 nostro2-signer = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

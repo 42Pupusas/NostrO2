@@ -1,5 +1,4 @@
 use nostro2::NostrRelayEvent;
-use nostro2_cache::Cache;
 use quetzalcoatl::broadcast;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{Producer, RingBuffer};
@@ -98,7 +97,8 @@ impl Drop for RelayConnection {
 pub struct PoolConsumer {
     shard_consumers: Vec<spsc::Consumer<PoolMessage>>,
     next_shard: usize,
-    dedup_cache: Cache,
+    dedup_set: std::collections::HashSet<u64>,
+    dedup_capacity: usize,
 }
 
 impl PoolConsumer {
@@ -107,7 +107,8 @@ impl PoolConsumer {
         Self {
             shard_consumers,
             next_shard: 0,
-            dedup_cache: Cache::new(cache_size),
+            dedup_set: std::collections::HashSet::with_capacity(cache_size),
+            dedup_capacity: cache_size,
         }
     }
 
@@ -149,10 +150,16 @@ impl PoolConsumer {
                 relay_url,
                 event: NostrRelayEvent::NewNote(tag, sub_id, note),
             } => {
-                if let Some(ref event_id) = note.id
-                    && !self.dedup_cache.insert(event_id.clone())
-                {
-                    return None; // duplicate
+                if let Some(ref event_id) = note.id {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::hash::DefaultHasher::new();
+                    event_id.hash(&mut h);
+                    if !self.dedup_set.insert(h.finish()) {
+                        return None; // duplicate
+                    }
+                    if self.dedup_set.len() >= self.dedup_capacity {
+                        self.dedup_set.clear();
+                    }
                 }
                 Some(PoolMessage::RelayEvent {
                     relay_url,
@@ -193,7 +200,6 @@ pub struct RelayPool {
     writer_thread: Option<std::thread::JoinHandle<()>>,
 
     global_shutdown: Arc<AtomicBool>,
-    num_cores: usize,
 }
 
 impl RelayPool {
@@ -275,7 +281,6 @@ impl RelayPool {
             writer_cmd_tx,
             writer_thread: Some(writer_thread),
             global_shutdown,
-            num_cores,
         }
     }
 
