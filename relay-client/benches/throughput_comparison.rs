@@ -19,7 +19,7 @@ fn bench_ring_relay_fixed_time(c: &mut Criterion) {
 
             for _ in 0..iters {
                 let mut pool =
-                    nostro2_ring_relay::RelayPool::new(4096, 10_000, 64, TEST_RELAYS.len());
+                    relay_client::RelayPool::new(4096, 10_000, 64, TEST_RELAYS.len());
 
                 for url in TEST_RELAYS {
                     pool.add_relay(url.to_string()).unwrap();
@@ -32,7 +32,7 @@ fn bench_ring_relay_fixed_time(c: &mut Criterion) {
                 // Receive events for 5 seconds
                 while start.elapsed() < test_duration {
                     match pool.try_recv() {
-                        Some(nostro2_ring_relay::PoolMessage::RelayEvent { .. }) => {
+                        Some(relay_client::PoolMessage::RelayEvent { .. }) => {
                             event_count += 1;
                         }
                         Some(_) => {} // Ignore connection closed

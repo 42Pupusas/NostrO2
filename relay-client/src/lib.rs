@@ -6,6 +6,33 @@ use quetzalcoatl::spsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Lock-free wake primitive: reader threads unpark the consumer via its
+/// thread handle after pushing events.  Uses `thread::park` / `unpark`
+/// which is backed by a futex on Linux — no mutex in the hot path.
+pub(crate) struct Parker {
+    thread: std::thread::Thread,
+}
+
+impl Parker {
+    /// Capture the current thread as the one that will be parked.
+    pub fn new() -> Self {
+        Self {
+            thread: std::thread::current(),
+        }
+    }
+
+    /// Park the consumer thread until an `unpark()` is called.
+    /// Spurious wakeups are fine — the caller re-checks the ring.
+    pub fn park(&self) {
+        std::thread::park();
+    }
+
+    /// Wake the consumer thread.  Cheap no-op if it isn't parked.
+    pub fn unpark(&self) {
+        self.thread.unpark();
+    }
+}
+
 mod ktls;
 mod reader;
 mod syscall;
@@ -99,17 +126,27 @@ pub struct PoolConsumer {
     next_shard: usize,
     dedup_set: std::collections::HashSet<u64>,
     dedup_capacity: usize,
+    parker: Arc<Parker>,
 }
 
 impl PoolConsumer {
-    /// Create a new pool consumer with deduplication cache
+    /// Create a new pool consumer with deduplication cache.
+    ///
+    /// Must be called on the thread that will call `recv()`, since
+    /// `Parker` captures the current thread handle for `thread::park`.
     pub fn new(shard_consumers: Vec<spsc::Consumer<PoolMessage>>, cache_size: usize) -> Self {
         Self {
             shard_consumers,
             next_shard: 0,
             dedup_set: std::collections::HashSet::with_capacity(cache_size),
             dedup_capacity: cache_size,
+            parker: Arc::new(Parker::new()),
         }
+    }
+
+    /// Get a cloneable handle that reader threads use to wake this consumer.
+    pub(crate) fn waker(&self) -> Arc<Parker> {
+        Arc::clone(&self.parker)
     }
 
     /// Receive the next message from any relay (non-blocking)
@@ -139,13 +176,13 @@ impl PoolConsumer {
         None
     }
 
-    /// Blocking receive - spins until a message is available
+    /// Blocking receive — parks the thread until a reader pushes an event.
     pub fn recv(&mut self) -> PoolMessage {
         loop {
             if let Some(msg) = self.try_recv() {
                 return msg;
             }
-            std::hint::spin_loop();
+            self.parker.park();
         }
     }
 
@@ -321,6 +358,7 @@ impl RelayPool {
             relay_url: Arc::clone(&url),
             pong_tx,
             shutdown: Arc::clone(&shutdown),
+            waker: self.consumer.waker(),
         };
         self.reader_shards[shard_idx]
             .cmd_tx

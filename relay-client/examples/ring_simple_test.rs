@@ -1,4 +1,4 @@
-use nostro2_ring_relay::{PoolMessage, RelayPool};
+use relay_client::{PoolMessage, RelayPool};
 use std::time::Instant;
 
 fn main() {

@@ -5,14 +5,14 @@
 //! every 100ms to show memory behavior over time.
 //!
 //! Prerequisites:
-//!   1. cargo run -p nostro2-ring-relay --example local_server
-//!   2. caddy run --config nostro2-ring-relay/examples/Caddyfile
+//!   1. cargo run -p relay-client --example local_server
+//!   2. caddy run --config relay-client/examples/Caddyfile
 //!   3. sudo modprobe tls  (for kTLS)
 //!
-//! Run: cargo run -p nostro2-ring-relay --example local_bench --release
+//! Run: cargo run -p relay-client --example local_bench --release
 
 use nostro2::NostrRelayEvent;
-use nostro2_ring_relay::{PoolMessage, RelayPool};
+use relay_client::{PoolMessage, RelayPool};
 use std::time::{Duration, Instant};
 
 const NUM_RELAYS: usize = 24;

@@ -1,0 +1,76 @@
+---
+- name: Run bidirectional relay comparison on remote server
+  hosts: gitlab-illuminodes
+  gather_facts: false
+
+  vars:
+    remote_dir: /tmp/nostro2-bench
+    example_name: bidirectional_test
+
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+
+  tasks:
+    - name: Gather minimal facts for PATH
+      setup:
+        filter: ansible_env
+
+    - name: Check if rustup is installed
+      command: rustup show active-toolchain
+      register: rustup_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: Install Rust via rustup
+      shell: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      when: rustup_check.rc != 0
+
+    - name: Print Rust version
+      command: rustup show active-toolchain
+      register: rust_version
+      changed_when: false
+
+    - name: Show Rust version
+      debug:
+        msg: "{{ rust_version.stdout }}"
+
+    - name: Create remote workspace directory
+      file:
+        path: "{{ remote_dir }}"
+        state: directory
+
+    - name: Sync project to remote (excluding target/)
+      synchronize:
+        src: "{{ playbook_dir }}/"
+        dest: "{{ remote_dir }}/"
+        rsync_opts:
+          - "--exclude=target"
+          - "--exclude=.git"
+          - "--delete"
+
+    - name: Build the example (release mode)
+      command: cargo build --release --example {{ example_name }} -p relay-client
+      args:
+        chdir: "{{ remote_dir }}"
+      register: build_result
+
+    - name: Print build output
+      debug:
+        msg: "{{ build_result.stderr }}"
+      when: build_result.stderr | length > 0
+
+    - name: Run bidirectional comparison
+      command: "{{ remote_dir }}/target/release/examples/{{ example_name }}"
+      args:
+        chdir: "{{ remote_dir }}"
+      register: bench_result
+      timeout: 120
+
+    - name: Print results
+      debug:
+        msg: "{{ bench_result.stdout_lines }}"
+
+    - name: Print errors (if any)
+      debug:
+        msg: "{{ bench_result.stderr_lines }}"
+      when: bench_result.stderr | length > 0

@@ -1,9 +1,9 @@
 [package]
-name = "nostro2-ring-relay"
+name = "relay-client"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "Lock-free ring buffer relay pool for the Nostr protocol with kTLS + io_uring."
+description = "Lock-free ring buffer relay client for the Nostr protocol with kTLS + io_uring."
 repository = "https://github.com/42Pupusas/NostrO2.git"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 readme = "../README.md"

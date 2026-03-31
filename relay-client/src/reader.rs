@@ -5,6 +5,7 @@
 //! Falls back to libc recvmsg for kTLS EIO (non-data TLS records).
 
 use crate::PoolMessage;
+use crate::Parker;
 use coyoquil::{DEFAULT_MAX_MESSAGE_SIZE, Frame, FrameDecoder, Role};
 use nostro2::NostrRelayEvent;
 use quetzalcoatl::mpsc::Consumer;
@@ -24,6 +25,7 @@ pub struct ReaderAdd {
     pub relay_url: Arc<str>,
     pub pong_tx: spsc::Producer<Vec<u8>>,
     pub shutdown: Arc<AtomicBool>,
+    pub waker: Arc<Parker>,
 }
 
 /// Per-connection state held by the reader thread.
@@ -34,6 +36,7 @@ struct ReaderSlot {
     recv_buf: Vec<u8>,
     pong_tx: spsc::Producer<Vec<u8>>,
     shutdown: Arc<AtomicBool>,
+    waker: Arc<Parker>,
     /// Whether this slot has a recv SQE in-flight.
     recv_pending: bool,
     /// Marked dead after close/error — will be cleaned up.
@@ -75,6 +78,7 @@ fn reader_loop(
                 recv_buf: vec![0u8; 65536],
                 pong_tx: cmd.pong_tx,
                 shutdown: cmd.shutdown,
+                waker: cmd.waker,
                 recv_pending: false,
                 dead: false,
             });
@@ -156,14 +160,17 @@ fn reader_loop(
                                 relay_url: Arc::clone(&slot.relay_url),
                                 event,
                             };
-                            // Spin-push into the MPSC ring
+                            // Push into the SPSC ring, yielding on backpressure
                             let mut msg = msg;
                             loop {
                                 match event_tx.push(msg) {
-                                    Ok(()) => break,
+                                    Ok(()) => {
+                                        slot.waker.unpark();
+                                        break;
+                                    }
                                     Err(returned) => {
                                         msg = returned;
-                                        std::hint::spin_loop();
+                                        std::thread::yield_now();
                                     }
                                 }
                             }
@@ -218,4 +225,5 @@ fn mark_dead(slot: &mut ReaderSlot, event_tx: &spsc::Producer<PoolMessage>) {
         relay_url: Arc::clone(&slot.relay_url),
         error: None,
     });
+    slot.waker.unpark();
 }

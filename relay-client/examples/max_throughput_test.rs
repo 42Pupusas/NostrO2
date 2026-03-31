@@ -1,5 +1,5 @@
 use nostro2::NostrRelayEvent;
-use nostro2_ring_relay::{PoolMessage, create_pool};
+use relay_client::{PoolMessage, create_pool};
 use quetzalcoatl::capacity::Capacity;
 use std::time::Instant;
 

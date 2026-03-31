@@ -15,7 +15,7 @@ futures-util.workspace = true
 nostr = "0.44"
 nostr-sdk = "0.44"
 nostro2-relay = { path = "../nostro2-relay" }
-nostro2-ring-relay = { path = "../nostro2-ring-relay" }
+relay-client = { path = "../relay-client" }
 
 [[bench]]
 name = "verification"
