@@ -49,7 +49,7 @@
           - "--delete"
 
     - name: Build the example (release mode)
-      command: cargo build --release --example {{ example_name }} -p relay-client
+      command: cargo build --release --example {{ example_name }} -p ring-relay-client
       args:
         chdir: "{{ remote_dir }}"
       register: build_result

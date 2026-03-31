@@ -1,11 +1,11 @@
 //! Criterion benchmark: ring relay vs async relay on local servers.
 //!
 //! Prerequisites (run in separate terminals):
-//!   1. cargo run -p relay-client --example local_server --release
-//!   2. caddy run --config relay-client/examples/Caddyfile
+//!   1. cargo run -p ring-relay-client --example local_server --release
+//!   2. caddy run --config ring-relay-client/examples/Caddyfile
 //!   3. sudo modprobe tls
 //!
-//! Run: cargo bench -p relay-client --bench local_throughput
+//! Run: cargo bench -p ring-relay-client --bench local_throughput
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
@@ -33,7 +33,7 @@ fn bench_ring_relay(c: &mut Criterion) {
             for _ in 0..iters {
                 let urls = relay_urls();
                 let mut pool =
-                    relay_client::RelayPool::new(524288, 2_000_000, 1024, urls.len());
+                    ring_relay_client::RelayPool::new(524288, 2_000_000, 1024, urls.len());
                 let sender = pool.sender();
 
                 for url in &urls {
@@ -53,7 +53,7 @@ fn bench_ring_relay(c: &mut Criterion) {
 
                 loop {
                     match pool.try_recv() {
-                        Some(relay_client::PoolMessage::RelayEvent { event, .. }) => {
+                        Some(ring_relay_client::PoolMessage::RelayEvent { event, .. }) => {
                             if matches!(event, NostrRelayEvent::EndOfSubscription(..)) {
                                 eose += 1;
                                 if eose >= NUM_RELAYS {

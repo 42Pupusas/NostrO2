@@ -1,5 +1,5 @@
 use nostro2::NostrRelayEvent;
-use relay_client::{PoolMessage, RelayPool};
+use ring_relay_client::{PoolMessage, RelayPool};
 use nostro2_signer::NostrKeypair;
 use std::time::{Duration, Instant};
 
@@ -198,7 +198,7 @@ fn test_async_relay() -> TestResult {
 /// Generic test runner for ring-buffer-based relays.
 fn run_test(
     label: &'static str,
-    sender: &relay_client::PoolSender,
+    sender: &ring_relay_client::PoolSender,
     mut try_recv: impl FnMut() -> Option<PoolMessage>,
 ) -> TestResult {
     run_test_raw(label, &mut try_recv, |note| {

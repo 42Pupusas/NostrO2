@@ -19,7 +19,7 @@ fn bench_ring_relay_fixed_time(c: &mut Criterion) {
 
             for _ in 0..iters {
                 let mut pool =
-                    relay_client::RelayPool::new(4096, 10_000, 64, TEST_RELAYS.len());
+                    ring_relay_client::RelayPool::new(4096, 10_000, 64, TEST_RELAYS.len());
 
                 for url in TEST_RELAYS {
                     pool.add_relay(url.to_string()).unwrap();
@@ -32,7 +32,7 @@ fn bench_ring_relay_fixed_time(c: &mut Criterion) {
                 // Receive events for 5 seconds
                 while start.elapsed() < test_duration {
                     match pool.try_recv() {
-                        Some(relay_client::PoolMessage::RelayEvent { .. }) => {
+                        Some(ring_relay_client::PoolMessage::RelayEvent { .. }) => {
                             event_count += 1;
                         }
                         Some(_) => {} // Ignore connection closed

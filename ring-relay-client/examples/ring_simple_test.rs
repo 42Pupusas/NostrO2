@@ -1,4 +1,4 @@
-use relay_client::{PoolMessage, RelayPool};
+use ring_relay_client::{PoolMessage, RelayPool};
 use std::time::Instant;
 
 fn main() {

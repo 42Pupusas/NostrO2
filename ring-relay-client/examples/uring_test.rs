@@ -1,7 +1,7 @@
 //! Quick smoke test for kTLS + io_uring relay connection.
 //!
 //! Prerequisites: `sudo modprobe tls`
-//! Run: `cargo run -p relay-client --example uring_test`
+//! Run: `cargo run -p ring-relay-client --example uring_test`
 
 const TEST_RELAYS: &[&str] = &[
     "wss://relay.illuminodes.com",
@@ -20,10 +20,10 @@ const TEST_RELAYS: &[&str] = &[
 
 fn main() {
     use nostro2::NostrRelayEvent;
-    use relay_client::PoolMessage;
+    use ring_relay_client::PoolMessage;
     use std::time::{Duration, Instant};
 
-    let mut pool = relay_client::RelayPool::new(4096, 10_000, 64, 12);
+    let mut pool = ring_relay_client::RelayPool::new(4096, 10_000, 64, 12);
 
     for relay_url in TEST_RELAYS {
         println!("Connecting to {relay_url} via kTLS + io_uring...");

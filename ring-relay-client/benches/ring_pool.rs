@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
-use relay_client::{PoolMessage, create_pool};
+use ring_relay_client::{PoolMessage, create_pool};
 use quetzalcoatl::capacity::Capacity;
 
 fn make_msg() -> PoolMessage {

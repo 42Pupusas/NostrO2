@@ -63,6 +63,6 @@ if cache.insert(event_id) {
 
 ## Recommendations
 
-- **relay-client**: Use `DashMapCache` for lock-free consistency
+- **ring-relay-client**: Use `DashMapCache` for lock-free consistency
 - **nostro2-relay (async)**: Use `ParkingLotLruCache` for bounded memory
 - **Low concurrency**: Use `StdMutexLruCache` to minimize dependencies

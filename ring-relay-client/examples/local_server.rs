@@ -3,7 +3,7 @@
 //! Listens on 12 ports (9900-9911). On any REQ, blasts N pre-serialized
 //! events as fast as possible using buffered writes, then sends EOSE.
 //!
-//! Usage: cargo run -p relay-client --example local_server --release
+//! Usage: cargo run -p ring-relay-client --example local_server --release
 
 use nostro2_signer::NostrKeypair;
 use std::io::Write;

@@ -42,7 +42,7 @@ monitor_process() {
 
 # Build both examples
 echo "Building examples..."
-cargo build --release --example memory_test --package relay-client
+cargo build --release --example memory_test --package ring-relay-client
 cargo build --release --example memory_test --package nostro2-relay
 echo ""
 
@@ -50,7 +50,7 @@ echo ""
 echo "================================"
 echo "Testing Ring Relay (OS Threads)"
 echo "================================"
-monitor_process "Ring Relay" "cargo run --release --example memory_test --package relay-client"
+monitor_process "Ring Relay" "cargo run --release --example memory_test --package ring-relay-client"
 
 # Test Async Relay
 echo "==============================="
@@ -69,6 +69,6 @@ echo ""
 echo "Running large_payload benchmark (ring buffer vs async channels)..."
 echo "This sends 10K events with ~20KB payloads through each implementation."
 echo ""
-cargo bench --bench large_payload --package relay-client 2>&1 | grep -E "(large_payload|time:|thrpt:)"
+cargo bench --bench large_payload --package ring-relay-client 2>&1 | grep -E "(large_payload|time:|thrpt:)"
 echo ""
 echo "=== Large Payload Benchmark Complete ==="

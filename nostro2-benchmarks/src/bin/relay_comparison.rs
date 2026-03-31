@@ -84,14 +84,14 @@ async fn run_nostro2() -> RunResult {
     }
 }
 
-// ── relay-client (kTLS + io_uring) ───────────────────────────
+// ── ring-relay-client (kTLS + io_uring) ───────────────────────────
 
 async fn run_ring_relay() -> RunResult {
     // Ring relay uses blocking I/O, run in a blocking thread
     tokio::task::spawn_blocking(|| {
         let start = Instant::now();
 
-        let mut pool = relay_client::RelayPool::new(
+        let mut pool = ring_relay_client::RelayPool::new(
             4096,         // ring capacity
             10_000,       // dedup cache size
             64,           // broadcast capacity
@@ -124,7 +124,7 @@ async fn run_ring_relay() -> RunResult {
             }
 
             match pool.try_recv() {
-                Some(relay_client::PoolMessage::RelayEvent { event, .. }) => match event {
+                Some(ring_relay_client::PoolMessage::RelayEvent { event, .. }) => match event {
                     nostro2::NostrRelayEvent::NewNote(..) => {
                         note_count += 1;
                         if first_note_time.is_none() {
@@ -139,7 +139,7 @@ async fn run_ring_relay() -> RunResult {
                     }
                     _ => {}
                 },
-                Some(relay_client::PoolMessage::ConnectionClosed { .. }) => {}
+                Some(ring_relay_client::PoolMessage::ConnectionClosed { .. }) => {}
                 None => {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -278,8 +278,8 @@ async fn main() {
     println!("  Limit:      {} notes per relay", NOTE_LIMIT);
     println!("  Timeout:    {}s", TIMEOUT.as_secs());
     println!("  Runs:       {}", N_RUNS);
-    // ── relay-client ──
-    println!("\n  Running relay-client (kTLS + io_uring)...");
+    // ── ring-relay-client ──
+    println!("\n  Running ring-relay-client (kTLS + io_uring)...");
     let mut ring_results = Vec::with_capacity(N_RUNS);
     for i in 0..N_RUNS {
         eprint!("    run {}... ", i + 1);
@@ -329,7 +329,7 @@ async fn main() {
     println!("==========================================================");
 
     print_results("nostro2-relay (async)", &nostro2_results);
-    print_results("relay-client (threads)", &ring_results);
+    print_results("ring-relay-client (threads)", &ring_results);
     print_results("nostr-sdk", &nostr_sdk_results);
 
     // ── Summary ──
