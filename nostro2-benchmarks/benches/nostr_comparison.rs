@@ -6,7 +6,8 @@ use nostr::JsonUtil;
 /// Create a signed nostro2 note for benchmarking
 fn nostro2_signed_note() -> (nostro2_signer::K256Keypair, nostro2::NostrNote) {
     let kp = nostro2_signer::K256Keypair::new();
-    let mut note = nostro2::NostrNote::text_note("Hello Nostr! Benchmarking against the nostr crate.");
+    let mut note =
+        nostro2::NostrNote::text_note("Hello Nostr! Benchmarking against the nostr crate.");
     kp.sign_note(&mut note).expect("nostro2 signing failed");
     (kp, note)
 }
@@ -14,9 +15,10 @@ fn nostro2_signed_note() -> (nostro2_signer::K256Keypair, nostro2::NostrNote) {
 /// Create a signed nostr-crate event for benchmarking
 fn nostr_signed_event() -> (nostr::Keys, nostr::Event) {
     let keys = nostr::Keys::generate();
-    let event = nostr::EventBuilder::text_note("Hello Nostr! Benchmarking against the nostr crate.")
-        .sign_with_keys(&keys)
-        .expect("nostr signing failed");
+    let event =
+        nostr::EventBuilder::text_note("Hello Nostr! Benchmarking against the nostr crate.")
+            .sign_with_keys(&keys)
+            .expect("nostr signing failed");
     (keys, event)
 }
 
@@ -117,9 +119,7 @@ fn bench_deserialization(c: &mut Criterion) {
     let mut group = c.benchmark_group("event_deserialize");
 
     group.bench_function("nostro2", |b| {
-        b.iter(|| {
-            serde_json::from_str::<nostro2::NostrNote>(black_box(&nostro2_json)).unwrap()
-        });
+        b.iter(|| serde_json::from_str::<nostro2::NostrNote>(black_box(&nostro2_json)).unwrap());
     });
 
     group.bench_function("nostr", |b| {
@@ -193,14 +193,24 @@ fn bench_filter_construction(c: &mut Criterion) {
         });
     });
 
-    let pk1 = nostr::PublicKey::from_hex("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap();
-    let pk2 = nostr::PublicKey::from_hex("cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe").unwrap();
+    let pk1 = nostr::PublicKey::from_hex(
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    )
+    .unwrap();
+    let pk2 = nostr::PublicKey::from_hex(
+        "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+    )
+    .unwrap();
 
     group.bench_function("nostr", |b| {
         b.iter(|| {
             black_box(
                 nostr::Filter::new()
-                    .kinds([nostr::Kind::TextNote, nostr::Kind::EncryptedDirectMessage, nostr::Kind::Custom(30023)])
+                    .kinds([
+                        nostr::Kind::TextNote,
+                        nostr::Kind::EncryptedDirectMessage,
+                        nostr::Kind::Custom(30023),
+                    ])
                     .authors([pk1, pk2])
                     .limit(100)
                     .since(nostr::Timestamp::from(1_700_000_000))
