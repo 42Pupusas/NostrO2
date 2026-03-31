@@ -122,15 +122,20 @@ impl PoolConsumer {
             return None;
         }
 
-        // Try each shard starting from where we left off
-        for _ in 0..n {
-            let idx = self.next_shard;
+        // Sticky drain: stay on the current shard until empty, then rotate.
+        // Avoids touching N-1 cold cache lines per event.
+        if let Some(msg) = self.shard_consumers[self.next_shard].pop() {
+            return self.dedup(msg);
+        }
+        // Current shard empty — scan others
+        for _ in 1..n {
             self.next_shard = (self.next_shard + 1) % n;
-
-            if let Some(msg) = self.shard_consumers[idx].pop() {
+            if let Some(msg) = self.shard_consumers[self.next_shard].pop() {
                 return self.dedup(msg);
             }
         }
+        // All empty — advance so next call starts at a different shard
+        self.next_shard = (self.next_shard + 1) % n;
         None
     }
 

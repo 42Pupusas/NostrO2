@@ -11,12 +11,17 @@ categories = ["network-programming", "concurrency"]
 keywords = ["nostr", "relay", "ringbuffer", "lock-free", "io-uring"]
 
 [dependencies]
+# Nostr protocol
 nostro2 = { workspace = true }
+# Ring buffers
 quetzalcoatl = "0.5.0"
 serde_json = { workspace = true }
-rustls = { workspace = true }
+# WebSockets RFC6455 codec
 coyoquil = "0.1.0"
+# IO-uring
 ququmatz = "0.1.0"
+# TLS
+rustls = { workspace = true }
 rustls-native-certs = "0.8"
 
 [dev-dependencies]
@@ -28,6 +33,10 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 tungstenite = { version = "0.26" }
 nostr-sdk = "0.44"
 futures-util = { workspace = true }
+
+[[bench]]
+name = "local_throughput"
+harness = false
 
 [[bench]]
 name = "ring_pool"
