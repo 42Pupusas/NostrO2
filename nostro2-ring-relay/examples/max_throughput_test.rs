@@ -1,5 +1,5 @@
 use nostro2::NostrRelayEvent;
-use nostro2_ring_relay::{create_pool, PoolMessage};
+use nostro2_ring_relay::{PoolMessage, create_pool};
 use quetzalcoatl::capacity::Capacity;
 use std::time::Instant;
 
@@ -18,7 +18,7 @@ fn generate_event(id: usize) -> NostrRelayEvent {
 
 fn make_msg(thread_id: usize, i: usize, events_per_producer: usize) -> PoolMessage {
     PoolMessage::RelayEvent {
-        relay_url: format!("test_{}", thread_id),
+        relay_url: format!("test_{}", thread_id).into(),
         event: generate_event(thread_id * events_per_producer + i),
     }
 }
@@ -334,19 +334,17 @@ fn main() {
     let spsc_pop_ref = test_spsc_ring_relay_zero_copy(100_000);
     println!("SPSC pop_ref     | {:>16.0}", spsc_pop_ref);
 
-    println!(
-        "\nSPSC vs MPSC(1): {:.1}x",
-        spsc_pop / mpsc_1
-    );
-    println!(
-        "SPSC pop_ref vs pop: {:.1}x\n",
-        spsc_pop_ref / spsc_pop
-    );
+    println!("\nSPSC vs MPSC(1): {:.1}x", spsc_pop / mpsc_1);
+    println!("SPSC pop_ref vs pop: {:.1}x\n", spsc_pop_ref / spsc_pop);
 
     // Full comparison table
     println!("--- Multi-Producer Comparison ---");
-    println!("Concurrency | MPSC pop (ev/s) | MPSC pop_ref (ev/s) | Async Relay (ev/s) | pop_ref gain");
-    println!("------------|-----------------|---------------------|--------------------|--------------");
+    println!(
+        "Concurrency | MPSC pop (ev/s) | MPSC pop_ref (ev/s) | Async Relay (ev/s) | pop_ref gain"
+    );
+    println!(
+        "------------|-----------------|---------------------|--------------------|--------------"
+    );
 
     for concurrency in [1, 5, 10, 20] {
         let ring_rate = test_ring_relay(concurrency, 100_000);

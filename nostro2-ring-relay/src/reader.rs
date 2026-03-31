@@ -7,7 +7,8 @@
 use crate::PoolMessage;
 use coyoquil::{DEFAULT_MAX_MESSAGE_SIZE, Frame, FrameDecoder, Role};
 use nostro2::NostrRelayEvent;
-use quetzalcoatl::mpsc::{Consumer, Producer};
+use quetzalcoatl::mpsc::Consumer;
+use quetzalcoatl::spsc;
 use ququmatz::types::MsgFlags;
 use ququmatz::{IoUring, Sqe};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ const EIO: i32 = 5;
 pub struct ReaderAdd {
     pub fd: i32,
     pub relay_url: Arc<str>,
-    pub pong_tx: Producer<Vec<u8>>,
+    pub pong_tx: spsc::Producer<Vec<u8>>,
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -31,7 +32,7 @@ struct ReaderSlot {
     relay_url: Arc<str>,
     decoder: FrameDecoder<DEFAULT_MAX_MESSAGE_SIZE>,
     recv_buf: Vec<u8>,
-    pong_tx: Producer<Vec<u8>>,
+    pong_tx: spsc::Producer<Vec<u8>>,
     shutdown: Arc<AtomicBool>,
     /// Whether this slot has a recv SQE in-flight.
     recv_pending: bool,
@@ -42,17 +43,17 @@ struct ReaderSlot {
 /// Run the global reader IO loop. Blocks until the global shutdown flag is set.
 pub fn reader_thread(
     mut cmd_rx: Consumer<ReaderAdd>,
-    event_tx: Producer<PoolMessage>,
+    event_tx: spsc::Producer<PoolMessage>,
     global_shutdown: Arc<AtomicBool>,
 ) {
-    if let Err(e) = reader_loop(&mut cmd_rx, &event_tx, &global_shutdown) {
+    if let Err(e) = reader_loop(&mut cmd_rx, event_tx, &global_shutdown) {
         eprintln!("reader IO thread fatal: {e}");
     }
 }
 
 fn reader_loop(
     cmd_rx: &mut Consumer<ReaderAdd>,
-    event_tx: &Producer<PoolMessage>,
+    event_tx: spsc::Producer<PoolMessage>,
     global_shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut ring = IoUring::new(256)?;
@@ -119,23 +120,23 @@ fn reader_loop(
                 if errno == EIO {
                     match ktls::ktls_read(slot.fd, &mut slot.recv_buf) {
                         Ok(0) => {
-                            mark_dead(slot, event_tx);
+                            mark_dead(slot, &event_tx);
                             continue;
                         }
                         Ok(n) => n,
                         Err(_) => {
-                            mark_dead(slot, event_tx);
+                            mark_dead(slot, &event_tx);
                             continue;
                         }
                     }
                 } else {
-                    mark_dead(slot, event_tx);
+                    mark_dead(slot, &event_tx);
                     continue;
                 }
             } else {
                 let n = cqe.result as usize;
                 if n == 0 {
-                    mark_dead(slot, event_tx);
+                    mark_dead(slot, &event_tx);
                     continue;
                 }
                 n
@@ -143,7 +144,7 @@ fn reader_loop(
 
             // Decode frames
             if slot.decoder.push(&slot.recv_buf[..n]).is_err() {
-                mark_dead(slot, event_tx);
+                mark_dead(slot, &event_tx);
                 continue;
             }
 
@@ -152,7 +153,7 @@ fn reader_loop(
                     Frame::Text(text) => {
                         if let Ok(event) = text.parse::<NostrRelayEvent>() {
                             let msg = PoolMessage::RelayEvent {
-                                relay_url: slot.relay_url.to_string(),
+                                relay_url: Arc::clone(&slot.relay_url),
                                 event,
                             };
                             // Spin-push into the MPSC ring
@@ -172,7 +173,7 @@ fn reader_loop(
                         let _ = slot.pong_tx.push(data.to_vec());
                     }
                     Frame::Close(_) => {
-                        mark_dead(slot, event_tx);
+                        mark_dead(slot, &event_tx);
                         break;
                     }
                     _ => {}
@@ -210,11 +211,11 @@ fn submit_recv(
     Ok(())
 }
 
-fn mark_dead(slot: &mut ReaderSlot, event_tx: &Producer<PoolMessage>) {
+fn mark_dead(slot: &mut ReaderSlot, event_tx: &spsc::Producer<PoolMessage>) {
     slot.dead = true;
     slot.shutdown.store(true, Ordering::Relaxed);
     let _ = event_tx.push(PoolMessage::ConnectionClosed {
-        relay_url: slot.relay_url.to_string(),
+        relay_url: Arc::clone(&slot.relay_url),
         error: None,
     });
 }

@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
-use nostro2_ring_relay::{create_pool, PoolMessage};
+use nostro2_ring_relay::{PoolMessage, create_pool};
 use quetzalcoatl::capacity::Capacity;
 use std::time::{Duration, Instant};
 
@@ -14,16 +14,12 @@ fn generate_event(id: usize) -> NostrRelayEvent {
         content: format!("Test event {}", id),
         sig: Some("test_sig".to_string()),
     };
-    NostrRelayEvent::NewNote(
-        nostro2::RelayEventTag::Event,
-        "test_sub".to_string(),
-        note,
-    )
+    NostrRelayEvent::NewNote(nostro2::RelayEventTag::Event, "test_sub".to_string(), note)
 }
 
 fn make_msg(thread_id: usize, i: usize, events_per_producer: usize) -> PoolMessage {
     PoolMessage::RelayEvent {
-        relay_url: format!("test_{}", thread_id),
+        relay_url: format!("test_{}", thread_id).into(),
         event: generate_event(thread_id * events_per_producer + i),
     }
 }
@@ -206,9 +202,9 @@ fn bench_multi_producer_zero_copy(c: &mut Criterion) {
             |b, &producers| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(16384),
-                        )
+                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            16384,
+                        ))
                         .split();
                     let events_per_producer = 100_000 / producers;
 
@@ -276,8 +272,7 @@ fn bench_async_relay_max_throughput(c: &mut Criterion) {
                             let tx = tx.clone();
                             tokio::spawn(async move {
                                 for i in 0..events_per_sender {
-                                    let event =
-                                        generate_event(thread_id * events_per_sender + i);
+                                    let event = generate_event(thread_id * events_per_sender + i);
                                     tx.send(event).unwrap();
                                 }
                             });

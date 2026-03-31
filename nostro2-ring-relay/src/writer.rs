@@ -7,6 +7,7 @@
 use coyoquil::{Frame, MaskKey};
 use quetzalcoatl::broadcast;
 use quetzalcoatl::mpsc::Consumer;
+use quetzalcoatl::spsc;
 use ququmatz::types::MsgFlags;
 use ququmatz::{IoUring, Sqe};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct WriterAdd {
     pub fd: i32,
     pub outbound: broadcast::Consumer<String>,
-    pub pong_rx: Consumer<Vec<u8>>,
+    pub pong_rx: spsc::Consumer<Vec<u8>>,
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -24,7 +25,7 @@ pub struct WriterAdd {
 struct WriterSlot {
     fd: i32,
     outbound: broadcast::Consumer<String>,
-    pong_rx: Consumer<Vec<u8>>,
+    pong_rx: spsc::Consumer<Vec<u8>>,
     shutdown: Arc<AtomicBool>,
     dead: bool,
     /// Buffered frame data waiting to be sent.

@@ -1,11 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
-use nostro2_ring_relay::{create_pool, PoolMessage};
+use nostro2_ring_relay::{PoolMessage, create_pool};
 use quetzalcoatl::capacity::Capacity;
 
 fn make_msg() -> PoolMessage {
     PoolMessage::RelayEvent {
-        relay_url: "wss://test.relay".to_string(),
+        relay_url: "wss://test.relay".into(),
         event: NostrRelayEvent::Ping,
     }
 }
@@ -54,9 +54,9 @@ fn bench_spsc_throughput(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -87,9 +87,9 @@ fn bench_spsc_throughput(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -129,9 +129,9 @@ fn bench_zero_copy(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -162,9 +162,9 @@ fn bench_zero_copy(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -195,9 +195,9 @@ fn bench_zero_copy(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -228,9 +228,9 @@ fn bench_zero_copy(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(size),
-                        )
+                        quetzalcoatl::spsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            size,
+                        ))
                         .split();
 
                     std::thread::spawn(move || {
@@ -276,7 +276,7 @@ fn bench_multi_producer(c: &mut Criterion) {
                             std::thread::spawn(move || {
                                 for _ in 0..1000 {
                                     let msg = PoolMessage::RelayEvent {
-                                        relay_url: format!("wss://relay{}.test", i),
+                                        relay_url: format!("wss://relay{}.test", i).into(),
                                         event: NostrRelayEvent::Ping,
                                     };
                                     while prod.push(black_box(msg.clone())).is_err() {
@@ -315,9 +315,9 @@ fn bench_multi_producer_zero_copy(c: &mut Criterion) {
             |b, &count| {
                 b.iter(|| {
                     let (producer, mut consumer) =
-                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(
-                            Capacity::at_least(4096),
-                        )
+                        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(
+                            4096,
+                        ))
                         .split();
 
                     let handles: Vec<_> = (0..count)
@@ -326,7 +326,7 @@ fn bench_multi_producer_zero_copy(c: &mut Criterion) {
                             std::thread::spawn(move || {
                                 for _ in 0..1000 {
                                     let msg = PoolMessage::RelayEvent {
-                                        relay_url: format!("wss://relay{}.test", i),
+                                        relay_url: format!("wss://relay{}.test", i).into(),
                                         event: NostrRelayEvent::Ping,
                                     };
                                     while prod.push(black_box(msg.clone())).is_err() {
