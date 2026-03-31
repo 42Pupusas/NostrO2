@@ -66,7 +66,7 @@ fn bench_ring_relay() -> BenchResult {
 
     let mem_before = rss_kb();
 
-    let mut pool = RelayPool::new(131072, 2_000_000, 1024, urls.len());
+    let mut pool = RelayPool::new(524288, 2_000_000, 1024, urls.len());
     let sender = pool.sender();
     println!("  Reader threads: {}", pool.reader_thread_count());
     let mut connected = 0;
