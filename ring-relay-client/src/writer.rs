@@ -51,7 +51,7 @@ fn writer_loop(
     let mut slots: Vec<WriterSlot> = Vec::new();
 
     loop {
-        if global_shutdown.load(Ordering::Relaxed) {
+        if global_shutdown.load(Ordering::Acquire) {
             // Send close frames to all live connections
             for slot in &mut slots {
                 if !slot.dead {
@@ -83,7 +83,7 @@ fn writer_loop(
             }
 
             // Check per-connection shutdown
-            if slot.shutdown.load(Ordering::Relaxed) {
+            if slot.shutdown.load(Ordering::Acquire) {
                 slot.dead = true;
                 continue;
             }
@@ -125,7 +125,7 @@ fn writer_loop(
 
                 if cqe.is_err() {
                     slot.dead = true;
-                    slot.shutdown.store(true, Ordering::Relaxed);
+                    slot.shutdown.store(true, Ordering::Release);
                     continue;
                 }
 
@@ -139,8 +139,8 @@ fn writer_loop(
                 }
             }
         } else {
-            // No outbound data — brief yield before checking again
-            std::thread::yield_now();
+            // No outbound data — park briefly before checking again
+            std::thread::park_timeout(std::time::Duration::from_millis(1));
         }
     }
 

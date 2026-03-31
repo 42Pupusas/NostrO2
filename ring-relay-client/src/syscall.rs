@@ -1,5 +1,8 @@
 //! Raw Linux x86_64 syscalls — replaces libc for the handful of calls we need.
 
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!("ring-relay-client requires x86_64 (inline asm syscalls)");
+
 use std::arch::asm;
 
 // Syscall numbers (x86_64)
@@ -116,36 +119,14 @@ pub unsafe fn setsockopt(
     }
 }
 
+pub use ququmatz::IoVec;
+pub use ququmatz::types::MsgHdr;
+
 pub unsafe fn recvmsg(fd: i32, msg: *mut MsgHdr, flags: i32) -> Result<usize, std::io::Error> {
     to_io_result(unsafe { syscall3(SYS_RECVMSG, fd as usize, msg as usize, flags as usize) })
 }
 
-// ── Types ────────────────────────────────────────────────────────────
-
-#[repr(C)]
-pub struct IoVec {
-    pub iov_base: *mut u8,
-    pub iov_len: usize,
-}
-
-#[repr(C)]
-pub struct MsgHdr {
-    pub msg_name: *mut u8,
-    pub msg_namelen: u32,
-    _pad1: u32,
-    pub msg_iov: *mut IoVec,
-    pub msg_iovlen: usize,
-    pub msg_control: *mut u8,
-    pub msg_controllen: usize,
-    pub msg_flags: i32,
-    _pad2: u32,
-}
-
-impl MsgHdr {
-    pub fn zeroed() -> Self {
-        unsafe { std::mem::zeroed() }
-    }
-}
+// ── kTLS cmsg types + helpers ───────────────────────────────────────
 
 #[repr(C)]
 pub struct CmsgHdr {
@@ -153,8 +134,6 @@ pub struct CmsgHdr {
     pub cmsg_level: i32,
     pub cmsg_type: i32,
 }
-
-// ── CMSG helpers (matching kernel behavior on x86_64) ────────────────
 
 const CMSG_ALIGN: usize = std::mem::size_of::<usize>(); // 8 on x86_64
 
@@ -186,3 +165,6 @@ pub unsafe fn cmsg_nxthdr(msg: &MsgHdr, cmsg: *const CmsgHdr) -> *mut CmsgHdr {
 pub unsafe fn cmsg_data(cmsg: *const CmsgHdr) -> *const u8 {
     unsafe { (cmsg as *const u8).add(cmsg_align(std::mem::size_of::<CmsgHdr>())) }
 }
+
+// Compile-time verification that CmsgHdr matches kernel layout.
+const _: () = assert!(std::mem::size_of::<CmsgHdr>() == 16);

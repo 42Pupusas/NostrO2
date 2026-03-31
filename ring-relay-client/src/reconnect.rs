@@ -6,8 +6,8 @@
 //!
 //! The thread parks until unparked by:
 //!  - The pool (after seeing `ConnectionClosed` in recv)
-//!  - A backoff delay thread (after a failed reconnection attempt)
-//! No polling, no timeouts — zero CPU when idle.
+//!  - A `park_timeout` expiring when a backoff deadline is reached
+//! No polling, no extra threads — zero CPU when idle.
 
 use crate::ktls;
 use crate::reader::ReaderAdd;
@@ -21,7 +21,7 @@ use quetzalcoatl::spsc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ── Commands: pool → reconnect thread (MPSC ring) ──────────────────────
 
@@ -60,13 +60,14 @@ struct ManagedRelay {
     shutdown: Arc<AtomicBool>,
     shard_idx: usize,
     backoff: Duration,
-    /// Whether a delay thread is already scheduled for this relay.
-    retry_scheduled: bool,
+    /// When this relay is eligible for a reconnection attempt.
+    /// `None` means it can be attempted immediately (or is alive).
+    retry_after: Option<Instant>,
 }
 
 impl ManagedRelay {
     fn is_dead(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed)
+        self.shutdown.load(Ordering::Acquire)
     }
 }
 
@@ -84,16 +85,15 @@ pub(crate) struct ReconnectContext {
     pub max_backoff: Duration,
 }
 
-/// Purely event-driven reconnect loop. Parks until unparked — never
-/// uses timeouts or polling.
+/// Purely event-driven reconnect loop. Parks until unparked or a
+/// backoff deadline expires — no extra threads, no polling.
 pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
     let num_shards = ctx.reader_txs.len();
     let mut relays: Vec<ManagedRelay> = Vec::new();
     let mut subscriptions: HashMap<String, String> = HashMap::new();
-    let this_thread = std::thread::current();
 
     loop {
-        if ctx.global_shutdown.load(Ordering::Relaxed) {
+        if ctx.global_shutdown.load(Ordering::Acquire) {
             break;
         }
 
@@ -112,7 +112,7 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                         shutdown,
                         shard_idx,
                         backoff: ctx.initial_backoff,
-                        retry_scheduled: false,
+                        retry_after: None,
                     });
                 }
                 ReconnectCmd::Remove { url } => {
@@ -127,10 +127,18 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
             }
         }
 
-        // 2. Attempt reconnection for all dead relays ready for retry
+        // 2. Attempt reconnection for dead relays whose backoff has expired
+        let now = Instant::now();
         for relay in relays.iter_mut() {
-            if !relay.is_dead() || relay.retry_scheduled {
+            if !relay.is_dead() {
                 continue;
+            }
+
+            // Check if backoff deadline hasn't passed yet
+            if let Some(deadline) = relay.retry_after {
+                if now < deadline {
+                    continue;
+                }
             }
 
             match ktls::connect(&relay.url) {
@@ -165,7 +173,8 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                             syscall::shutdown(new_fd, syscall::SHUT_RDWR);
                             syscall::close(new_fd);
                         }
-                        schedule_retry(relay, &this_thread, ctx.max_backoff);
+                        relay.retry_after = Some(Instant::now() + relay.backoff);
+                        relay.backoff = (relay.backoff * 2).min(ctx.max_backoff);
                         continue;
                     }
 
@@ -176,20 +185,21 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                         shutdown: Arc::clone(&new_shutdown),
                     };
                     if ctx.writer_tx.push(writer_cmd).is_err() {
-                        new_shutdown.store(true, Ordering::Relaxed);
+                        new_shutdown.store(true, Ordering::Release);
                         unsafe {
                             syscall::shutdown(new_fd, syscall::SHUT_RDWR);
                             syscall::close(new_fd);
                         }
-                        schedule_retry(relay, &this_thread, ctx.max_backoff);
+                        relay.retry_after = Some(Instant::now() + relay.backoff);
+                        relay.backoff = (relay.backoff * 2).min(ctx.max_backoff);
                         continue;
                     }
 
-                    // Success
+                    // Success — reset backoff
                     relay.fd = new_fd;
                     relay.shutdown = new_shutdown;
                     relay.backoff = ctx.initial_backoff;
-                    relay.retry_scheduled = false;
+                    relay.retry_after = None;
 
                     let _ = ctx.result_tx.push(ReconnectResult {
                         url: relay.url.clone(),
@@ -203,32 +213,31 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                     }
                 }
                 Err(_) => {
-                    schedule_retry(relay, &this_thread, ctx.max_backoff);
+                    relay.retry_after = Some(Instant::now() + relay.backoff);
+                    relay.backoff = (relay.backoff * 2).min(ctx.max_backoff);
                 }
             }
         }
 
-        // Park until woken by pool or a backoff delay thread.
-        std::thread::park();
-    }
-}
+        // 3. Compute next wake time from pending retry deadlines
+        let next_deadline = relays
+            .iter()
+            .filter(|r| r.is_dead())
+            .filter_map(|r| r.retry_after)
+            .min();
 
-/// Spawn a lightweight delay thread that unparks the reconnect thread
-/// after the backoff period, then doubles the backoff for next time.
-fn schedule_retry(
-    relay: &mut ManagedRelay,
-    reconnect_thread: &std::thread::Thread,
-    max_backoff: Duration,
-) {
-    relay.retry_scheduled = true;
-    let delay = relay.backoff;
-    relay.backoff = (relay.backoff * 2).min(max_backoff);
-    let handle = reconnect_thread.clone();
-    std::thread::Builder::new()
-        .name("ring-backoff".into())
-        .spawn(move || {
-            std::thread::sleep(delay);
-            handle.unpark();
-        })
-        .ok();
+        match next_deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if deadline > now {
+                    std::thread::park_timeout(deadline - now);
+                }
+                // else: deadline already passed, loop immediately
+            }
+            None => {
+                // No pending retries — park until woken by pool
+                std::thread::park();
+            }
+        }
+    }
 }

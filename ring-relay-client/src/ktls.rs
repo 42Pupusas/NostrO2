@@ -45,6 +45,11 @@ struct TlsCryptoInfoAesGcm256 {
     rec_seq: [u8; 8],
 }
 
+// Compile-time verification that repr(C) structs match kernel layout.
+const _: () = assert!(std::mem::size_of::<TlsCryptoInfo>() == 4);
+const _: () = assert!(std::mem::size_of::<TlsCryptoInfoAesGcm128>() == 40);
+const _: () = assert!(std::mem::size_of::<TlsCryptoInfoAesGcm256>() == 56);
+
 /// Result of a successful kTLS + WebSocket connection setup.
 pub struct KtlsConnection {
     /// Raw file descriptor with kTLS armed (plaintext read/write).
@@ -243,14 +248,11 @@ pub fn ktls_read(fd: i32, buf: &mut [u8]) -> Result<usize, std::io::Error> {
     const TLS_RECORD_TYPE_DATA: u8 = 0x17;
 
     loop {
-        let mut iov = syscall::IoVec {
-            iov_base: buf.as_mut_ptr(),
-            iov_len: buf.len(),
-        };
+        let mut iov = unsafe { syscall::IoVec::new(buf.as_mut_ptr(), buf.len()) };
 
         let mut cmsg_buf = [0u8; 64];
 
-        let mut msg = syscall::MsgHdr::zeroed();
+        let mut msg = syscall::MsgHdr::default();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = cmsg_buf.as_mut_ptr();
@@ -356,15 +358,32 @@ fn parse_wss_url(
         None => (url, "/".to_string()),
     };
 
-    let (host, port) = match host_port.rfind(':') {
-        Some(idx) => {
-            let port_str = &host_port[idx + 1..];
-            match port_str.parse::<u16>() {
-                Ok(port) => (&host_port[..idx], port),
-                Err(_) => (host_port, 443),
+    // Handle IPv6 bracket notation: [::1]:8080
+    let (host, port) = if host_port.starts_with('[') {
+        match host_port.find(']') {
+            Some(end) => {
+                let host = &host_port[1..end];
+                let after = &host_port[end + 1..];
+                let port = if let Some(port_str) = after.strip_prefix(':') {
+                    port_str.parse::<u16>().unwrap_or(443)
+                } else {
+                    443
+                };
+                (host, port)
             }
+            None => return Err("malformed IPv6 address (missing ']')".into()),
         }
-        None => (host_port, 443),
+    } else {
+        match host_port.rfind(':') {
+            Some(idx) => {
+                let port_str = &host_port[idx + 1..];
+                match port_str.parse::<u16>() {
+                    Ok(port) => (&host_port[..idx], port),
+                    Err(_) => (host_port, 443),
+                }
+            }
+            None => (host_port, 443),
+        }
     };
 
     Ok((host.to_string(), port, path))
@@ -402,5 +421,26 @@ mod tests {
     fn test_parse_wss_url_invalid() {
         assert!(parse_wss_url("ws://relay.damus.io").is_err());
         assert!(parse_wss_url("http://example.com").is_err());
+    }
+
+    #[test]
+    fn test_parse_wss_url_ipv6() {
+        let (host, port, path) = parse_wss_url("wss://[::1]:8080/ws").unwrap();
+        assert_eq!(host, "::1");
+        assert_eq!(port, 8080);
+        assert_eq!(path, "/ws");
+    }
+
+    #[test]
+    fn test_parse_wss_url_ipv6_no_port() {
+        let (host, port, path) = parse_wss_url("wss://[2001:db8::1]/nostr").unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, 443);
+        assert_eq!(path, "/nostr");
+    }
+
+    #[test]
+    fn test_parse_wss_url_ipv6_malformed() {
+        assert!(parse_wss_url("wss://[::1/ws").is_err());
     }
 }

@@ -109,17 +109,17 @@ impl RelayConnection {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed)
+        self.shutdown.load(Ordering::Acquire)
     }
 
     pub fn request_shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 
 impl Drop for RelayConnection {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
         unsafe {
             syscall::shutdown(self.fd, syscall::SHUT_RDWR);
             syscall::close(self.fd);
@@ -134,7 +134,11 @@ impl Drop for RelayConnection {
 pub struct PoolConsumer {
     shard_consumers: Vec<spsc::Consumer<PoolMessage>>,
     next_shard: usize,
-    dedup_set: std::collections::HashSet<u64>,
+    /// Two-set deduplication: when the active set fills up, swap it into
+    /// backup and clear. New lookups check both sets, so we never lose
+    /// all dedup state at once.
+    dedup_active: std::collections::HashSet<u64>,
+    dedup_backup: std::collections::HashSet<u64>,
     dedup_capacity: usize,
     parker: Arc<Parker>,
 }
@@ -148,7 +152,8 @@ impl PoolConsumer {
         Self {
             shard_consumers,
             next_shard: 0,
-            dedup_set: std::collections::HashSet::with_capacity(cache_size),
+            dedup_active: std::collections::HashSet::with_capacity(cache_size),
+            dedup_backup: std::collections::HashSet::with_capacity(cache_size),
             dedup_capacity: cache_size,
             parker: Arc::new(Parker::new()),
         }
@@ -206,11 +211,17 @@ impl PoolConsumer {
                     use std::hash::{Hash, Hasher};
                     let mut h = std::hash::DefaultHasher::new();
                     event_id.hash(&mut h);
-                    if !self.dedup_set.insert(h.finish()) {
+                    let hash = h.finish();
+
+                    // Check both sets before inserting
+                    if self.dedup_backup.contains(&hash) || !self.dedup_active.insert(hash) {
                         return None; // duplicate
                     }
-                    if self.dedup_set.len() >= self.dedup_capacity {
-                        self.dedup_set.clear();
+
+                    // Rotate when active set fills: swap active→backup, clear new active
+                    if self.dedup_active.len() >= self.dedup_capacity {
+                        std::mem::swap(&mut self.dedup_active, &mut self.dedup_backup);
+                        self.dedup_active.clear();
                     }
                 }
                 Some(PoolMessage::RelayEvent {
@@ -491,7 +502,7 @@ impl RelayPool {
     pub fn remove_relay(&mut self, relay_url: &str) -> bool {
         if let Some(pos) = self.relay_entries.iter().position(|e| e.url == relay_url) {
             let entry = self.relay_entries.swap_remove(pos);
-            entry.shutdown.store(true, Ordering::Relaxed);
+            entry.shutdown.store(true, Ordering::Release);
             unsafe {
                 syscall::shutdown(entry.fd, syscall::SHUT_RDWR);
             }
@@ -523,11 +534,11 @@ impl RelayPool {
         let event = NostrClientEvent::Subscribe(RelayEventTag::Req, sub_id.clone(), filter);
         let json = serde_json::to_string(&event).map_err(|e| e.to_string())?;
         self.sender.send_raw(json.clone())?;
-        self.subscriptions.insert(sub_id.clone(), json.clone());
         let _ = self.reconnect_cmd_tx.push(ReconnectCmd::TrackSub {
-            sub_id,
-            json,
+            sub_id: sub_id.clone(),
+            json: json.clone(),
         });
+        self.subscriptions.insert(sub_id, json);
         self.wake_reconnect();
         Ok(())
     }
@@ -590,7 +601,7 @@ impl RelayPool {
     pub fn active_connection_count(&self) -> usize {
         self.relay_entries
             .iter()
-            .filter(|e| !e.shutdown.load(Ordering::Relaxed))
+            .filter(|e| !e.shutdown.load(Ordering::Acquire))
             .count()
     }
 
@@ -608,7 +619,7 @@ impl RelayPool {
     pub fn active_relay_urls(&self) -> Vec<String> {
         self.relay_entries
             .iter()
-            .filter(|e| !e.shutdown.load(Ordering::Relaxed))
+            .filter(|e| !e.shutdown.load(Ordering::Acquire))
             .map(|e| e.url.clone())
             .collect()
     }
@@ -616,11 +627,11 @@ impl RelayPool {
 
 impl Drop for RelayPool {
     fn drop(&mut self) {
-        self.global_shutdown.store(true, Ordering::Relaxed);
+        self.global_shutdown.store(true, Ordering::Release);
 
         // Shut down all known connections
         for entry in &self.relay_entries {
-            entry.shutdown.store(true, Ordering::Relaxed);
+            entry.shutdown.store(true, Ordering::Release);
             unsafe {
                 syscall::shutdown(entry.fd, syscall::SHUT_RDWR);
             }
@@ -653,18 +664,6 @@ impl Drop for RelayPool {
             }
         }
     }
-}
-
-/// Helper function to create a new pool and producer for spawning connections
-pub fn create_pool(
-    ring_capacity: usize,
-    cache_size: usize,
-) -> (PoolConsumer, Producer<PoolMessage>) {
-    let (producer, consumer) = RingBuffer::new(Capacity::at_least(ring_capacity)).split();
-    let _ = consumer;
-    let (spsc_tx, spsc_rx) = spsc::RingBuffer::new(Capacity::at_least(ring_capacity)).split();
-    let _ = spsc_tx;
-    (PoolConsumer::new(vec![spsc_rx], cache_size), producer)
 }
 
 #[cfg(test)]
@@ -713,12 +712,12 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
-            while !shutdown_clone.load(Ordering::Relaxed) {
+            while !shutdown_clone.load(Ordering::Acquire) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         });
         assert!(!handle.is_finished());
-        shutdown.store(true, Ordering::Relaxed);
+        shutdown.store(true, Ordering::Release);
         handle.join().unwrap();
     }
 

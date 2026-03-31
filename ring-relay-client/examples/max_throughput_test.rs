@@ -1,5 +1,5 @@
 use nostro2::NostrRelayEvent;
-use ring_relay_client::{PoolMessage, create_pool};
+use ring_relay_client::PoolMessage;
 use quetzalcoatl::capacity::Capacity;
 use std::time::Instant;
 
@@ -24,7 +24,8 @@ fn make_msg(thread_id: usize, i: usize, events_per_producer: usize) -> PoolMessa
 }
 
 fn test_ring_relay(producers: usize, total_events: usize) -> f64 {
-    let (mut consumer, producer) = create_pool(16384, 10_000);
+    let (producer, mut consumer) =
+        quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(16384)).split();
     let events_per_producer = total_events / producers;
 
     let handles: Vec<_> = (0..producers)
@@ -44,7 +45,7 @@ fn test_ring_relay(producers: usize, total_events: usize) -> f64 {
     let start = Instant::now();
     let mut received = 0;
     while received < total_events {
-        if let Some(PoolMessage::RelayEvent { .. }) = consumer.try_recv() {
+        if let Some(PoolMessage::RelayEvent { .. }) = consumer.pop() {
             received += 1;
         }
     }

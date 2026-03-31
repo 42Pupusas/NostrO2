@@ -64,7 +64,7 @@ fn reader_loop(
     let mut needs_resubmit = false;
 
     loop {
-        if global_shutdown.load(Ordering::Relaxed) {
+        if global_shutdown.load(Ordering::Acquire) {
             break;
         }
 
@@ -96,7 +96,7 @@ fn reader_loop(
         }
 
         if !slots.iter().any(|s| !s.dead) {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::park_timeout(std::time::Duration::from_millis(1));
             continue;
         }
 
@@ -124,23 +124,23 @@ fn reader_loop(
                 if errno == EIO {
                     match ktls::ktls_read(slot.fd, &mut slot.recv_buf) {
                         Ok(0) => {
-                            mark_dead(slot, &event_tx);
+                            mark_dead(slot, &event_tx, Some("connection closed during kTLS read".into()));
                             continue;
                         }
                         Ok(n) => n,
-                        Err(_) => {
-                            mark_dead(slot, &event_tx);
+                        Err(e) => {
+                            mark_dead(slot, &event_tx, Some(format!("kTLS read error: {e}")));
                             continue;
                         }
                     }
                 } else {
-                    mark_dead(slot, &event_tx);
+                    mark_dead(slot, &event_tx, Some(format!("recv failed: errno {errno}")));
                     continue;
                 }
             } else {
                 let n = cqe.result as usize;
                 if n == 0 {
-                    mark_dead(slot, &event_tx);
+                    mark_dead(slot, &event_tx, Some("connection closed (EOF)".into()));
                     continue;
                 }
                 n
@@ -148,7 +148,7 @@ fn reader_loop(
 
             // Decode frames
             if slot.decoder.push(&slot.recv_buf[..n]).is_err() {
-                mark_dead(slot, &event_tx);
+                mark_dead(slot, &event_tx, Some("WebSocket frame decode error".into()));
                 continue;
             }
 
@@ -160,8 +160,9 @@ fn reader_loop(
                                 relay_url: Arc::clone(&slot.relay_url),
                                 event,
                             };
-                            // Push into the SPSC ring, yielding on backpressure
+                            // Push into the SPSC ring with bounded retry
                             let mut msg = msg;
+                            let mut retries = 0;
                             loop {
                                 match event_tx.push(msg) {
                                     Ok(()) => {
@@ -169,6 +170,11 @@ fn reader_loop(
                                         break;
                                     }
                                     Err(returned) => {
+                                        retries += 1;
+                                        if retries > 1024 {
+                                            // Consumer can't keep up — drop the event
+                                            break;
+                                        }
                                         msg = returned;
                                         std::thread::yield_now();
                                     }
@@ -180,7 +186,7 @@ fn reader_loop(
                         let _ = slot.pong_tx.push(data.to_vec());
                     }
                     Frame::Close(_) => {
-                        mark_dead(slot, &event_tx);
+                        mark_dead(slot, &event_tx, None);
                         break;
                     }
                     _ => {}
@@ -218,12 +224,12 @@ fn submit_recv(
     Ok(())
 }
 
-fn mark_dead(slot: &mut ReaderSlot, event_tx: &spsc::Producer<PoolMessage>) {
+fn mark_dead(slot: &mut ReaderSlot, event_tx: &spsc::Producer<PoolMessage>, error: Option<String>) {
     slot.dead = true;
-    slot.shutdown.store(true, Ordering::Relaxed);
+    slot.shutdown.store(true, Ordering::Release);
     let _ = event_tx.push(PoolMessage::ConnectionClosed {
         relay_url: Arc::clone(&slot.relay_url),
-        error: None,
+        error,
     });
     slot.waker.unpark();
 }
