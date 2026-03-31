@@ -41,19 +41,23 @@ struct TestResult {
 }
 
 fn test_ring_relay() -> TestResult {
-    println!("=== Ring Relay (tungstenite, lock-free rings) ===");
+    println!("=== Ring Relay (kTLS + io_uring) ===");
 
     let mut pool = RelayPool::new(4096, 10_000, 16384, TEST_RELAYS.len());
     let sender = pool.sender();
 
     println!("Connecting to {} relays...", TEST_RELAYS.len());
+    let mut connected = 0;
     for url in TEST_RELAYS {
-        pool.add_relay(url.to_string());
+        match pool.add_relay(url.to_string()) {
+            Ok(()) => connected += 1,
+            Err(e) => eprintln!("  connect failed: {url}: {e}"),
+        }
     }
+    println!("  Connected: {connected}/{}", TEST_RELAYS.len());
 
     std::thread::sleep(Duration::from_secs(2));
 
-    // Send subscription (no longer hardcoded in the connection loop)
     let subscription = nostro2::NostrSubscription {
         kinds: vec![1].into(),
         limit: Some(1000),
@@ -63,85 +67,7 @@ fn test_ring_relay() -> TestResult {
 
     let result = run_test("Ring Relay", &sender, || pool.try_recv());
 
-    // Explicit shutdown — drop in a separate thread with timeout
-    // to avoid blocking if tungstenite connections are stuck
     std::thread::spawn(move || drop(pool));
-    std::thread::sleep(Duration::from_millis(500));
-
-    result
-}
-
-#[cfg(feature = "uring")]
-fn test_ktls_relay() -> TestResult {
-    use nostro2_ring_relay::uring::UringRelayConnection;
-    use quetzalcoatl::broadcast;
-    use quetzalcoatl::capacity::Capacity;
-    use quetzalcoatl::mpsc::RingBuffer;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    println!("=== kTLS Relay (kernel TLS, split reader/writer) ===");
-
-    let (mpsc_producer, mut mpsc_consumer) =
-        RingBuffer::<PoolMessage>::new(Capacity::at_least(4096)).split();
-
-    let (bc_producer, bc_consumer) =
-        broadcast::RingBuffer::<String>::new(Capacity::at_least(16384), TEST_RELAYS.len() + 1)
-            .split();
-
-    let mut connections = Vec::new();
-    println!("Connecting to {} relays...", TEST_RELAYS.len());
-    for url in TEST_RELAYS {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        match UringRelayConnection::spawn(
-            url.to_string(),
-            mpsc_producer.clone(),
-            bc_consumer.clone(),
-            shutdown,
-        ) {
-            Ok(conn) => connections.push(conn),
-            Err(e) => eprintln!("  [ktls] failed to connect to {url}: {e}"),
-        }
-    }
-    println!("  Connected: {}/{}", connections.len(), TEST_RELAYS.len());
-
-    std::thread::sleep(Duration::from_secs(2));
-
-    // Send subscription
-    let subscription = nostro2::NostrSubscription {
-        kinds: vec![1].into(),
-        limit: Some(1000),
-        ..Default::default()
-    };
-    let client_event: nostro2::NostrClientEvent = subscription.into();
-    let json = serde_json::to_string(&client_event).unwrap();
-    bc_producer.push(json).unwrap();
-
-    // Wrap bc_producer for the generic test harness
-    let sender = bc_producer;
-
-    let result = run_test_raw(
-        "kTLS Relay",
-        || mpsc_consumer.pop(),
-        |note| {
-            let throwaway = NostrKeypair::new();
-            let mut echo = nostro2::NostrNote {
-                content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
-                kind: 21000,
-                ..Default::default()
-            };
-            if throwaway.sign_note(&mut echo).is_ok() {
-                let client_event: nostro2::NostrClientEvent = echo.into();
-                if let Ok(json) = serde_json::to_string(&client_event) {
-                    return sender.push(json).is_ok();
-                }
-            }
-            false
-        },
-    );
-
-    // Shutdown in background to avoid blocking
-    std::thread::spawn(move || drop(connections));
     std::thread::sleep(Duration::from_millis(500));
 
     result
@@ -181,11 +107,7 @@ fn test_async_relay() -> TestResult {
         println!("Running for {}s...\n", test_duration.as_secs());
 
         while start.elapsed() < test_duration {
-            let recv_result = tokio::time::timeout(
-                Duration::from_millis(10),
-                pool.recv(),
-            )
-            .await;
+            let recv_result = tokio::time::timeout(Duration::from_millis(10), pool.recv()).await;
 
             match recv_result {
                 Ok(Some(NostrRelayEvent::NewNote(_, _, ref note))) => {
@@ -241,7 +163,12 @@ fn test_async_relay() -> TestResult {
 
                 println!(
                     "[{:>2}s] recv: {:>5} ({:>6.1}/s) | sent: {:>5} ({:>6.1}/s) | errors: {}",
-                    elapsed, interval_received, recv_rate, interval_sent, send_rate, interval_send_errors,
+                    elapsed,
+                    interval_received,
+                    recv_rate,
+                    interval_sent,
+                    send_rate,
+                    interval_send_errors,
                 );
 
                 interval_received = 0;
@@ -274,22 +201,18 @@ fn run_test(
     sender: &nostro2_ring_relay::PoolSender,
     mut try_recv: impl FnMut() -> Option<PoolMessage>,
 ) -> TestResult {
-    run_test_raw(
-        label,
-        &mut try_recv,
-        |note| {
-            let throwaway = NostrKeypair::new();
-            let mut echo = nostro2::NostrNote {
-                content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
-                kind: 21000,
-                ..Default::default()
-            };
-            if throwaway.sign_note(&mut echo).is_ok() {
-                return sender.send(echo).is_ok();
-            }
-            false
-        },
-    )
+    run_test_raw(label, &mut try_recv, |note| {
+        let throwaway = NostrKeypair::new();
+        let mut echo = nostro2::NostrNote {
+            content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
+            kind: 21000,
+            ..Default::default()
+        };
+        if throwaway.sign_note(&mut echo).is_ok() {
+            return sender.send(echo).is_ok();
+        }
+        false
+    })
 }
 
 fn run_test_raw(
@@ -360,7 +283,12 @@ fn run_test_raw(
 
             println!(
                 "[{:>2}s] recv: {:>5} ({:>6.1}/s) | sent: {:>5} ({:>6.1}/s) | errors: {}",
-                elapsed, interval_received, recv_rate, interval_sent, send_rate, interval_send_errors,
+                elapsed,
+                interval_received,
+                recv_rate,
+                interval_sent,
+                send_rate,
+                interval_send_errors,
             );
 
             interval_received = 0;
@@ -486,8 +414,16 @@ fn print_comparison(results: &[&TestResult]) {
                 println!(
                     "Recv: {} is {:.2}x {} {}",
                     r.label,
-                    if speedup >= 1.0 { speedup } else { 1.0 / speedup },
-                    if speedup >= 1.0 { "faster than" } else { "slower than" },
+                    if speedup >= 1.0 {
+                        speedup
+                    } else {
+                        1.0 / speedup
+                    },
+                    if speedup >= 1.0 {
+                        "faster than"
+                    } else {
+                        "slower than"
+                    },
                     baseline.label,
                 );
             }
@@ -502,17 +438,7 @@ fn main() {
 
     let mut results: Vec<TestResult> = Vec::new();
 
-    // Phase 2: kTLS relay (if feature enabled)
-    #[cfg(feature = "uring")]
-    {
-        let ktls_result = test_ktls_relay();
-        print_result(&ktls_result);
-        results.push(ktls_result);
-
-        println!("\n--- Pausing 5s ---\n");
-        std::thread::sleep(Duration::from_secs(5));
-    }
-    // Phase 1: Ring relay (tungstenite)
+    // Phase 1: Ring relay (kTLS + io_uring)
     let ring_result = test_ring_relay();
     print_result(&ring_result);
     results.push(ring_result);
@@ -520,8 +446,7 @@ fn main() {
     println!("\n--- Pausing 5s ---\n");
     std::thread::sleep(Duration::from_secs(5));
 
-
-    // Phase 3: Async relay (tokio)
+    // Phase 2: Async relay (tokio)
     let async_result = test_async_relay();
     print_result(&async_result);
     results.push(async_result);

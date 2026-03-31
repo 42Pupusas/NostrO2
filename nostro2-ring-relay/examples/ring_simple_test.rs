@@ -41,7 +41,7 @@ fn main() {
 
     // Spawn relay connections — each gets a broadcast consumer clone
     for url in &relays {
-        pool.add_relay(url.to_string());
+        pool.add_relay(url.to_string()).unwrap();
     }
 
     let mut event_count = 0;

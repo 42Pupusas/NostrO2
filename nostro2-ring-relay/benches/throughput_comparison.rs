@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::time::{Duration, Instant};
 
 // Test relays - using a subset for faster benchmarks
@@ -22,7 +22,7 @@ fn bench_ring_relay_fixed_time(c: &mut Criterion) {
                     nostro2_ring_relay::RelayPool::new(4096, 10_000, 64, TEST_RELAYS.len());
 
                 for url in TEST_RELAYS {
-                    pool.add_relay(url.to_string());
+                    pool.add_relay(url.to_string()).unwrap();
                 }
 
                 let start = Instant::now();
@@ -95,8 +95,12 @@ fn bench_async_relay_fixed_time(c: &mut Criterion) {
                     }
 
                     let elapsed = start.elapsed();
-                    println!("Async Relay: {} events in {:?} ({:.1} events/sec)",
-                        event_count, elapsed, event_count as f64 / elapsed.as_secs_f64());
+                    println!(
+                        "Async Relay: {} events in {:?} ({:.1} events/sec)",
+                        event_count,
+                        elapsed,
+                        event_count as f64 / elapsed.as_secs_f64()
+                    );
                     elapsed
                 });
 

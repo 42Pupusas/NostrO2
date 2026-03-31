@@ -20,7 +20,7 @@ fn main() {
 
     // Spawn relay connections
     for url in TEST_RELAYS {
-        pool.add_relay(url.to_string());
+        pool.add_relay(url.to_string()).unwrap();
     }
 
     let start = Instant::now();

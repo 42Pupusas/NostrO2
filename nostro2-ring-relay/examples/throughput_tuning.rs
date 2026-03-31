@@ -18,7 +18,7 @@ fn test_config(ring_size: usize, cache_size: usize, use_sleep: bool) -> (usize, 
     let mut pool = RelayPool::new(ring_size, cache_size, 64, TEST_RELAYS.len());
 
     for url in TEST_RELAYS {
-        pool.add_relay(url.to_string());
+        pool.add_relay(url.to_string()).unwrap();
     }
 
     let start = Instant::now();

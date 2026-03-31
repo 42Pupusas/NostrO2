@@ -8,7 +8,7 @@
 //!   2. caddy run --config nostro2-ring-relay/examples/Caddyfile
 //!   3. sudo modprobe tls  (for kTLS)
 //!
-//! Run: cargo run -p nostro2-ring-relay --example local_bench --features uring --release
+//! Run: cargo run -p nostro2-ring-relay --example local_bench --release
 
 use nostro2::NostrRelayEvent;
 use nostro2_ring_relay::{PoolMessage, RelayPool};
@@ -33,13 +33,21 @@ struct BenchResult {
 
 fn bench_ring_relay() -> BenchResult {
     let urls = relay_urls();
-    println!("=== Ring Relay (tungstenite) — {} connections ===", urls.len());
+    println!(
+        "=== Ring Relay (kTLS + io_uring) — {} connections ===",
+        urls.len()
+    );
 
     let mut pool = RelayPool::new(131072, 2_000_000, 1024, urls.len());
     let sender = pool.sender();
+    let mut connected = 0;
     for url in &urls {
-        pool.add_relay(url.clone());
+        match pool.add_relay(url.clone()) {
+            Ok(()) => connected += 1,
+            Err(e) => eprintln!("  connect failed: {url}: {e}"),
+        }
     }
+    println!("  Connected: {connected}/{}", urls.len());
 
     std::thread::sleep(Duration::from_millis(500));
 
@@ -49,61 +57,10 @@ fn bench_ring_relay() -> BenchResult {
     };
     sender.send(subscription).unwrap();
 
-    let expected = EVENTS_PER_RELAY * urls.len();
+    let expected = EVENTS_PER_RELAY * connected;
     let result = drain_events("Ring Relay", expected, || pool.try_recv());
 
     std::thread::spawn(move || drop(pool));
-    std::thread::sleep(Duration::from_millis(200));
-
-    result
-}
-
-#[cfg(feature = "uring")]
-fn bench_ktls_relay() -> BenchResult {
-    use nostro2_ring_relay::uring::UringRelayConnection;
-    use quetzalcoatl::broadcast;
-    use quetzalcoatl::capacity::Capacity;
-    use quetzalcoatl::mpsc::RingBuffer;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    let urls = relay_urls();
-    println!("=== kTLS Relay (kernel TLS) — {} connections ===", urls.len());
-
-    let (mpsc_producer, mut mpsc_consumer) =
-        RingBuffer::<PoolMessage>::new(Capacity::at_least(131072)).split();
-    let (bc_producer, bc_consumer) =
-        broadcast::RingBuffer::<String>::new(Capacity::at_least(1024), urls.len() + 1).split();
-
-    let mut connections = Vec::new();
-    for url in &urls {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        match UringRelayConnection::spawn(
-            url.clone(),
-            mpsc_producer.clone(),
-            bc_consumer.clone(),
-            shutdown,
-        ) {
-            Ok(c) => connections.push(c),
-            Err(e) => eprintln!("  kTLS failed: {url}: {e}"),
-        }
-    }
-    println!("  Connected: {}/{}", connections.len(), urls.len());
-
-    std::thread::sleep(Duration::from_millis(500));
-
-    let subscription = nostro2::NostrSubscription {
-        kinds: vec![1].into(),
-        ..Default::default()
-    };
-    let client_event: nostro2::NostrClientEvent = subscription.into();
-    let json = serde_json::to_string(&client_event).unwrap();
-    bc_producer.push(json).unwrap();
-
-    let expected = EVENTS_PER_RELAY * connections.len();
-    let result = drain_events("kTLS Relay", expected, || mpsc_consumer.pop());
-
-    std::thread::spawn(move || drop(connections));
     std::thread::sleep(Duration::from_millis(200));
 
     result
@@ -138,8 +95,10 @@ fn bench_async_relay() -> BenchResult {
                     count += 1;
                     if last_print.elapsed() >= Duration::from_secs(1) {
                         let rate = count as f64 / start.elapsed().as_secs_f64();
-                        println!("  [{:.1}s] {count}/{expected} events ({rate:.0}/s)",
-                            start.elapsed().as_secs_f64());
+                        println!(
+                            "  [{:.1}s] {count}/{expected} events ({rate:.0}/s)",
+                            start.elapsed().as_secs_f64()
+                        );
                         last_print = Instant::now();
                     }
                 }
@@ -222,9 +181,7 @@ fn drain_events(
 
     let elapsed = start.elapsed();
     let rate = count as f64 / elapsed.as_secs_f64();
-    println!(
-        "  Done: {count} events in {elapsed:.2?} ({rate:.0} events/s) [{eose_count} EOSE]\n"
-    );
+    println!("  Done: {count} events in {elapsed:.2?} ({rate:.0} events/s) [{eose_count} EOSE]\n");
 
     BenchResult {
         label,
@@ -236,27 +193,26 @@ fn drain_events(
 
 fn main() {
     println!("=== Local Throughput Benchmark ===");
-    println!("Relays: {NUM_RELAYS} x {EVENTS_PER_RELAY} events = {} total per test\n",
-        NUM_RELAYS * EVENTS_PER_RELAY);
+    println!(
+        "Relays: {NUM_RELAYS} x {EVENTS_PER_RELAY} events = {} total per test\n",
+        NUM_RELAYS * EVENTS_PER_RELAY
+    );
 
     let mut results: Vec<BenchResult> = Vec::new();
 
-    #[cfg(feature = "uring")]
-    {
-        results.push(bench_ktls_relay());
-        std::thread::sleep(Duration::from_secs(2));
-    }
-
-    results.push(bench_ring_relay());
+    results.push(bench_async_relay());
     std::thread::sleep(Duration::from_secs(2));
 
-    results.push(bench_async_relay());
+    results.push(bench_ring_relay());
 
     // Summary
     println!("{:=^60}", "");
     println!("                    RESULTS");
     println!("{:=^60}", "");
-    println!("{:<15} | {:>10} | {:>12} | {:>12}", "Implementation", "Events", "Time", "Rate");
+    println!(
+        "{:<15} | {:>10} | {:>12} | {:>12}",
+        "Implementation", "Events", "Time", "Rate"
+    );
     println!("{:->15}-+-{:->10}-+-{:->12}-+-{:->12}", "", "", "", "");
     for r in &results {
         println!(
@@ -266,8 +222,14 @@ fn main() {
     }
 
     if results.len() >= 2 {
-        let fastest = results.iter().max_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap()).unwrap();
-        let slowest = results.iter().min_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap()).unwrap();
+        let fastest = results
+            .iter()
+            .max_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap())
+            .unwrap();
+        let slowest = results
+            .iter()
+            .min_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap())
+            .unwrap();
         if slowest.rate > 0.0 {
             println!(
                 "\n{} is {:.2}x faster than {}",

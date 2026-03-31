@@ -99,9 +99,7 @@ pub fn connect(url: &str) -> Result<KtlsConnection, Box<dyn std::error::Error + 
     drop(reader);
 
     // Get TLS version and cipher before consuming the connection
-    let tls_version = conn
-        .protocol_version()
-        .ok_or("no TLS version negotiated")?;
+    let tls_version = conn.protocol_version().ok_or("no TLS version negotiated")?;
 
     let secrets = conn
         .dangerous_extract_secrets()
@@ -239,12 +237,13 @@ fn ws_handshake(
     host: &str,
     path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let key = super::ws::generate_ws_key();
-    let request = super::ws::ws_upgrade_request(host, path, &key);
+    let key = coyoquil::WsKey::new();
+    let request = key.upgrade_request(host, path).map_err(|e| e.to_string())?;
 
     write_all_fd(fd, request.as_bytes())?;
     let response = read_http_response(fd)?;
-    super::ws::validate_ws_response(&response, &key)?;
+    key.validate_response(&response)
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -297,9 +296,7 @@ pub fn ktls_read(fd: libc::c_int, buf: &mut [u8]) -> Result<usize, std::io::Erro
         unsafe {
             let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
             while !cmsg.is_null() {
-                if (*cmsg).cmsg_level == SOL_TLS
-                    && (*cmsg).cmsg_type == TLS_GET_RECORD_TYPE
-                {
+                if (*cmsg).cmsg_level == SOL_TLS && (*cmsg).cmsg_type == TLS_GET_RECORD_TYPE {
                     record_type = *libc::CMSG_DATA(cmsg);
                 }
                 cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
