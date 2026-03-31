@@ -1,10 +1,12 @@
-use nostro2::NostrRelayEvent;
+use nostro2::{NostrClientEvent, NostrRelayEvent, NostrSubscription, RelayEventTag};
 use quetzalcoatl::broadcast;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{Producer, RingBuffer};
 use quetzalcoatl::spsc;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// Lock-free wake primitive: reader threads unpark the consumer via its
 /// thread handle after pushing events.  Uses `thread::park` / `unpark`
@@ -35,8 +37,16 @@ impl Parker {
 
 mod ktls;
 mod reader;
+mod reconnect;
 mod syscall;
 mod writer;
+
+use reconnect::{ReconnectCmd, ReconnectContext, ReconnectResult};
+
+/// Default initial reconnect delay (1 second).
+const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+/// Default maximum reconnect delay (60 seconds).
+const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Messages that flow through the ring buffer from relay threads to consumer
 #[derive(Debug, Clone)]
@@ -69,8 +79,8 @@ impl PoolSender {
     ///
     /// Serializes to JSON once; each relay thread sends the pre-serialized string.
     /// Returns `Err` if the broadcast ring is full (all relay threads behind).
-    pub fn send<T: Into<nostro2::NostrClientEvent>>(&self, msg: T) -> Result<(), String> {
-        let client_event: nostro2::NostrClientEvent = msg.into();
+    pub fn send<T: Into<NostrClientEvent>>(&self, msg: T) -> Result<(), String> {
+        let client_event: NostrClientEvent = msg.into();
         let json = serde_json::to_string(&client_event).map_err(|e| e.to_string())?;
         self.producer.push(json)
     }
@@ -219,6 +229,15 @@ struct ReaderShard {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Bookkeeping for a relay tracked by the pool.
+struct RelayEntry {
+    url: String,
+    fd: i32,
+    shutdown: Arc<AtomicBool>,
+    #[allow(dead_code)] // kept for relay identification in reconnect commands
+    shard_idx: usize,
+}
+
 /// The relay pool — manages kTLS + io_uring WebSocket connections through
 /// sharded reader IO threads and a single writer IO thread.
 ///
@@ -227,8 +246,14 @@ struct ReaderShard {
 /// Connections are assigned round-robin. The consumer round-robins across
 /// all shard rings to collect events. Outbound messages are broadcast via
 /// a lock-free ring.
+///
+/// Includes event-driven auto-reconnection with exponential backoff and
+/// subscription tracking — when a relay reconnects, all active subscriptions
+/// are re-sent. The reconnect thread parks until woken; zero CPU cost when
+/// all relays are healthy.
 pub struct RelayPool {
-    connections: Vec<RelayConnection>,
+    relay_entries: Vec<RelayEntry>,
+    subscriptions: HashMap<String, String>,
     consumer: PoolConsumer,
     sender: PoolSender,
     broadcast_consumer: broadcast::Consumer<String>,
@@ -241,6 +266,11 @@ pub struct RelayPool {
     writer_cmd_tx: Producer<writer::WriterAdd>,
     writer_thread: Option<std::thread::JoinHandle<()>>,
 
+    // Reconnect thread — event-driven, parks until needed
+    reconnect_cmd_tx: Producer<ReconnectCmd>,
+    reconnect_result_rx: spsc::Consumer<ReconnectResult>,
+    reconnect_thread: Option<std::thread::JoinHandle<()>>,
+
     global_shutdown: Arc<AtomicBool>,
 }
 
@@ -248,8 +278,9 @@ impl RelayPool {
     /// Create a new relay pool and spawn IO threads.
     ///
     /// Detects available CPU cores and spawns one reader IO thread per core,
-    /// plus one writer IO thread. Each reader thread owns its own io_uring
-    /// and SPSC event ring — zero contention between shards.
+    /// plus one writer IO thread and one event-driven reconnect thread.
+    /// Each reader thread owns its own io_uring and SPSC event ring — zero
+    /// contention between shards.
     ///
     /// # Arguments
     /// * `ring_capacity` - Per-shard SPSC ring buffer size for inbound events
@@ -267,14 +298,14 @@ impl RelayPool {
             .unwrap_or(1);
 
         // Broadcast ring for outbound messages (sender → writer IO thread)
+        // Budget: max_relays initial + max_relays reconnections + 1 reconnect thread
         let (bc_producer, bc_consumer) =
-            broadcast::RingBuffer::new(Capacity::at_least(broadcast_capacity), max_relays + 1)
+            broadcast::RingBuffer::new(Capacity::at_least(broadcast_capacity), max_relays * 2 + 1)
                 .split();
 
         let global_shutdown = Arc::new(AtomicBool::new(false));
 
         // Spawn reader IO threads — one per core, capped at max_relays
-        // (no point having more shards than connections).
         let num_shards = num_cores.min(max_relays).max(1);
         let relays_per_shard = (max_relays / num_shards).max(4);
         let capacity_per_shard = ring_capacity;
@@ -311,9 +342,45 @@ impl RelayPool {
             })
             .expect("failed to spawn writer thread");
 
+        let consumer = PoolConsumer::new(shard_consumers, cache_size);
+
+        // Reconnect thread rings — cmd (MPSC) and results (SPSC)
+        let (reconnect_cmd_tx, reconnect_cmd_rx) =
+            RingBuffer::new(Capacity::at_least(max_relays * 2)).split();
+        let (reconnect_result_tx, reconnect_result_rx) =
+            spsc::RingBuffer::new(Capacity::at_least(max_relays)).split();
+
+        // Clone handles for the reconnect thread
+        let reconnect_reader_txs: Vec<_> =
+            reader_shards.iter().map(|s| s.cmd_tx.clone()).collect();
+        let reconnect_writer_tx = writer_cmd_tx.clone();
+        let reconnect_bc_consumer = bc_consumer.clone();
+        let reconnect_bc_producer = bc_producer.clone();
+        let reconnect_waker = consumer.waker();
+        let reconnect_shutdown = Arc::clone(&global_shutdown);
+
+        let reconnect_thread = std::thread::Builder::new()
+            .name("ring-reconnect".into())
+            .spawn(move || {
+                reconnect::reconnect_thread(ReconnectContext {
+                    cmd_rx: reconnect_cmd_rx,
+                    result_tx: reconnect_result_tx,
+                    reader_txs: reconnect_reader_txs,
+                    writer_tx: reconnect_writer_tx,
+                    broadcast_consumer: reconnect_bc_consumer,
+                    broadcast_producer: reconnect_bc_producer,
+                    waker: reconnect_waker,
+                    global_shutdown: reconnect_shutdown,
+                    initial_backoff: DEFAULT_INITIAL_BACKOFF,
+                    max_backoff: DEFAULT_MAX_BACKOFF,
+                });
+            })
+            .expect("failed to spawn reconnect thread");
+
         Self {
-            connections: Vec::new(),
-            consumer: PoolConsumer::new(shard_consumers, cache_size),
+            relay_entries: Vec::new(),
+            subscriptions: HashMap::new(),
+            consumer,
             sender: PoolSender {
                 producer: bc_producer,
             },
@@ -322,7 +389,28 @@ impl RelayPool {
             next_reader: 0,
             writer_cmd_tx,
             writer_thread: Some(writer_thread),
+            reconnect_cmd_tx,
+            reconnect_result_rx,
+            reconnect_thread: Some(reconnect_thread),
             global_shutdown,
+        }
+    }
+
+    /// Wake the reconnect thread via its JoinHandle (lock-free futex unpark).
+    fn wake_reconnect(&self) {
+        if let Some(h) = self.reconnect_thread.as_ref() {
+            h.thread().unpark();
+        }
+    }
+
+    /// Drain reconnect results and update relay entries.
+    /// Called internally from `recv()` / `try_recv()`.
+    fn process_reconnections(&mut self) {
+        while let Some(result) = self.reconnect_result_rx.pop() {
+            if let Some(entry) = self.relay_entries.iter_mut().find(|e| e.url == result.url) {
+                entry.fd = result.fd;
+                entry.shutdown = result.shutdown;
+            }
         }
     }
 
@@ -330,6 +418,8 @@ impl RelayPool {
     ///
     /// Connects synchronously (TCP → TLS → kTLS → WebSocket handshake),
     /// then registers the fd with a reader shard (round-robin) and the writer.
+    /// The relay is automatically managed for reconnection — if it disconnects,
+    /// the reconnect thread will re-establish it with exponential backoff.
     pub fn add_relay(
         &mut self,
         relay_url: String,
@@ -376,32 +466,91 @@ impl RelayPool {
             .push(writer_cmd)
             .map_err(|_| "writer command ring full")?;
 
-        self.connections.push(RelayConnection {
-            relay_url,
+        // Track locally
+        self.relay_entries.push(RelayEntry {
+            url: relay_url.clone(),
+            fd,
+            shutdown: Arc::clone(&shutdown),
+            shard_idx,
+        });
+
+        // Tell reconnect thread to manage this relay
+        let _ = self.reconnect_cmd_tx.push(ReconnectCmd::Add {
+            url: relay_url,
             fd,
             shutdown,
+            shard_idx,
         });
 
         Ok(())
     }
 
     /// Remove a relay from the pool by URL.
+    ///
+    /// Shuts down the connection and stops reconnection attempts.
     pub fn remove_relay(&mut self, relay_url: &str) -> bool {
-        if let Some(pos) = self
-            .connections
-            .iter()
-            .position(|c| c.relay_url == relay_url)
-        {
-            self.connections.swap_remove(pos);
+        if let Some(pos) = self.relay_entries.iter().position(|e| e.url == relay_url) {
+            let entry = self.relay_entries.swap_remove(pos);
+            entry.shutdown.store(true, Ordering::Relaxed);
+            unsafe {
+                syscall::shutdown(entry.fd, syscall::SHUT_RDWR);
+            }
+            // Tell reconnect thread to forget this relay
+            let _ = self.reconnect_cmd_tx.push(ReconnectCmd::Remove {
+                url: relay_url.to_string(),
+            });
+            self.wake_reconnect();
             true
         } else {
             false
         }
     }
 
-    /// Remove dead connections from the pool.
+    /// Remove dead connections that have been replaced by the reconnect thread.
     pub fn cleanup(&mut self) {
-        self.connections.retain(|conn| !conn.is_finished());
+        self.process_reconnections();
+    }
+
+    /// Subscribe to events matching `filter` with the given subscription ID.
+    ///
+    /// Sends the REQ message to all relays and tracks the subscription so it
+    /// is automatically re-sent when a relay reconnects.
+    pub fn subscribe(
+        &mut self,
+        sub_id: String,
+        filter: NostrSubscription,
+    ) -> Result<(), String> {
+        let event = NostrClientEvent::Subscribe(RelayEventTag::Req, sub_id.clone(), filter);
+        let json = serde_json::to_string(&event).map_err(|e| e.to_string())?;
+        self.sender.send_raw(json.clone())?;
+        self.subscriptions.insert(sub_id.clone(), json.clone());
+        let _ = self.reconnect_cmd_tx.push(ReconnectCmd::TrackSub {
+            sub_id,
+            json,
+        });
+        self.wake_reconnect();
+        Ok(())
+    }
+
+    /// Close a subscription by ID.
+    ///
+    /// Sends the CLOSE message and removes the subscription from tracking
+    /// so it is not re-sent on reconnection.
+    pub fn unsubscribe(&mut self, sub_id: &str) -> Result<(), String> {
+        self.subscriptions.remove(sub_id);
+        let event = NostrClientEvent::close_subscription(sub_id);
+        let json = serde_json::to_string(&event).map_err(|e| e.to_string())?;
+        self.sender.send_raw(json)?;
+        let _ = self.reconnect_cmd_tx.push(ReconnectCmd::UntrackSub {
+            sub_id: sub_id.to_string(),
+        });
+        self.wake_reconnect();
+        Ok(())
+    }
+
+    /// Return the IDs of all tracked subscriptions.
+    pub fn active_subscriptions(&self) -> Vec<String> {
+        self.subscriptions.keys().cloned().collect()
     }
 
     /// Get a cloneable sender handle for broadcasting to all relays.
@@ -409,24 +558,40 @@ impl RelayPool {
         self.sender.clone()
     }
 
-    /// Receive the next event from any relay (blocking)
+    /// Receive the next event from any relay (blocking).
+    ///
+    /// Also processes reconnection results and wakes the reconnect
+    /// thread when a `ConnectionClosed` is observed.
     pub fn recv(&mut self) -> PoolMessage {
-        self.consumer.recv()
+        self.process_reconnections();
+        let msg = self.consumer.recv();
+        if matches!(&msg, PoolMessage::ConnectionClosed { .. }) {
+            self.wake_reconnect();
+        }
+        msg
     }
 
-    /// Receive the next event from any relay (non-blocking)
+    /// Receive the next event from any relay (non-blocking).
     pub fn try_recv(&mut self) -> Option<PoolMessage> {
-        self.consumer.try_recv()
+        self.process_reconnections();
+        let msg = self.consumer.try_recv();
+        if matches!(&msg, Some(PoolMessage::ConnectionClosed { .. })) {
+            self.wake_reconnect();
+        }
+        msg
     }
 
-    /// Get the total number of connections (including dead ones not yet cleaned up).
+    /// Get the total number of managed relays (including dead ones pending reconnection).
     pub fn connection_count(&self) -> usize {
-        self.connections.len()
+        self.relay_entries.len()
     }
 
     /// Get the number of live connections.
     pub fn active_connection_count(&self) -> usize {
-        self.connections.iter().filter(|c| !c.is_finished()).count()
+        self.relay_entries
+            .iter()
+            .filter(|e| !e.shutdown.load(Ordering::Relaxed))
+            .count()
     }
 
     /// Get the number of reader IO threads.
@@ -434,20 +599,17 @@ impl RelayPool {
         self.reader_shards.len()
     }
 
-    /// Get the relay URLs of all connections in the pool.
-    pub fn relay_urls(&self) -> Vec<&str> {
-        self.connections
-            .iter()
-            .map(|c| c.relay_url.as_str())
-            .collect()
+    /// Get the relay URLs of all managed relays.
+    pub fn relay_urls(&self) -> Vec<String> {
+        self.relay_entries.iter().map(|e| e.url.clone()).collect()
     }
 
-    /// Get the relay URLs of only active connections.
-    pub fn active_relay_urls(&self) -> Vec<&str> {
-        self.connections
+    /// Get the relay URLs of only active (connected) relays.
+    pub fn active_relay_urls(&self) -> Vec<String> {
+        self.relay_entries
             .iter()
-            .filter(|c| !c.is_finished())
-            .map(|c| c.relay_url.as_str())
+            .filter(|e| !e.shutdown.load(Ordering::Relaxed))
+            .map(|e| e.url.clone())
             .collect()
     }
 }
@@ -456,26 +618,38 @@ impl Drop for RelayPool {
     fn drop(&mut self) {
         self.global_shutdown.store(true, Ordering::Relaxed);
 
-        for conn in &self.connections {
-            conn.shutdown.store(true, Ordering::Relaxed);
+        // Shut down all known connections
+        for entry in &self.relay_entries {
+            entry.shutdown.store(true, Ordering::Relaxed);
             unsafe {
-                syscall::shutdown(conn.fd, syscall::SHUT_RDWR);
+                syscall::shutdown(entry.fd, syscall::SHUT_RDWR);
             }
         }
 
+        // Join reconnect thread (it checks global_shutdown)
+        self.wake_reconnect();
+        if let Some(h) = self.reconnect_thread.take() {
+            let _ = h.join();
+        }
+
+        // Pick up any final reconnect results
+        self.process_reconnections();
+
+        // Join IO threads
         for shard in &mut self.reader_shards {
             if let Some(h) = shard.handle.take() {
                 let _ = h.join();
             }
         }
-
         if let Some(h) = self.writer_thread.take() {
             let _ = h.join();
         }
 
-        for conn in &self.connections {
+        // Close all fds — shutdown is idempotent, close handles EBADF
+        for entry in &self.relay_entries {
             unsafe {
-                syscall::close(conn.fd);
+                syscall::shutdown(entry.fd, syscall::SHUT_RDWR);
+                syscall::close(entry.fd);
             }
         }
     }
@@ -487,12 +661,8 @@ pub fn create_pool(
     cache_size: usize,
 ) -> (PoolConsumer, Producer<PoolMessage>) {
     let (producer, consumer) = RingBuffer::new(Capacity::at_least(ring_capacity)).split();
-    // Wrap single MPSC consumer in a vec for PoolConsumer compatibility
-    // (not ideal but keeps the helper working for simple use cases)
     let _ = consumer;
     let (spsc_tx, spsc_rx) = spsc::RingBuffer::new(Capacity::at_least(ring_capacity)).split();
-    // We return the MPSC producer but the consumer reads from SPSC — this helper
-    // is only useful for manual single-producer setups now
     let _ = spsc_tx;
     (PoolConsumer::new(vec![spsc_rx], cache_size), producer)
 }
@@ -550,5 +720,20 @@ mod tests {
         assert!(!handle.is_finished());
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_subscription_tracking() {
+        let mut pool = RelayPool::new(1024, 10_000, 64, 8);
+
+        let filter = NostrSubscription::default();
+        pool.subscribe("sub1".to_string(), filter).unwrap();
+
+        let subs = pool.active_subscriptions();
+        assert_eq!(subs.len(), 1);
+        assert!(subs.contains(&"sub1".to_string()));
+
+        pool.unsubscribe("sub1").unwrap();
+        assert!(pool.active_subscriptions().is_empty());
     }
 }
