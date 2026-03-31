@@ -1,5 +1,6 @@
 //! kTLS setup: TLS handshake with rustls, secret extraction, and kernel TLS offload.
 
+use crate::syscall;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 use std::io::Write;
@@ -8,11 +9,11 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
 // kTLS constants from linux/tls.h
-const SOL_TCP: libc::c_int = 6;
-const TCP_ULP: libc::c_int = 31;
-pub(crate) const SOL_TLS: libc::c_int = 282;
-const TLS_TX: libc::c_int = 1;
-const TLS_RX: libc::c_int = 2;
+const SOL_TCP: i32 = 6;
+const TCP_ULP: i32 = 31;
+pub(crate) const SOL_TLS: i32 = 282;
+const TLS_TX: i32 = 1;
+const TLS_RX: i32 = 2;
 
 const TLS_1_2_VERSION: u16 = 0x0303;
 const TLS_1_3_VERSION: u16 = 0x0304;
@@ -47,13 +48,13 @@ struct TlsCryptoInfoAesGcm256 {
 /// Result of a successful kTLS + WebSocket connection setup.
 pub struct KtlsConnection {
     /// Raw file descriptor with kTLS armed (plaintext read/write).
-    pub fd: libc::c_int,
+    pub fd: i32,
 }
 
 impl Drop for KtlsConnection {
     fn drop(&mut self) {
         unsafe {
-            libc::close(self.fd);
+            syscall::close(self.fd);
         }
     }
 }
@@ -79,8 +80,6 @@ pub fn connect(url: &str) -> Result<KtlsConnection, Box<dyn std::error::Error + 
     let mut conn = ClientConnection::new(Arc::new(config), server_name.to_owned())?;
 
     // Drive the TLS handshake using a record-aligned reader.
-    // This ensures we only read complete TLS records from TCP, so the
-    // TCP buffer is always at a record boundary when we hand off to kTLS.
     let mut tcp_write = tcp.try_clone()?;
     let mut reader = RecordAlignedReader::new(&mut tcp);
     loop {
@@ -98,48 +97,36 @@ pub fn connect(url: &str) -> Result<KtlsConnection, Box<dyn std::error::Error + 
     }
     drop(reader);
 
-    // Get TLS version and cipher before consuming the connection
     let tls_version = conn.protocol_version().ok_or("no TLS version negotiated")?;
 
     let secrets = conn
         .dangerous_extract_secrets()
         .map_err(|e| format!("failed to extract TLS secrets: {e}"))?;
 
-    // Set up kTLS
     setup_ktls(fd, tls_version, &secrets)?;
 
     // Prevent TcpStream from closing the fd — we own it now
     std::mem::forget(tcp);
 
-    // WebSocket handshake over the kTLS fd
     ws_handshake(fd, &host, &path)?;
 
     Ok(KtlsConnection { fd })
 }
 
 fn setup_ktls(
-    fd: libc::c_int,
+    fd: i32,
     tls_version: rustls::ProtocolVersion,
     secrets: &rustls::ExtractedSecrets,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Enable TLS ULP on the socket
     let ulp = b"tls\0";
-    let ret = unsafe {
-        libc::setsockopt(
-            fd,
-            SOL_TCP,
-            TCP_ULP,
-            ulp.as_ptr() as *const libc::c_void,
-            ulp.len() as libc::socklen_t,
-        )
-    };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        return Err(format!(
+    unsafe {
+        syscall::setsockopt(fd, SOL_TCP, TCP_ULP, ulp.as_ptr(), ulp.len() as u32)
+    }
+    .map_err(|err| {
+        format!(
             "setsockopt TCP_ULP failed: {err}. Is the 'tls' kernel module loaded? Try: modprobe tls"
         )
-        .into());
-    }
+    })?;
 
     let version = match tls_version {
         rustls::ProtocolVersion::TLSv1_2 => TLS_1_2_VERSION,
@@ -157,8 +144,8 @@ fn setup_ktls(
 }
 
 fn setup_direction(
-    fd: libc::c_int,
-    direction: libc::c_int,
+    fd: i32,
+    direction: i32,
     version: u16,
     secret: &rustls::ConnectionTrafficSecrets,
     seq: u64,
@@ -208,32 +195,26 @@ fn setup_direction(
 }
 
 fn setsockopt_tls<T>(
-    fd: libc::c_int,
-    direction: libc::c_int,
+    fd: i32,
+    direction: i32,
     info: &T,
     dir_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ret = unsafe {
-        libc::setsockopt(
+    unsafe {
+        syscall::setsockopt(
             fd,
             SOL_TLS,
             direction,
-            info as *const T as *const libc::c_void,
-            std::mem::size_of::<T>() as libc::socklen_t,
+            info as *const T as *const u8,
+            std::mem::size_of::<T>() as u32,
         )
-    };
-    if ret != 0 {
-        return Err(format!(
-            "setsockopt TLS_{dir_name} failed: {}",
-            std::io::Error::last_os_error()
-        )
-        .into());
     }
+    .map_err(|err| format!("setsockopt TLS_{dir_name} failed: {err}"))?;
     Ok(())
 }
 
 fn ws_handshake(
-    fd: libc::c_int,
+    fd: i32,
     host: &str,
     path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -248,45 +229,34 @@ fn ws_handshake(
     Ok(())
 }
 
-fn write_all_fd(fd: libc::c_int, mut data: &[u8]) -> Result<(), std::io::Error> {
+fn write_all_fd(fd: i32, mut data: &[u8]) -> Result<(), std::io::Error> {
     while !data.is_empty() {
-        let n = unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
-        if n < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        data = &data[n as usize..];
+        let n = unsafe { syscall::write(fd, data.as_ptr(), data.len()) }?;
+        data = &data[n..];
     }
     Ok(())
 }
 
 /// Read from a kTLS fd, transparently skipping non-application-data records.
-///
-/// TLS 1.3 post-handshake messages (e.g. NewSessionTicket) have inner content
-/// type `handshake`, not `application_data`. The kernel kTLS `read()` returns
-/// EIO for these. We use `recvmsg()` with cmsg to get the record type and
-/// skip non-data records automatically.
-pub fn ktls_read(fd: libc::c_int, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-    const TLS_GET_RECORD_TYPE: libc::c_int = 2;
+pub fn ktls_read(fd: i32, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+    const TLS_GET_RECORD_TYPE: i32 = 2;
     const TLS_RECORD_TYPE_DATA: u8 = 0x17;
 
     loop {
-        let mut iov = libc::iovec {
-            iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+        let mut iov = syscall::IoVec {
+            iov_base: buf.as_mut_ptr(),
             iov_len: buf.len(),
         };
 
         let mut cmsg_buf = [0u8; 64];
 
-        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        let mut msg = syscall::MsgHdr::zeroed();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_control = cmsg_buf.as_mut_ptr();
         msg.msg_controllen = cmsg_buf.len();
 
-        let n = unsafe { libc::recvmsg(fd, &mut msg, 0) };
-        if n < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        let n = unsafe { syscall::recvmsg(fd, &mut msg, 0) }?;
         if n == 0 {
             return Ok(0);
         }
@@ -294,23 +264,22 @@ pub fn ktls_read(fd: libc::c_int, buf: &mut [u8]) -> Result<usize, std::io::Erro
         // Check cmsg for TLS record type
         let mut record_type = TLS_RECORD_TYPE_DATA;
         unsafe {
-            let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+            let mut cmsg = syscall::cmsg_firsthdr(&msg);
             while !cmsg.is_null() {
                 if (*cmsg).cmsg_level == SOL_TLS && (*cmsg).cmsg_type == TLS_GET_RECORD_TYPE {
-                    record_type = *libc::CMSG_DATA(cmsg);
+                    record_type = *syscall::cmsg_data(cmsg);
                 }
-                cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+                cmsg = syscall::cmsg_nxthdr(&msg, cmsg);
             }
         }
 
         if record_type == TLS_RECORD_TYPE_DATA {
-            return Ok(n as usize);
+            return Ok(n);
         }
-        // Non-data record (e.g. NewSessionTicket) — skip and read again
     }
 }
 
-fn read_http_response(fd: libc::c_int) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+fn read_http_response(fd: i32) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut buf = vec![0u8; 4096];
     let mut total = 0;
 
@@ -332,9 +301,6 @@ fn read_http_response(fd: libc::c_int) -> Result<String, Box<dyn std::error::Err
 }
 
 /// Reads exactly one complete TLS record at a time from the underlying TCP stream.
-///
-/// Guarantees the TCP receive buffer is always at a TLS record boundary,
-/// which is critical for kTLS handoff.
 struct RecordAlignedReader<'a> {
     tcp: &'a mut TcpStream,
     buf: Vec<u8>,
@@ -360,8 +326,6 @@ impl std::io::Read for RecordAlignedReader<'_> {
             return Ok(n);
         }
 
-        // Read exactly one complete TLS record.
-        // Header: content_type(1) + version(2) + length(2) = 5 bytes
         let mut header = [0u8; 5];
         self.tcp.read_exact(&mut header)?;
 

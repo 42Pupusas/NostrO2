@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 mod ktls;
 mod reader;
+mod syscall;
 mod writer;
 
 /// Messages that flow through the ring buffer from relay threads to consumer
@@ -84,8 +85,8 @@ impl Drop for RelayConnection {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         unsafe {
-            libc::shutdown(self.fd, libc::SHUT_RDWR);
-            libc::close(self.fd);
+            syscall::shutdown(self.fd, syscall::SHUT_RDWR);
+            syscall::close(self.fd);
         }
     }
 }
@@ -407,7 +408,7 @@ impl Drop for RelayPool {
         for conn in &self.connections {
             conn.shutdown.store(true, Ordering::Relaxed);
             unsafe {
-                libc::shutdown(conn.fd, libc::SHUT_RDWR);
+                syscall::shutdown(conn.fd, syscall::SHUT_RDWR);
             }
         }
 
@@ -423,7 +424,7 @@ impl Drop for RelayPool {
 
         for conn in &self.connections {
             unsafe {
-                libc::close(conn.fd);
+                syscall::close(conn.fd);
             }
         }
     }
