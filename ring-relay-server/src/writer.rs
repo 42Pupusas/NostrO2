@@ -67,16 +67,12 @@ fn writer_loop(
                     }
                 }
                 WriteCmd::SendText { fd, text } => {
-                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead && !s.send_pending) {
-                        slot.send_buf.clear();
-                        slot.send_offset = 0;
+                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
                         Frame::Text(&text).encode(&mut slot.send_buf).ok();
                     }
                 }
                 WriteCmd::SendBinary { fd, data } => {
-                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead && !s.send_pending) {
-                        slot.send_buf.clear();
-                        slot.send_offset = 0;
+                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
                         Frame::Binary(&data).encode(&mut slot.send_buf).ok();
                     }
                 }
@@ -84,9 +80,7 @@ fn writer_loop(
                     let mut encoded = Vec::new();
                     Frame::Text(&text).encode(&mut encoded).ok();
                     for slot in slots.iter_mut() {
-                        if !slot.dead && !slot.send_pending {
-                            slot.send_buf.clear();
-                            slot.send_offset = 0;
+                        if !slot.dead {
                             slot.send_buf.extend_from_slice(&encoded);
                         }
                     }
@@ -97,9 +91,7 @@ fn writer_loop(
                     }
                 }
                 WriteCmd::Pong { fd } => {
-                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead && !s.send_pending) {
-                        slot.send_buf.clear();
-                        slot.send_offset = 0;
+                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
                         Frame::Pong(&[]).encode(&mut slot.send_buf).ok();
                     }
                 }

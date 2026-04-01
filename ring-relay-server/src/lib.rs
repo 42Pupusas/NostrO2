@@ -73,39 +73,47 @@ pub struct ServerSender {
 
 impl ServerSender {
     /// Send a text message to a specific client.
+    ///
+    /// Applies brief backpressure (spin + yield) if the write ring is full.
     pub fn send_text(&self, client_id: i32, text: String) -> Result<(), String> {
-        self.tx
-            .push(WriteCmd::SendText { fd: client_id, text })
-            .map_err(|_| "write command ring full".to_string())?;
-        self.writer_thread.unpark();
-        Ok(())
+        self.push_with_backpressure(WriteCmd::SendText { fd: client_id, text })
     }
 
     /// Send a binary message to a specific client.
     pub fn send_binary(&self, client_id: i32, data: Vec<u8>) -> Result<(), String> {
-        self.tx
-            .push(WriteCmd::SendBinary { fd: client_id, data })
-            .map_err(|_| "write command ring full".to_string())?;
-        self.writer_thread.unpark();
-        Ok(())
+        self.push_with_backpressure(WriteCmd::SendBinary { fd: client_id, data })
     }
 
     /// Broadcast a text message to all connected clients.
     pub fn broadcast(&self, text: String) -> Result<(), String> {
-        self.tx
-            .push(WriteCmd::Broadcast { text })
-            .map_err(|_| "write command ring full".to_string())?;
-        self.writer_thread.unpark();
-        Ok(())
+        self.push_with_backpressure(WriteCmd::Broadcast { text })
     }
 
     /// Close a specific client connection.
     pub fn close_client(&self, client_id: i32) -> Result<(), String> {
-        self.tx
-            .push(WriteCmd::Close { fd: client_id })
-            .map_err(|_| "write command ring full".to_string())?;
-        self.writer_thread.unpark();
-        Ok(())
+        self.push_with_backpressure(WriteCmd::Close { fd: client_id })
+    }
+
+    /// Push a command to the write ring with brief spin-retry backpressure.
+    fn push_with_backpressure(&self, mut cmd: WriteCmd) -> Result<(), String> {
+        for attempt in 0..64 {
+            match self.tx.push(cmd) {
+                Ok(()) => {
+                    self.writer_thread.unpark();
+                    return Ok(());
+                }
+                Err(returned) => {
+                    cmd = returned;
+                    self.writer_thread.unpark();
+                    if attempt < 32 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_micros(10));
+                    }
+                }
+            }
+        }
+        Err("write command ring full after backpressure".to_string())
     }
 }
 
