@@ -4,7 +4,7 @@
 //! in-flight per client. On completion: decode frames via coyoquil (Role::Server)
 //! → push ClientMessages to the shared MPSC ring.
 
-use crate::{ClientMessage, Parker, WriteCmd};
+use crate::{ClientMessage, Handler, HandlerResult, Parker, WriteCmd};
 use coyoquil::{DEFAULT_MAX_MESSAGE_SIZE, Frame, FrameDecoder, Role};
 use quetzalcoatl::mpsc::Producer;
 use quetzalcoatl::spsc;
@@ -28,18 +28,20 @@ struct ClientSlot {
 pub fn reader_thread(
     accept_rx: spsc::Consumer<i32>,
     event_tx: Producer<ClientMessage>,
-    write_tx: Producer<WriteCmd>,
+    writer_txs: Vec<Producer<WriteCmd>>,
+    writer_wakers: Vec<std::thread::Thread>,
     consumer_waker: Arc<Parker>,
-    writer_waker: std::thread::Thread,
     shutdown: Arc<AtomicBool>,
+    handler: Option<Arc<Handler>>,
 ) {
     if let Err(e) = reader_loop(
         accept_rx,
         &event_tx,
-        &write_tx,
+        &writer_txs,
+        &writer_wakers,
         &consumer_waker,
-        &writer_waker,
         &shutdown,
+        handler.as_deref(),
     ) {
         eprintln!("reader IO thread fatal: {e}");
     }
@@ -48,11 +50,13 @@ pub fn reader_thread(
 fn reader_loop(
     mut accept_rx: spsc::Consumer<i32>,
     event_tx: &Producer<ClientMessage>,
-    write_tx: &Producer<WriteCmd>,
+    writer_txs: &[Producer<WriteCmd>],
+    writer_wakers: &[std::thread::Thread],
     consumer_waker: &Parker,
-    writer_waker: &std::thread::Thread,
     shutdown: &AtomicBool,
+    handler: Option<&Handler>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let num_writer_shards = writer_txs.len();
     let mut ring = IoUring::new(4096)?;
     let mut slots: Vec<ClientSlot> = Vec::new();
 
@@ -82,8 +86,16 @@ fn reader_loop(
             // and the slot will be retried in the resubmit pass below.
             let _ = submit_recv(&mut ring, &mut slots[idx], idx as u64);
 
-            let _ = event_tx.push(ClientMessage::Connected { client_id: fd });
-            consumer_waker.unpark();
+            // When a handler is set, register the fd with the writer
+            // directly from the reader thread so the writer knows about
+            // this client before any inline replies arrive.
+            if handler.is_some() {
+                let shard = fd as usize % num_writer_shards;
+                let _ = writer_txs[shard].push(WriteCmd::Register { fd });
+                writer_wakers[shard].unpark();
+            }
+
+            push_event(event_tx, consumer_waker, ClientMessage::Connected { client_id: fd });
         }
 
         // 2. Resubmit recv for any slots that don't have one in-flight
@@ -147,24 +159,53 @@ fn reader_loop(
             while let Ok(Some(frame)) = slot.decoder.next_frame() {
                 match frame {
                     Frame::Text(text) => {
-                        let msg = ClientMessage::Text {
-                            client_id: slot.fd,
-                            text: text.to_string(),
-                        };
-                        let _ = event_tx.push(msg);
-                        consumer_waker.unpark();
+                        if let Some(h) = handler {
+                            match h(slot.fd, text) {
+                                HandlerResult::Reply(response) => {
+                                    let shard = slot.fd as usize % num_writer_shards;
+                                    let _ = writer_txs[shard].push(WriteCmd::SendText {
+                                        fd: slot.fd,
+                                        text: response,
+                                    });
+                                    writer_wakers[shard].unpark();
+                                }
+                                HandlerResult::Consumed => {}
+                                HandlerResult::PassThrough => {
+                                    push_event(
+                                        event_tx,
+                                        consumer_waker,
+                                        ClientMessage::Text {
+                                            client_id: slot.fd,
+                                            text: text.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        } else {
+                            push_event(
+                                event_tx,
+                                consumer_waker,
+                                ClientMessage::Text {
+                                    client_id: slot.fd,
+                                    text: text.to_string(),
+                                },
+                            );
+                        }
                     }
                     Frame::Binary(data) => {
-                        let msg = ClientMessage::Binary {
-                            client_id: slot.fd,
-                            data: data.to_vec(),
-                        };
-                        let _ = event_tx.push(msg);
-                        consumer_waker.unpark();
+                        push_event(
+                            event_tx,
+                            consumer_waker,
+                            ClientMessage::Binary {
+                                client_id: slot.fd,
+                                data: data.to_vec(),
+                            },
+                        );
                     }
                     Frame::Ping(_) => {
-                        let _ = write_tx.push(WriteCmd::Pong { fd: slot.fd });
-                        writer_waker.unpark();
+                        let shard = slot.fd as usize % num_writer_shards;
+                        let _ = writer_txs[shard].push(WriteCmd::Pong { fd: slot.fd });
+                        writer_wakers[shard].unpark();
                     }
                     Frame::Close(_) => {
                         mark_dead(slot, event_tx, consumer_waker, None);
@@ -232,6 +273,31 @@ fn submit_recv(
     Ok(())
 }
 
+/// Push a message to the event ring with backpressure.
+/// Spins briefly, then yields, preventing silent message drops that would
+/// cause downstream consumers to hang waiting for events that were lost.
+fn push_event(event_tx: &Producer<ClientMessage>, consumer_waker: &Parker, mut msg: ClientMessage) {
+    let mut spins = 0u32;
+    loop {
+        match event_tx.push(msg) {
+            Ok(()) => {
+                consumer_waker.unpark();
+                return;
+            }
+            Err(returned) => {
+                msg = returned;
+                consumer_waker.unpark();
+                if spins < 64 {
+                    std::hint::spin_loop();
+                } else {
+                    std::thread::yield_now();
+                }
+                spins = spins.saturating_add(1);
+            }
+        }
+    }
+}
+
 fn mark_dead(
     slot: &mut ClientSlot,
     event_tx: &Producer<ClientMessage>,
@@ -239,9 +305,12 @@ fn mark_dead(
     reason: Option<String>,
 ) {
     slot.dead = true;
-    let _ = event_tx.push(ClientMessage::Disconnected {
-        client_id: slot.fd,
-        reason,
-    });
-    consumer_waker.unpark();
+    push_event(
+        event_tx,
+        consumer_waker,
+        ClientMessage::Disconnected {
+            client_id: slot.fd,
+            reason,
+        },
+    );
 }

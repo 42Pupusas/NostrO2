@@ -1,7 +1,7 @@
 //! Benchmark: connection storm — how fast can the server accept N connections.
 //!
 //! Measures time to connect + handshake N clients.
-//! Compares ring-relay-server vs tokio-tungstenite server.
+//! Compares: ring (1 shard) vs ring (sharded) vs tokio-tungstenite server.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::Arc;
@@ -32,14 +32,14 @@ async fn connect_all(port: u16, num: usize) -> usize {
     connected.load(Ordering::Relaxed)
 }
 
-// ── Ring relay server ──────────────────────────────────────────────────
+// ── Ring relay server (single shard — baseline) ──────────────────────
 
 fn bench_ring_connections(c: &mut Criterion) {
     let mut group = c.benchmark_group("connection_storm");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(30));
 
-    group.bench_function("ring_relay_server", |b| {
+    group.bench_function("ring_1x1", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         b.iter_custom(|iters| {
@@ -63,7 +63,63 @@ fn bench_ring_connections(c: &mut Criterion) {
                 total += start.elapsed();
 
                 let rate = connected as f64 / total.as_secs_f64();
-                println!("ring: {connected}/{NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)");
+                println!("ring 1x1: {connected}/{NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)");
+            }
+
+            total
+        });
+    });
+
+    group.finish();
+}
+
+// ── Ring relay server (sharded) ──────────────────────────────────────
+
+fn bench_ring_connections_sharded(c: &mut Criterion) {
+    let mut group = c.benchmark_group("connection_storm");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(30));
+
+    let num_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let reader_shards = (num_cpus / 2).max(2);
+    let writer_shards = (num_cpus / 2).max(2);
+
+    group.bench_function(&format!("ring_{reader_shards}x{writer_shards}"), |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+
+            for _ in 0..iters {
+                let config = ring_relay_server::ShardConfig {
+                    reader_shards,
+                    writer_shards,
+                };
+                let mut server = ring_relay_server::WsServer::bind_sharded(
+                    [127, 0, 0, 1],
+                    0,
+                    NUM_CLIENTS * 2,
+                    config,
+                )
+                .expect("bind_sharded");
+                let port = server.port();
+
+                let start = Instant::now();
+
+                let connected = rt.block_on(connect_all(port, NUM_CLIENTS));
+
+                for _ in 0..connected {
+                    server.recv();
+                }
+
+                total += start.elapsed();
+
+                let rate = connected as f64 / total.as_secs_f64();
+                println!(
+                    "ring {reader_shards}x{writer_shards}: {connected}/{NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)"
+                );
             }
 
             total
@@ -141,5 +197,5 @@ fn bench_tokio_connections(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_ring_connections, bench_tokio_connections);
+criterion_group!(benches, bench_ring_connections, bench_ring_connections_sharded, bench_tokio_connections);
 criterion_main!(benches);

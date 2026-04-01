@@ -88,19 +88,20 @@ impl HandshakeSlot {
 
 pub fn listener_thread(
     listener_fd: i32,
-    accept_tx: spsc::Producer<i32>,
+    accept_txs: Vec<spsc::Producer<i32>>,
     shutdown: Arc<AtomicBool>,
 ) {
-    if let Err(e) = listener_loop(listener_fd, accept_tx, &shutdown) {
+    if let Err(e) = listener_loop(listener_fd, accept_txs, &shutdown) {
         eprintln!("listener thread fatal: {e}");
     }
 }
 
 fn listener_loop(
     listener_fd: i32,
-    accept_tx: spsc::Producer<i32>,
+    accept_txs: Vec<spsc::Producer<i32>>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let num_reader_shards = accept_txs.len();
     let mut ring = IoUring::new(RING_SIZE)?;
     let mut slots: Vec<HandshakeSlot> = Vec::new();
     let max_handshakes = RING_SIZE as usize - RESERVED;
@@ -202,12 +203,13 @@ fn listener_loop(
                     slots[idx].progress += n;
 
                     if slots[idx].progress >= slots[idx].send_total {
-                        // Handshake complete — hand fd to reader
+                        // Handshake complete — hand fd to correct reader shard
                         let client_fd = slots[idx].fd;
                         slots[idx].active = false;
 
-                        if accept_tx.push(client_fd).is_err() {
-                            eprintln!("accept ring full, dropping client {client_fd}");
+                        let shard = client_fd as usize % num_reader_shards;
+                        if accept_txs[shard].push(client_fd).is_err() {
+                            eprintln!("accept ring full on shard {shard}, dropping client {client_fd}");
                             drop(unsafe { Socket::from_fd(client_fd) });
                         }
                     } else {
