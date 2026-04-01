@@ -66,7 +66,7 @@ fn bench_ring_relay() -> BenchResult {
 
     let mem_before = rss_kb();
 
-    let mut pool = RelayPool::new(524288, 2_000_000, 1024, urls.len());
+    let mut pool = RelayPool::new(1_048_576, 2_000_000, 1024, urls.len());
     let sender = pool.sender();
     println!("  Reader threads: {}", pool.reader_thread_count());
     let mut connected = 0;
@@ -85,10 +85,18 @@ fn bench_ring_relay() -> BenchResult {
         ..Default::default()
     };
     sender.send(subscription).unwrap();
+    ring_relay_client::recv_stats_reset(); // clear counters
 
     let expected = EVENTS_PER_RELAY * connected;
     let (events_received, elapsed, rate, mem_samples) =
         drain_ring_events(expected, mem_before, || pool.try_recv());
+
+    // Print recv stats
+    let (recv_bytes, recv_count) = ring_relay_client::recv_stats_reset();
+    let avg_recv = if recv_count > 0 { recv_bytes / recv_count } else { 0 };
+    let mbps = recv_bytes as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    println!("  I/O stats: {recv_count} recvs, {recv_bytes} bytes total");
+    println!("  Avg {avg_recv} bytes/recv, {mbps:.0} MB/s wire throughput\n");
 
     std::thread::spawn(move || drop(pool));
     std::thread::sleep(Duration::from_millis(200));

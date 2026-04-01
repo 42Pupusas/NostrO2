@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
-use ring_relay_client::{PoolMessage, create_pool};
+use ring_relay_client::PoolMessage;
 use quetzalcoatl::capacity::Capacity;
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,7 @@ fn bench_ring_relay_max_throughput(c: &mut Criterion) {
             num_producers,
             |b, &producers| {
                 b.iter(|| {
-                    let (mut consumer, producer) = create_pool(16384, 10_000);
+                    let (producer, mut consumer) = quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(16384)).split();
                     let events_per_producer = 100_000 / producers;
 
                     let handles: Vec<_> = (0..producers)
@@ -57,7 +57,7 @@ fn bench_ring_relay_max_throughput(c: &mut Criterion) {
                     let mut received = 0;
                     let start = Instant::now();
                     while received < 100_000 {
-                        if let Some(PoolMessage::RelayEvent { .. }) = consumer.try_recv() {
+                        if let Some(PoolMessage::RelayEvent { .. }) = consumer.pop() {
                             received += 1;
                         }
                     }

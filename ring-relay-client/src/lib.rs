@@ -1,12 +1,23 @@
 use nostro2::{NostrClientEvent, NostrRelayEvent, NostrSubscription, RelayEventTag};
 use quetzalcoatl::broadcast;
 use quetzalcoatl::capacity::Capacity;
-use quetzalcoatl::mpsc::{Producer, RingBuffer};
+use quetzalcoatl::mpsc::{Consumer, Producer, RingBuffer};
 use quetzalcoatl::spsc;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+
+// ── Global recv stats (for benchmarking I/O layer) ──────────────────
+pub static RECV_BYTES: AtomicUsize = AtomicUsize::new(0);
+pub static RECV_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Reset recv counters and return (bytes, count) snapshot.
+pub fn recv_stats_reset() -> (usize, usize) {
+    let bytes = RECV_BYTES.swap(0, Ordering::Relaxed);
+    let count = RECV_COUNT.swap(0, Ordering::Relaxed);
+    (bytes, count)
+}
 
 /// Lock-free wake primitive: reader threads unpark the consumer via its
 /// thread handle after pushing events.  Uses `thread::park` / `unpark`
@@ -127,13 +138,10 @@ impl Drop for RelayConnection {
     }
 }
 
-/// Consumer side of the pool - reads events from all reader shards.
-///
-/// Round-robins across per-shard SPSC rings to collect events from all
-/// reader IO threads without any CAS contention.
+/// Consumer side of the pool — pops parsed events from a shared MPSC ring
+/// that all reader threads push into, and deduplicates before returning.
 pub struct PoolConsumer {
-    shard_consumers: Vec<spsc::Consumer<PoolMessage>>,
-    next_shard: usize,
+    event_rx: Consumer<PoolMessage>,
     /// Two-set deduplication: when the active set fills up, swap it into
     /// backup and clear. New lookups check both sets, so we never lose
     /// all dedup state at once.
@@ -148,10 +156,9 @@ impl PoolConsumer {
     ///
     /// Must be called on the thread that will call `recv()`, since
     /// `Parker` captures the current thread handle for `thread::park`.
-    pub fn new(shard_consumers: Vec<spsc::Consumer<PoolMessage>>, cache_size: usize) -> Self {
+    pub fn new(event_rx: Consumer<PoolMessage>, cache_size: usize) -> Self {
         Self {
-            shard_consumers,
-            next_shard: 0,
+            event_rx,
             dedup_active: std::collections::HashSet::with_capacity(cache_size),
             dedup_backup: std::collections::HashSet::with_capacity(cache_size),
             dedup_capacity: cache_size,
@@ -166,28 +173,14 @@ impl PoolConsumer {
 
     /// Receive the next message from any relay (non-blocking)
     ///
-    /// Returns `Some(message)` if available and not a duplicate, `None` if all rings empty.
+    /// Returns `Some(message)` if available and not a duplicate, `None` if the ring is empty.
     /// Automatically deduplicates NewNote events based on event ID.
     pub fn try_recv(&mut self) -> Option<PoolMessage> {
-        let n = self.shard_consumers.len();
-        if n == 0 {
-            return None;
-        }
-
-        // Sticky drain: stay on the current shard until empty, then rotate.
-        // Avoids touching N-1 cold cache lines per event.
-        if let Some(msg) = self.shard_consumers[self.next_shard].pop() {
-            return self.dedup(msg);
-        }
-        // Current shard empty — scan others
-        for _ in 1..n {
-            self.next_shard = (self.next_shard + 1) % n;
-            if let Some(msg) = self.shard_consumers[self.next_shard].pop() {
-                return self.dedup(msg);
+        while let Some(msg) = self.event_rx.pop() {
+            if let Some(msg) = self.dedup(msg) {
+                return Some(msg);
             }
         }
-        // All empty — advance so next call starts at a different shard
-        self.next_shard = (self.next_shard + 1) % n;
         None
     }
 
@@ -253,10 +246,9 @@ struct RelayEntry {
 /// sharded reader IO threads and a single writer IO thread.
 ///
 /// Reader threads are sharded across available CPU cores — each owns its
-/// own io_uring and a dedicated SPSC event ring (zero CAS contention).
-/// Connections are assigned round-robin. The consumer round-robins across
-/// all shard rings to collect events. Outbound messages are broadcast via
-/// a lock-free ring.
+/// own io_uring for I/O. All reader threads push parsed events into a
+/// single shared MPSC ring — the consumer just pops and deduplicates.
+/// Outbound messages are broadcast via a lock-free ring.
 ///
 /// Includes event-driven auto-reconnection with exponential backoff and
 /// subscription tracking — when a relay reconnects, all active subscriptions
@@ -288,13 +280,12 @@ pub struct RelayPool {
 impl RelayPool {
     /// Create a new relay pool and spawn IO threads.
     ///
-    /// Detects available CPU cores and spawns one reader IO thread per core,
+    /// Detects available CPU cores and spawns reader IO threads (even distribution),
     /// plus one writer IO thread and one event-driven reconnect thread.
-    /// Each reader thread owns its own io_uring and SPSC event ring — zero
-    /// contention between shards.
+    /// All reader threads push parsed events into a shared MPSC ring.
     ///
     /// # Arguments
-    /// * `ring_capacity` - Per-shard SPSC ring buffer size for inbound events
+    /// * `ring_capacity` - MPSC ring buffer size for inbound events
     /// * `cache_size` - Deduplication cache size (e.g. 10,000)
     /// * `broadcast_capacity` - Broadcast ring buffer size for outbound messages
     /// * `max_relays` - Maximum number of relay connections
@@ -309,31 +300,37 @@ impl RelayPool {
             .unwrap_or(1);
 
         // Broadcast ring for outbound messages (sender → writer IO thread)
-        // Budget: max_relays initial + max_relays reconnections + 1 reconnect thread
         let (bc_producer, bc_consumer) =
             broadcast::RingBuffer::new(Capacity::at_least(broadcast_capacity), max_relays * 2 + 1)
                 .split();
 
         let global_shutdown = Arc::new(AtomicBool::new(false));
 
-        // Spawn reader IO threads — one per core, capped at max_relays
-        let num_shards = num_cores.min(max_relays).max(1);
+        // Spawn reader IO threads — pick the largest core count that divides
+        // max_relays evenly so every shard handles the same number of connections.
+        // Even distribution ensures fair throughput across all relays.
+        let num_shards = {
+            let cap = num_cores.min(max_relays).max(1);
+            (1..=cap).rev().find(|&s| max_relays % s == 0).unwrap_or(cap)
+        };
+
+        // Shared MPSC event ring: all reader threads push parsed events here
+        let total_capacity = ring_capacity * num_shards;
+        let (event_tx, event_rx) = RingBuffer::new(Capacity::at_least(total_capacity)).split();
+        let consumer = PoolConsumer::new(event_rx, cache_size);
+
         let relays_per_shard = (max_relays / num_shards).max(4);
-        let capacity_per_shard = ring_capacity;
         let mut reader_shards = Vec::with_capacity(num_shards);
-        let mut shard_consumers = Vec::with_capacity(num_shards);
 
         for i in 0..num_shards {
             let (cmd_tx, cmd_rx) = RingBuffer::new(Capacity::at_least(relays_per_shard)).split();
-            let (event_tx, event_rx) =
-                spsc::RingBuffer::new(Capacity::at_least(capacity_per_shard)).split();
-            shard_consumers.push(event_rx);
-
+            let shard_event_tx = event_tx.clone();
             let shutdown = Arc::clone(&global_shutdown);
+
             let handle = std::thread::Builder::new()
                 .name(format!("ring-reader-{i}"))
                 .spawn(move || {
-                    reader::reader_thread(cmd_rx, event_tx, shutdown);
+                    reader::reader_thread(cmd_rx, shard_event_tx, shutdown);
                 })
                 .expect("failed to spawn reader thread");
             reader_shards.push(ReaderShard {
@@ -353,15 +350,12 @@ impl RelayPool {
             })
             .expect("failed to spawn writer thread");
 
-        let consumer = PoolConsumer::new(shard_consumers, cache_size);
-
         // Reconnect thread rings — cmd (MPSC) and results (SPSC)
         let (reconnect_cmd_tx, reconnect_cmd_rx) =
             RingBuffer::new(Capacity::at_least(max_relays * 2)).split();
         let (reconnect_result_tx, reconnect_result_rx) =
             spsc::RingBuffer::new(Capacity::at_least(max_relays)).split();
 
-        // Clone handles for the reconnect thread
         let reconnect_reader_txs: Vec<_> =
             reader_shards.iter().map(|s| s.cmd_tx.clone()).collect();
         let reconnect_writer_tx = writer_cmd_tx.clone();

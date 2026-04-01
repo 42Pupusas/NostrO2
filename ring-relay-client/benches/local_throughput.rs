@@ -23,7 +23,7 @@ fn relay_urls() -> Vec<String> {
 fn bench_ring_relay(c: &mut Criterion) {
     let mut group = c.benchmark_group("local_throughput");
     group.sample_size(10);
-    group.measurement_time(Duration::from_secs(15));
+    group.measurement_time(Duration::from_secs(30));
     group.warm_up_time(Duration::from_secs(3));
 
     group.bench_function("ring_relay", |b| {
@@ -33,7 +33,7 @@ fn bench_ring_relay(c: &mut Criterion) {
             for _ in 0..iters {
                 let urls = relay_urls();
                 let mut pool =
-                    ring_relay_client::RelayPool::new(524288, 2_000_000, 1024, urls.len());
+                    ring_relay_client::RelayPool::new(1_048_576, 2_000_000, 1024, urls.len());
                 let sender = pool.sender();
 
                 for url in &urls {
@@ -81,7 +81,7 @@ fn bench_ring_relay(c: &mut Criterion) {
 fn bench_async_relay(c: &mut Criterion) {
     let mut group = c.benchmark_group("local_throughput");
     group.sample_size(10);
-    group.measurement_time(Duration::from_secs(15));
+    group.measurement_time(Duration::from_secs(30));
     group.warm_up_time(Duration::from_secs(3));
 
     group.bench_function("async_relay", |b| {
@@ -100,31 +100,44 @@ fn bench_async_relay(c: &mut Criterion) {
                         kinds: vec![1].into(),
                         ..Default::default()
                     };
-                    pool.send(subscription).unwrap();
 
                     tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    if pool.send(subscription).is_err() {
+                        // Tasks failed to connect — skip this iteration
+                        drop(pool);
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        return Duration::from_nanos(1);
+                    }
 
                     let start = std::time::Instant::now();
                     let mut eose = 0;
 
                     loop {
-                        match pool.recv().await {
-                            Some(NostrRelayEvent::EndOfSubscription(..)) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(30),
+                            pool.recv(),
+                        )
+                        .await
+                        {
+                            Ok(Some(NostrRelayEvent::EndOfSubscription(..))) => {
                                 eose += 1;
                                 if eose >= urls.len() {
                                     break;
                                 }
                             }
-                            Some(_) => {}
-                            None => break,
+                            Ok(Some(_)) => {}
+                            _ => break, // timeout or channel closed
                         }
                     }
 
-                    start.elapsed()
+                    let elapsed = start.elapsed();
+                    drop(pool);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    elapsed
                 });
 
                 total += elapsed;
-                std::thread::sleep(Duration::from_millis(500));
             }
 
             total
@@ -134,5 +147,5 @@ fn bench_async_relay(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_ring_relay, bench_async_relay);
+criterion_group!(benches, bench_async_relay, bench_ring_relay);
 criterion_main!(benches);

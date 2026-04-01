@@ -1,14 +1,14 @@
 //! Global reader IO thread: one io_uring instance for all relay fds.
 //!
 //! Keeps a recv SQE in-flight per registered fd. On completion:
-//! decode frames via coyoquil → push to MPSC ring → immediately resubmit recv.
+//! decode frames via coyoquil → push to shared MPSC ring → immediately resubmit recv.
 //! Falls back to libc recvmsg for kTLS EIO (non-data TLS records).
 
 use crate::PoolMessage;
 use crate::Parker;
 use coyoquil::{DEFAULT_MAX_MESSAGE_SIZE, Frame, FrameDecoder, Role};
 use nostro2::NostrRelayEvent;
-use quetzalcoatl::mpsc::Consumer;
+use quetzalcoatl::mpsc::{Consumer, Producer};
 use quetzalcoatl::spsc;
 use ququmatz::types::MsgFlags;
 use ququmatz::{IoUring, Sqe};
@@ -46,17 +46,17 @@ struct ReaderSlot {
 /// Run the global reader IO loop. Blocks until the global shutdown flag is set.
 pub fn reader_thread(
     mut cmd_rx: Consumer<ReaderAdd>,
-    event_tx: spsc::Producer<PoolMessage>,
+    event_tx: Producer<PoolMessage>,
     global_shutdown: Arc<AtomicBool>,
 ) {
-    if let Err(e) = reader_loop(&mut cmd_rx, event_tx, &global_shutdown) {
+    if let Err(e) = reader_loop(&mut cmd_rx, &event_tx, &global_shutdown) {
         eprintln!("reader IO thread fatal: {e}");
     }
 }
 
 fn reader_loop(
     cmd_rx: &mut Consumer<ReaderAdd>,
-    event_tx: spsc::Producer<PoolMessage>,
+    event_tx: &Producer<PoolMessage>,
     global_shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut ring = IoUring::new(256)?;
@@ -124,31 +124,35 @@ fn reader_loop(
                 if errno == EIO {
                     match ktls::ktls_read(slot.fd, &mut slot.recv_buf) {
                         Ok(0) => {
-                            mark_dead(slot, &event_tx, Some("connection closed during kTLS read".into()));
+                            mark_dead(slot, event_tx, Some("connection closed during kTLS read".into()));
                             continue;
                         }
                         Ok(n) => n,
                         Err(e) => {
-                            mark_dead(slot, &event_tx, Some(format!("kTLS read error: {e}")));
+                            mark_dead(slot, event_tx, Some(format!("kTLS read error: {e}")));
                             continue;
                         }
                     }
                 } else {
-                    mark_dead(slot, &event_tx, Some(format!("recv failed: errno {errno}")));
+                    mark_dead(slot, event_tx, Some(format!("recv failed: errno {errno}")));
                     continue;
                 }
             } else {
                 let n = cqe.result as usize;
                 if n == 0 {
-                    mark_dead(slot, &event_tx, Some("connection closed (EOF)".into()));
+                    mark_dead(slot, event_tx, Some("connection closed (EOF)".into()));
                     continue;
                 }
                 n
             };
 
+            // Track recv stats for benchmarking
+            crate::RECV_BYTES.fetch_add(n, Ordering::Relaxed);
+            crate::RECV_COUNT.fetch_add(1, Ordering::Relaxed);
+
             // Decode frames
             if slot.decoder.push(&slot.recv_buf[..n]).is_err() {
-                mark_dead(slot, &event_tx, Some("WebSocket frame decode error".into()));
+                mark_dead(slot, event_tx, Some("WebSocket frame decode error".into()));
                 continue;
             }
 
@@ -160,7 +164,7 @@ fn reader_loop(
                                 relay_url: Arc::clone(&slot.relay_url),
                                 event,
                             };
-                            // Push into the SPSC ring with bounded retry
+                            // Push into the shared MPSC ring with bounded retry
                             let mut msg = msg;
                             let mut retries = 0;
                             loop {
@@ -186,7 +190,7 @@ fn reader_loop(
                         let _ = slot.pong_tx.push(data.to_vec());
                     }
                     Frame::Close(_) => {
-                        mark_dead(slot, &event_tx, None);
+                        mark_dead(slot, event_tx, None);
                         break;
                     }
                     _ => {}
@@ -224,7 +228,7 @@ fn submit_recv(
     Ok(())
 }
 
-fn mark_dead(slot: &mut ReaderSlot, event_tx: &spsc::Producer<PoolMessage>, error: Option<String>) {
+fn mark_dead(slot: &mut ReaderSlot, event_tx: &Producer<PoolMessage>, error: Option<String>) {
     slot.dead = true;
     slot.shutdown.store(true, Ordering::Release);
     let _ = event_tx.push(PoolMessage::ConnectionClosed {

@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nostro2::NostrRelayEvent;
-use ring_relay_client::{PoolMessage, create_pool};
+use ring_relay_client::PoolMessage;
 use quetzalcoatl::capacity::Capacity;
 
 fn make_msg() -> PoolMessage {
@@ -21,7 +21,7 @@ fn bench_ring_buffer_throughput(c: &mut Criterion) {
             buffer_size,
             |b, &size| {
                 b.iter(|| {
-                    let (mut consumer, producer) = create_pool(size, 10_000);
+                    let (producer, mut consumer) = quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(size)).split();
 
                     std::thread::spawn(move || {
                         for _ in 0..1000 {
@@ -32,7 +32,13 @@ fn bench_ring_buffer_throughput(c: &mut Criterion) {
                     });
 
                     for _ in 0..1000 {
-                        black_box(consumer.recv());
+                        loop {
+                            if let Some(msg) = consumer.pop() {
+                                black_box(msg);
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
                     }
                 });
             },
@@ -268,7 +274,7 @@ fn bench_multi_producer(c: &mut Criterion) {
             num_producers,
             |b, &count| {
                 b.iter(|| {
-                    let (mut consumer, producer) = create_pool(4096, 10_000);
+                    let (producer, mut consumer) = quetzalcoatl::mpsc::RingBuffer::<PoolMessage>::new(Capacity::at_least(4096)).split();
 
                     let handles: Vec<_> = (0..count)
                         .map(|i| {
@@ -289,7 +295,13 @@ fn bench_multi_producer(c: &mut Criterion) {
 
                     let total_messages = count * 1000;
                     for _ in 0..total_messages {
-                        black_box(consumer.recv());
+                        loop {
+                            if let Some(msg) = consumer.pop() {
+                                black_box(msg);
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
                     }
 
                     for handle in handles {
