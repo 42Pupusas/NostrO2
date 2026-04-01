@@ -92,7 +92,7 @@ fn bench_ring_relay() -> BenchResult {
         drain_ring_events(expected, mem_before, || pool.try_recv());
 
     // Print recv stats
-    let (recv_bytes, recv_count) = ring_relay_client::recv_stats_reset();
+    let (recv_bytes, recv_count, _recv_drops) = ring_relay_client::recv_stats_reset();
     let avg_recv = if recv_count > 0 { recv_bytes / recv_count } else { 0 };
     let mbps = recv_bytes as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     println!("  I/O stats: {recv_count} recvs, {recv_bytes} bytes total");

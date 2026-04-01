@@ -56,6 +56,15 @@ pub struct KtlsConnection {
     pub fd: i32,
 }
 
+impl KtlsConnection {
+    /// Consume the connection and return the raw fd without closing it.
+    pub fn into_raw_fd(self) -> i32 {
+        let fd = self.fd;
+        std::mem::forget(self);
+        fd
+    }
+}
+
 impl Drop for KtlsConnection {
     fn drop(&mut self) {
         unsafe {
@@ -234,7 +243,7 @@ fn ws_handshake(
     Ok(())
 }
 
-fn write_all_fd(fd: i32, mut data: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) fn write_all_fd(fd: i32, mut data: &[u8]) -> Result<(), std::io::Error> {
     while !data.is_empty() {
         let n = unsafe { syscall::write(fd, data.as_ptr(), data.len()) }?;
         data = &data[n..];

@@ -61,9 +61,9 @@ fn writer_loop(
             break;
         }
 
-        // 1. Accept new connections
+        // 1. Accept new connections (reuse dead slots to prevent unbounded growth)
         while let Some(cmd) = cmd_rx.pop() {
-            slots.push(WriterSlot {
+            let new_slot = WriterSlot {
                 fd: cmd.fd,
                 outbound: cmd.outbound,
                 pong_rx: cmd.pong_rx,
@@ -72,7 +72,12 @@ fn writer_loop(
                 send_buf: Vec::with_capacity(65536),
                 send_offset: 0,
                 send_pending: false,
-            });
+            };
+            if let Some(i) = slots.iter().position(|s| s.dead && !s.send_pending) {
+                slots[i] = new_slot;
+            } else {
+                slots.push(new_slot);
+            }
         }
 
         // 2. For each slot that isn't already sending, build a frame batch
@@ -139,8 +144,8 @@ fn writer_loop(
                 }
             }
         } else {
-            // No outbound data — park briefly before checking again
-            std::thread::park_timeout(std::time::Duration::from_millis(1));
+            // No outbound data — park until woken by PoolSender
+            std::thread::park();
         }
     }
 

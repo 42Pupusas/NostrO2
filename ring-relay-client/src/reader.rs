@@ -26,6 +26,8 @@ pub struct ReaderAdd {
     pub pong_tx: spsc::Producer<Vec<u8>>,
     pub shutdown: Arc<AtomicBool>,
     pub waker: Arc<Parker>,
+    /// Writer thread handle — unparked when a pong is queued.
+    pub writer_waker: std::thread::Thread,
 }
 
 /// Per-connection state held by the reader thread.
@@ -37,6 +39,7 @@ struct ReaderSlot {
     pong_tx: spsc::Producer<Vec<u8>>,
     shutdown: Arc<AtomicBool>,
     waker: Arc<Parker>,
+    writer_waker: std::thread::Thread,
     /// Whether this slot has a recv SQE in-flight.
     recv_pending: bool,
     /// Marked dead after close/error — will be cleaned up.
@@ -68,10 +71,9 @@ fn reader_loop(
             break;
         }
 
-        // 1. Accept new connections
+        // 1. Accept new connections (reuse dead slots to prevent unbounded growth)
         while let Some(cmd) = cmd_rx.pop() {
-            let idx = slots.len() as u64;
-            slots.push(ReaderSlot {
+            let new_slot = ReaderSlot {
                 fd: cmd.fd,
                 relay_url: cmd.relay_url,
                 decoder: FrameDecoder::new(Role::Client),
@@ -79,10 +81,19 @@ fn reader_loop(
                 pong_tx: cmd.pong_tx,
                 shutdown: cmd.shutdown,
                 waker: cmd.waker,
+                writer_waker: cmd.writer_waker,
                 recv_pending: false,
                 dead: false,
-            });
-            submit_recv(&mut ring, &mut slots[idx as usize], idx)?;
+            };
+            let idx = if let Some(i) = slots.iter().position(|s| s.dead && !s.recv_pending) {
+                slots[i] = new_slot;
+                i
+            } else {
+                let i = slots.len();
+                slots.push(new_slot);
+                i
+            };
+            submit_recv(&mut ring, &mut slots[idx], idx as u64)?;
         }
 
         // 2. Resubmit recv for slots that need it (after completions were processed)
@@ -164,19 +175,18 @@ fn reader_loop(
                                 relay_url: Arc::clone(&slot.relay_url),
                                 event,
                             };
-                            // Push into the shared MPSC ring with bounded retry
+                            // Brief backpressure retry for momentary ring fullness,
+                            // then drop with a visible counter.
                             let mut msg = msg;
-                            let mut retries = 0;
-                            loop {
+                            for attempt in 0..32 {
                                 match event_tx.push(msg) {
                                     Ok(()) => {
                                         slot.waker.unpark();
                                         break;
                                     }
                                     Err(returned) => {
-                                        retries += 1;
-                                        if retries > 1024 {
-                                            // Consumer can't keep up — drop the event
+                                        if attempt == 31 {
+                                            crate::RECV_DROPS.fetch_add(1, Ordering::Relaxed);
                                             break;
                                         }
                                         msg = returned;
@@ -188,6 +198,7 @@ fn reader_loop(
                     }
                     Frame::Ping(data) => {
                         let _ = slot.pong_tx.push(data.to_vec());
+                        slot.writer_waker.unpark();
                     }
                     Frame::Close(_) => {
                         mark_dead(slot, event_tx, None);

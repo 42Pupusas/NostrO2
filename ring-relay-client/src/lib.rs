@@ -11,12 +11,15 @@ use std::time::Duration;
 // ── Global recv stats (for benchmarking I/O layer) ──────────────────
 pub static RECV_BYTES: AtomicUsize = AtomicUsize::new(0);
 pub static RECV_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Events dropped because the MPSC ring was full (consumer too slow).
+pub static RECV_DROPS: AtomicUsize = AtomicUsize::new(0);
 
-/// Reset recv counters and return (bytes, count) snapshot.
-pub fn recv_stats_reset() -> (usize, usize) {
+/// Reset recv counters and return (bytes, count, drops) snapshot.
+pub fn recv_stats_reset() -> (usize, usize, usize) {
     let bytes = RECV_BYTES.swap(0, Ordering::Relaxed);
     let count = RECV_COUNT.swap(0, Ordering::Relaxed);
-    (bytes, count)
+    let drops = RECV_DROPS.swap(0, Ordering::Relaxed);
+    (bytes, count, drops)
 }
 
 /// Lock-free wake primitive: reader threads unpark the consumer via its
@@ -83,6 +86,7 @@ pub enum PoolMessage {
 #[derive(Clone)]
 pub struct PoolSender {
     producer: broadcast::Producer<String>,
+    writer_thread: std::thread::Thread,
 }
 
 impl PoolSender {
@@ -93,48 +97,18 @@ impl PoolSender {
     pub fn send<T: Into<NostrClientEvent>>(&self, msg: T) -> Result<(), String> {
         let client_event: NostrClientEvent = msg.into();
         let json = serde_json::to_string(&client_event).map_err(|e| e.to_string())?;
-        self.producer.push(json)
+        self.producer.push(json)?;
+        self.writer_thread.unpark();
+        Ok(())
     }
 
     /// Send a raw pre-serialized JSON string to all relays.
     ///
     /// Use this when you've already serialized the message.
     pub fn send_raw(&self, json: String) -> Result<(), String> {
-        self.producer.push(json)
-    }
-}
-
-/// Lightweight handle to a connected relay.
-///
-/// Does not own any threads — the global IO threads handle all I/O.
-/// Holds the fd and shutdown flag for cleanup.
-pub struct RelayConnection {
-    relay_url: String,
-    fd: i32,
-    shutdown: Arc<AtomicBool>,
-}
-
-impl RelayConnection {
-    pub fn relay_url(&self) -> &str {
-        &self.relay_url
-    }
-
-    pub fn is_finished(&self) -> bool {
-        self.shutdown.load(Ordering::Acquire)
-    }
-
-    pub fn request_shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
-    }
-}
-
-impl Drop for RelayConnection {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        unsafe {
-            syscall::shutdown(self.fd, syscall::SHUT_RDWR);
-            syscall::close(self.fd);
-        }
+        self.producer.push(json)?;
+        self.writer_thread.unpark();
+        Ok(())
     }
 }
 
@@ -286,6 +260,7 @@ pub struct RelayPool {
 
     // Single writer thread
     writer_cmd_tx: Producer<writer::WriterAdd>,
+    writer_thread_handle: std::thread::Thread,
     writer_thread: Option<std::thread::JoinHandle<()>>,
 
     // Reconnect thread — event-driven, parks until needed
@@ -375,12 +350,14 @@ impl RelayPool {
         let (reconnect_result_tx, reconnect_result_rx) =
             spsc::RingBuffer::new(Capacity::at_least(max_relays)).split();
 
+        let writer_thread_handle = writer_thread.thread().clone();
+
         let reconnect_reader_txs: Vec<_> =
             reader_shards.iter().map(|s| s.cmd_tx.clone()).collect();
         let reconnect_writer_tx = writer_cmd_tx.clone();
         let reconnect_bc_consumer = bc_consumer.clone();
-        let reconnect_bc_producer = bc_producer.clone();
         let reconnect_waker = consumer.waker();
+        let reconnect_writer_waker = writer_thread_handle.clone();
         let reconnect_shutdown = Arc::clone(&global_shutdown);
 
         let reconnect_thread = std::thread::Builder::new()
@@ -392,26 +369,27 @@ impl RelayPool {
                     reader_txs: reconnect_reader_txs,
                     writer_tx: reconnect_writer_tx,
                     broadcast_consumer: reconnect_bc_consumer,
-                    broadcast_producer: reconnect_bc_producer,
                     waker: reconnect_waker,
+                    writer_waker: reconnect_writer_waker,
                     global_shutdown: reconnect_shutdown,
                     initial_backoff: DEFAULT_INITIAL_BACKOFF,
                     max_backoff: DEFAULT_MAX_BACKOFF,
                 });
             })
             .expect("failed to spawn reconnect thread");
-
         Self {
             relay_entries: Vec::new(),
             subscriptions: HashMap::new(),
             consumer,
             sender: PoolSender {
                 producer: bc_producer,
+                writer_thread: writer_thread_handle.clone(),
             },
             broadcast_consumer: bc_consumer,
             reader_shards,
             next_reader: 0,
             writer_cmd_tx,
+            writer_thread_handle,
             writer_thread: Some(writer_thread),
             reconnect_cmd_tx,
             reconnect_result_rx,
@@ -450,9 +428,7 @@ impl RelayPool {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.cleanup();
 
-        let ktls_conn = ktls::connect(&relay_url)?;
-        let fd = ktls_conn.fd;
-        std::mem::forget(ktls_conn);
+        let fd = ktls::connect(&relay_url)?.into_raw_fd();
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let url: Arc<str> = relay_url.as_str().into();
@@ -473,6 +449,7 @@ impl RelayPool {
             pong_tx,
             shutdown: Arc::clone(&shutdown),
             waker: self.consumer.waker(),
+            writer_waker: self.writer_thread_handle.clone(),
         };
         self.reader_shards[shard_idx]
             .cmd_tx
@@ -698,6 +675,7 @@ mod tests {
 
         let sender = PoolSender {
             producer: bc_producer,
+            writer_thread: std::thread::current(),
         };
         let sender2 = sender.clone();
 

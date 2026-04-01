@@ -14,6 +14,7 @@ use crate::reader::ReaderAdd;
 use crate::writer::WriterAdd;
 use crate::Parker;
 use crate::syscall;
+use coyoquil::{Frame, MaskKey};
 use quetzalcoatl::broadcast;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc;
@@ -78,8 +79,8 @@ pub(crate) struct ReconnectContext {
     pub reader_txs: Vec<mpsc::Producer<ReaderAdd>>,
     pub writer_tx: mpsc::Producer<WriterAdd>,
     pub broadcast_consumer: broadcast::Consumer<String>,
-    pub broadcast_producer: broadcast::Producer<String>,
     pub waker: Arc<Parker>,
+    pub writer_waker: std::thread::Thread,
     pub global_shutdown: Arc<AtomicBool>,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
@@ -143,14 +144,30 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
 
             match ktls::connect(&relay.url) {
                 Ok(ktls_conn) => {
-                    let new_fd = ktls_conn.fd;
-                    std::mem::forget(ktls_conn);
+                    let new_fd = ktls_conn.into_raw_fd();
 
                     // Close old fd
                     let old_fd = relay.fd;
                     unsafe {
                         syscall::shutdown(old_fd, syscall::SHUT_RDWR);
                         syscall::close(old_fd);
+                    }
+
+                    // Re-send tracked subscriptions directly to this relay only
+                    if !subscriptions.is_empty() {
+                        let mut buf = Vec::new();
+                        for sub_json in subscriptions.values() {
+                            Frame::Text(sub_json).encode_masked(MaskKey::new(), &mut buf);
+                        }
+                        if ktls::write_all_fd(new_fd, &buf).is_err() {
+                            unsafe {
+                                syscall::shutdown(new_fd, syscall::SHUT_RDWR);
+                                syscall::close(new_fd);
+                            }
+                            relay.retry_after = Some(Instant::now() + relay.backoff);
+                            relay.backoff = (relay.backoff * 2).min(ctx.max_backoff);
+                            continue;
+                        }
                     }
 
                     let new_shutdown = Arc::new(AtomicBool::new(false));
@@ -167,6 +184,7 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                         pong_tx,
                         shutdown: Arc::clone(&new_shutdown),
                         waker: Arc::clone(&ctx.waker),
+                        writer_waker: ctx.writer_waker.clone(),
                     };
                     if ctx.reader_txs[shard_idx].push(reader_cmd).is_err() {
                         unsafe {
@@ -207,10 +225,6 @@ pub(crate) fn reconnect_thread(mut ctx: ReconnectContext) {
                         shutdown: Arc::clone(&relay.shutdown),
                     });
                     ctx.waker.unpark();
-
-                    for sub_json in subscriptions.values() {
-                        let _ = ctx.broadcast_producer.push(sub_json.clone());
-                    }
                 }
                 Err(_) => {
                     relay.retry_after = Some(Instant::now() + relay.backoff);
