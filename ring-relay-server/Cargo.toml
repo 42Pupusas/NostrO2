@@ -1,0 +1,26 @@
+[package]
+name = "ring-relay-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Lock-free WebSocket relay server using io_uring and ring buffers."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+readme = "../README.md"
+categories = ["network-programming", "concurrency"]
+keywords = ["nostr", "relay", "websocket", "lock-free", "io-uring"]
+
+[dependencies]
+# Ring buffers
+quetzalcoatl = "0.6.0"
+serde_json = { workspace = true }
+# WebSocket RFC6455 codec
+coyoquil = "0.1.0"
+# IO-uring
+ququmatz = "0.4.0"
+
+[dev-dependencies]
+tungstenite = "0.26"
+
+[[example]]
+name = "echo"

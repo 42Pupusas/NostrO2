@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 # WebSockets RFC6455 codec
 coyoquil = "0.1.0"
 # IO-uring
-ququmatz = "0.1.0"
+ququmatz = "0.4.0"
 # TLS
 rustls = { workspace = true }
 rustls-native-certs = "0.8"
