@@ -138,10 +138,14 @@ impl Drop for RelayConnection {
     }
 }
 
-/// Consumer side of the pool — pops parsed events from a shared MPSC ring
+/// Consumer side of the pool — drains parsed events from a shared MPSC ring
 /// that all reader threads push into, and deduplicates before returning.
 pub struct PoolConsumer {
     event_rx: Consumer<PoolMessage>,
+    /// Batch buffer: drain fills this, try_recv pops from it.
+    /// Avoids per-event cache line invalidation on the MPSC head.
+    batch: Vec<PoolMessage>,
+    batch_pos: usize,
     /// Two-set deduplication: when the active set fills up, swap it into
     /// backup and clear. New lookups check both sets, so we never lose
     /// all dedup state at once.
@@ -159,6 +163,8 @@ impl PoolConsumer {
     pub fn new(event_rx: Consumer<PoolMessage>, cache_size: usize) -> Self {
         Self {
             event_rx,
+            batch: Vec::with_capacity(1024),
+            batch_pos: 0,
             dedup_active: std::collections::HashSet::with_capacity(cache_size),
             dedup_backup: std::collections::HashSet::with_capacity(cache_size),
             dedup_capacity: cache_size,
@@ -173,15 +179,28 @@ impl PoolConsumer {
 
     /// Receive the next message from any relay (non-blocking)
     ///
-    /// Returns `Some(message)` if available and not a duplicate, `None` if the ring is empty.
-    /// Automatically deduplicates NewNote events based on event ID.
+    /// Uses `drain()` to batch-read all available items from the MPSC ring
+    /// with a single head update, then serves them from a local buffer.
+    /// This reduces cache line contention with producer threads.
     pub fn try_recv(&mut self) -> Option<PoolMessage> {
-        while let Some(msg) = self.event_rx.pop() {
-            if let Some(msg) = self.dedup(msg) {
-                return Some(msg);
+        loop {
+            // Serve from local batch first
+            while self.batch_pos < self.batch.len() {
+                let msg = self.batch[self.batch_pos].clone();
+                self.batch_pos += 1;
+                if let Some(msg) = self.dedup(msg) {
+                    return Some(msg);
+                }
+            }
+
+            // Batch exhausted — drain more from the ring
+            self.batch.clear();
+            self.batch_pos = 0;
+            self.event_rx.drain(|msg| self.batch.push(msg));
+            if self.batch.is_empty() {
+                return None;
             }
         }
-        None
     }
 
     /// Blocking receive — parks the thread until a reader pushes an event.
