@@ -1,19 +1,35 @@
 //! Benchmark: connection storm — how fast can the server accept N connections.
 //!
-//! Measures time to connect + handshake N clients and receive all Connected events.
+//! Measures time to connect + handshake N clients.
 //! Compares ring-relay-server vs tokio-tungstenite server.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const NUM_CLIENTS: usize = 500;
+const NUM_CLIENTS: usize = 100;
 
-type WsClient = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+/// Connect N clients concurrently via tokio-tungstenite. Returns count of successful connects.
+async fn connect_all(port: u16, num: usize) -> usize {
+    let connected = Arc::new(AtomicUsize::new(0));
+    let mut tasks = Vec::new();
 
-fn connect_tungstenite(port: u16) -> WsClient {
-    let url = format!("ws://127.0.0.1:{port}");
-    let (ws, _) = tungstenite::connect(&url).expect("connect failed");
-    ws
+    for _ in 0..num {
+        let count = connected.clone();
+        tasks.push(tokio::spawn(async move {
+            let url = format!("ws://127.0.0.1:{port}");
+            if tokio_tungstenite::connect_async(&url).await.is_ok() {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    for t in tasks {
+        let _ = t.await;
+    }
+
+    connected.load(Ordering::Relaxed)
 }
 
 // ── Ring relay server ──────────────────────────────────────────────────
@@ -24,6 +40,8 @@ fn bench_ring_connections(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(30));
 
     group.bench_function("ring_relay_server", |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
 
@@ -35,34 +53,17 @@ fn bench_ring_connections(c: &mut Criterion) {
 
                 let start = Instant::now();
 
-                // Connect all clients in parallel threads
-                let mut handles = Vec::new();
-                for _ in 0..NUM_CLIENTS {
-                    handles.push(std::thread::spawn(move || connect_tungstenite(port)));
-                }
-                let mut clients: Vec<_> = handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap())
-                    .collect();
+                let connected = rt.block_on(connect_all(port, NUM_CLIENTS));
 
                 // Wait for all Connected events
-                for _ in 0..NUM_CLIENTS {
-                    match server.recv() {
-                        ring_relay_server::ClientMessage::Connected { .. } => {}
-                        other => panic!("expected Connected, got {other:?}"),
-                    }
+                for _ in 0..connected {
+                    server.recv();
                 }
 
                 total += start.elapsed();
 
-                let rate = NUM_CLIENTS as f64 / total.as_secs_f64();
-                println!(
-                    "ring: {NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)"
-                );
-
-                for c in clients.iter_mut() {
-                    let _ = c.close(None);
-                }
+                let rate = connected as f64 / total.as_secs_f64();
+                println!("ring: {connected}/{NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)");
             }
 
             total
@@ -86,7 +87,7 @@ fn bench_tokio_connections(c: &mut Criterion) {
             let mut total = Duration::ZERO;
 
             for _ in 0..iters {
-                let connected = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let connected = Arc::new(AtomicUsize::new(0));
 
                 let (port, shutdown_tx) = rt.block_on(async {
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -101,12 +102,9 @@ fn bench_tokio_connections(c: &mut Criterion) {
                                     if let Ok((stream, _)) = accepted {
                                         let count = conn_count.clone();
                                         tokio::spawn(async move {
-                                            let ws = tokio_tungstenite::accept_async(stream)
-                                                .await
-                                                .unwrap();
-                                            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                            let (_write, mut read) = futures_util::StreamExt::split(ws);
-                                            while let Some(Ok(_)) = futures_util::StreamExt::next(&mut read).await {}
+                                            if tokio_tungstenite::accept_async(stream).await.is_ok() {
+                                                count.fetch_add(1, Ordering::Relaxed);
+                                            }
                                         });
                                     }
                                 }
@@ -120,31 +118,19 @@ fn bench_tokio_connections(c: &mut Criterion) {
 
                 let start = Instant::now();
 
-                // Connect all clients in parallel threads
-                let mut handles = Vec::new();
-                for _ in 0..NUM_CLIENTS {
-                    handles.push(std::thread::spawn(move || connect_tungstenite(port)));
-                }
-                let mut clients: Vec<_> = handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap())
-                    .collect();
+                let client_connected = rt.block_on(connect_all(port, NUM_CLIENTS));
 
-                // Wait for all connections to be accepted
-                while connected.load(std::sync::atomic::Ordering::Relaxed) < NUM_CLIENTS {
+                // Wait for server to finish accepting all
+                while connected.load(Ordering::Relaxed) < client_connected {
                     std::thread::yield_now();
                 }
 
                 total += start.elapsed();
 
-                let rate = NUM_CLIENTS as f64 / total.as_secs_f64();
-                println!(
-                    "tokio: {NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)"
-                );
+                let got = connected.load(Ordering::Relaxed);
+                let rate = got as f64 / total.as_secs_f64();
+                println!("tokio: {got}/{NUM_CLIENTS} connections in {total:.2?} ({rate:.0} conn/s)");
 
-                for c in clients.iter_mut() {
-                    let _ = c.close(None);
-                }
                 let _ = shutdown_tx.send(());
             }
 

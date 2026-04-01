@@ -4,21 +4,15 @@
 //! Compares ring-relay-server vs tokio-tungstenite server.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tungstenite::Message;
 
 const NUM_CLIENTS: usize = 100;
 const NUM_BROADCASTS: usize = 1_000;
 const PAYLOAD: &str = "broadcast payload: a typical relay event JSON would go here, padding";
-
-type WsClient = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
-
-fn connect_tungstenite(port: u16) -> WsClient {
-    let url = format!("ws://127.0.0.1:{port}");
-    let (ws, _) = tungstenite::connect(&url).expect("connect failed");
-    ws
-}
 
 // ── Ring relay server ──────────────────────────────────────────────────
 
@@ -28,6 +22,8 @@ fn bench_ring_broadcast(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(30));
 
     group.bench_function("ring_relay_server", |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
 
@@ -38,18 +34,33 @@ fn bench_ring_broadcast(c: &mut Criterion) {
                 let port = server.port();
                 let sender = server.sender();
 
-                // Connect all clients
-                let mut clients: Vec<_> = (0..NUM_CLIENTS)
-                    .map(|_| connect_tungstenite(port))
-                    .collect();
+                // Connect reader clients via tokio-tungstenite, hold their read halves
+                let received = Arc::new(AtomicUsize::new(0));
+                let mut reader_tasks = Vec::new();
 
-                // Drain Connected events and register clients with writer
+                rt.block_on(async {
+                    for _ in 0..NUM_CLIENTS {
+                        let count = received.clone();
+                        let url = format!("ws://127.0.0.1:{port}");
+                        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+                        let (_write, mut read) = ws.split();
+                        reader_tasks.push(tokio::spawn(async move {
+                            for _ in 0..NUM_BROADCASTS {
+                                if read.next().await.is_none() {
+                                    break;
+                                }
+                                count.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }));
+                    }
+                });
+
+                // Drain Connected events — registers each client with the writer
                 for _ in 0..NUM_CLIENTS {
                     server.recv();
                 }
-                std::thread::sleep(Duration::from_millis(10));
 
-                // Drain server events in background so the event ring doesn't fill
+                // Drain further events in background
                 let drain_shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let drain_flag = drain_shutdown.clone();
                 let drain_thread = std::thread::spawn(move || {
@@ -62,42 +73,24 @@ fn bench_ring_broadcast(c: &mut Criterion) {
                 // ── Timed section ──
                 let start = Instant::now();
 
-                // Server broadcasts N messages
                 for _ in 0..NUM_BROADCASTS {
                     sender.broadcast(PAYLOAD.to_string()).unwrap();
                 }
 
-                // Each client reads all broadcasts
-                let received = Arc::new(AtomicUsize::new(0));
-                let mut readers = Vec::new();
-                for mut client in clients {
-                    let recv_count = received.clone();
-                    readers.push(std::thread::spawn(move || {
-                        for _ in 0..NUM_BROADCASTS {
-                            let _ = client.read().unwrap();
-                            recv_count.fetch_add(1, Ordering::Relaxed);
-                        }
-                        client
-                    }));
-                }
-
-                clients = Vec::new();
-                for r in readers {
-                    clients.push(r.join().unwrap());
-                }
+                rt.block_on(async {
+                    for t in reader_tasks {
+                        let _ = t.await;
+                    }
+                });
 
                 total += start.elapsed();
 
-                let total_msgs = NUM_CLIENTS * NUM_BROADCASTS;
-                let rate = total_msgs as f64 / total.as_secs_f64();
-                println!(
-                    "ring: {NUM_BROADCASTS} broadcasts to {NUM_CLIENTS} clients = {total_msgs} deliveries in {total:.2?} ({rate:.0} msg/s)"
-                );
+                let got = received.load(Ordering::Relaxed);
+                let expected = NUM_CLIENTS * NUM_BROADCASTS;
+                let rate = got as f64 / total.as_secs_f64();
+                println!("ring: {got}/{expected} deliveries in {total:.2?} ({rate:.0} msg/s)");
 
                 drain_shutdown.store(true, Ordering::Relaxed);
-                for mut c in clients {
-                    let _ = c.close(None);
-                }
                 let _ = drain_thread.join();
             }
 
@@ -125,7 +118,8 @@ fn bench_tokio_broadcast(c: &mut Criterion) {
                 let (port, broadcast_tx, shutdown_tx) = rt.block_on(async {
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                     let port = listener.local_addr().unwrap().port();
-                    let (btx, _) = tokio::sync::broadcast::channel::<String>(NUM_BROADCASTS * 2);
+                    let (btx, _) =
+                        tokio::sync::broadcast::channel::<String>(NUM_BROADCASTS * 2);
                     let (stx, mut srx) = tokio::sync::oneshot::channel::<()>();
 
                     let btx_clone = btx.clone();
@@ -139,25 +133,19 @@ fn bench_tokio_broadcast(c: &mut Criterion) {
                                             let ws = tokio_tungstenite::accept_async(stream)
                                                 .await
                                                 .unwrap();
-                                            let (mut write, mut read) = futures_util::StreamExt::split(ws);
-
-                                            // Forward broadcasts to this client
+                                            let (mut write, mut read) = ws.split();
                                             let write_task = tokio::spawn(async move {
                                                 while let Ok(msg) = rx.recv().await {
-                                                    if futures_util::SinkExt::send(
-                                                        &mut write,
-                                                        tungstenite::Message::Text(msg.into()),
-                                                    )
-                                                    .await
-                                                    .is_err()
+                                                    if write
+                                                        .send(Message::Text(msg.into()))
+                                                        .await
+                                                        .is_err()
                                                     {
                                                         break;
                                                     }
                                                 }
                                             });
-
-                                            // Drain reads
-                                            while let Some(Ok(_)) = futures_util::StreamExt::next(&mut read).await {}
+                                            while let Some(Ok(_)) = read.next().await {}
                                             write_task.abort();
                                         });
                                     }
@@ -170,52 +158,50 @@ fn bench_tokio_broadcast(c: &mut Criterion) {
                     (port, btx, stx)
                 });
 
-                std::thread::sleep(Duration::from_millis(10));
+                // Connect reader clients
+                let received = Arc::new(AtomicUsize::new(0));
+                let mut reader_tasks = Vec::new();
 
-                let mut clients: Vec<_> = (0..NUM_CLIENTS)
-                    .map(|_| connect_tungstenite(port))
-                    .collect();
+                rt.block_on(async {
+                    for _ in 0..NUM_CLIENTS {
+                        let count = received.clone();
+                        let url = format!("ws://127.0.0.1:{port}");
+                        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+                        let (_write, mut read) = ws.split();
+                        reader_tasks.push(tokio::spawn(async move {
+                            for _ in 0..NUM_BROADCASTS {
+                                if read.next().await.is_none() {
+                                    break;
+                                }
+                                count.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }));
+                    }
 
-                std::thread::sleep(Duration::from_millis(50));
+                    // Let all connections settle
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                });
 
                 // ── Timed section ──
                 let start = Instant::now();
 
-                // Broadcast N messages
                 for _ in 0..NUM_BROADCASTS {
                     let _ = broadcast_tx.send(PAYLOAD.to_string());
                 }
 
-                // Each client reads all broadcasts
-                let received = Arc::new(AtomicUsize::new(0));
-                let mut readers = Vec::new();
-                for mut client in clients {
-                    let recv_count = received.clone();
-                    readers.push(std::thread::spawn(move || {
-                        for _ in 0..NUM_BROADCASTS {
-                            let _ = client.read().unwrap();
-                            recv_count.fetch_add(1, Ordering::Relaxed);
-                        }
-                        client
-                    }));
-                }
-
-                clients = Vec::new();
-                for r in readers {
-                    clients.push(r.join().unwrap());
-                }
+                rt.block_on(async {
+                    for t in reader_tasks {
+                        let _ = t.await;
+                    }
+                });
 
                 total += start.elapsed();
 
-                let total_msgs = NUM_CLIENTS * NUM_BROADCASTS;
-                let rate = total_msgs as f64 / total.as_secs_f64();
-                println!(
-                    "tokio: {NUM_BROADCASTS} broadcasts to {NUM_CLIENTS} clients = {total_msgs} deliveries in {total:.2?} ({rate:.0} msg/s)"
-                );
+                let got = received.load(Ordering::Relaxed);
+                let expected = NUM_CLIENTS * NUM_BROADCASTS;
+                let rate = got as f64 / total.as_secs_f64();
+                println!("tokio: {got}/{expected} deliveries in {total:.2?} ({rate:.0} msg/s)");
 
-                for mut c in clients {
-                    let _ = c.close(None);
-                }
                 let _ = shutdown_tx.send(());
             }
 
