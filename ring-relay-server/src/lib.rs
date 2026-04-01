@@ -74,46 +74,59 @@ pub struct ServerSender {
 impl ServerSender {
     /// Send a text message to a specific client.
     ///
-    /// Applies brief backpressure (spin + yield) if the write ring is full.
-    pub fn send_text(&self, client_id: i32, text: String) -> Result<(), String> {
-        self.push_with_backpressure(WriteCmd::SendText { fd: client_id, text })
+    /// Applies backpressure if the write ring is full — blocks until space
+    /// is available, never drops.
+    pub fn send_text(&self, client_id: i32, text: String) {
+        self.push_with_backpressure(WriteCmd::SendText { fd: client_id, text });
     }
 
     /// Send a binary message to a specific client.
-    pub fn send_binary(&self, client_id: i32, data: Vec<u8>) -> Result<(), String> {
-        self.push_with_backpressure(WriteCmd::SendBinary { fd: client_id, data })
+    pub fn send_binary(&self, client_id: i32, data: Vec<u8>) {
+        self.push_with_backpressure(WriteCmd::SendBinary { fd: client_id, data });
     }
 
     /// Broadcast a text message to all connected clients.
-    pub fn broadcast(&self, text: String) -> Result<(), String> {
-        self.push_with_backpressure(WriteCmd::Broadcast { text })
+    pub fn broadcast(&self, text: String) {
+        self.push_with_backpressure(WriteCmd::Broadcast { text });
     }
 
     /// Close a specific client connection.
-    pub fn close_client(&self, client_id: i32) -> Result<(), String> {
-        self.push_with_backpressure(WriteCmd::Close { fd: client_id })
+    pub fn close_client(&self, client_id: i32) {
+        self.push_with_backpressure(WriteCmd::Close { fd: client_id });
     }
 
-    /// Push a command to the write ring with brief spin-retry backpressure.
-    fn push_with_backpressure(&self, mut cmd: WriteCmd) -> Result<(), String> {
-        for attempt in 0..64 {
+    /// Push a command to the write ring with backpressure.
+    ///
+    /// Never drops: spins briefly, then yields, then sleeps in escalating
+    /// intervals while continuously waking the writer to drain. Backpressure
+    /// flows naturally — the caller slows down to the writer's throughput.
+    fn push_with_backpressure(&self, mut cmd: WriteCmd) {
+        let mut spins = 0u32;
+        loop {
             match self.tx.push(cmd) {
                 Ok(()) => {
                     self.writer_thread.unpark();
-                    return Ok(());
+                    return;
                 }
                 Err(returned) => {
                     cmd = returned;
+                    // Wake the writer so it drains the ring
                     self.writer_thread.unpark();
-                    if attempt < 32 {
+
+                    if spins < 32 {
+                        std::hint::spin_loop();
+                    } else if spins < 128 {
                         std::thread::yield_now();
                     } else {
+                        // Escalate to a real sleep — the writer is genuinely behind.
+                        // 10µs is short enough to not add visible latency but long
+                        // enough to avoid burning CPU.
                         std::thread::sleep(std::time::Duration::from_micros(10));
                     }
+                    spins = spins.saturating_add(1);
                 }
             }
         }
-        Err("write command ring full after backpressure".to_string())
     }
 }
 

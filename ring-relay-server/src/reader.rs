@@ -177,6 +177,16 @@ fn reader_loop(
         }
 
         ring.sync_cq();
+
+        // 5. Close fds of dead slots immediately to prevent fd leaks.
+        // Uses Socket::from_fd → drop (synchronous close) rather than
+        // Sqe::close, because we need the fds freed NOW, not queued.
+        for slot in slots.iter_mut() {
+            if slot.dead && slot.fd >= 0 {
+                drop(unsafe { ququmatz::Socket::from_fd(slot.fd) });
+                slot.fd = -1;
+            }
+        }
     }
 
     // Cancel all in-flight recv SQEs so the kernel releases our buffers
@@ -191,6 +201,13 @@ fn reader_loop(
     if pending > 0 {
         let _ = ring.submit_and_wait(pending);
         while ring.complete().is_some() {}
+    }
+
+    // Close remaining client fds synchronously.
+    for slot in &slots {
+        if slot.fd >= 0 {
+            drop(unsafe { ququmatz::Socket::from_fd(slot.fd) });
+        }
     }
 
     Ok(())

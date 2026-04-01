@@ -21,15 +21,11 @@ fn main() {
             }
             ClientMessage::Text { client_id, text } => {
                 println!("[<] Client {client_id}: {text}");
-                if let Err(e) = sender.send_text(client_id, text) {
-                    eprintln!("[!] Failed to echo to {client_id}: {e}");
-                }
+                sender.send_text(client_id, text);
             }
             ClientMessage::Binary { client_id, data } => {
                 println!("[<] Client {client_id}: {} bytes binary", data.len());
-                if let Err(e) = sender.send_binary(client_id, data) {
-                    eprintln!("[!] Failed to echo to {client_id}: {e}");
-                }
+                sender.send_binary(client_id, data);
             }
             ClientMessage::Disconnected { client_id, reason } => {
                 println!("[-] Client {client_id} disconnected: {reason:?}");

@@ -51,7 +51,7 @@ fn echo_text_roundtrip() {
     }
 
     // Server echoes it back
-    sender.send_text(client_id, "hello".to_string()).unwrap();
+    sender.send_text(client_id, "hello".to_string());
 
     // Client receives the echo
     let msg = client.read().unwrap();
@@ -79,8 +79,8 @@ fn multiple_clients() {
     assert_ne!(id1, id2);
 
     // Send different messages to each client
-    sender.send_text(id1, "for-client-1".to_string()).unwrap();
-    sender.send_text(id2, "for-client-2".to_string()).unwrap();
+    sender.send_text(id1, "for-client-1".to_string());
+    sender.send_text(id2, "for-client-2".to_string());
 
     let msg1 = client1.read().unwrap();
     let msg2 = client2.read().unwrap();
@@ -101,7 +101,7 @@ fn broadcast() {
     let mut client2 = connect(port);
     let _ = server.recv(); // Connected
 
-    sender.broadcast("everyone".to_string()).unwrap();
+    sender.broadcast("everyone".to_string());
 
     let msg1 = client1.read().unwrap();
     let msg2 = client2.read().unwrap();

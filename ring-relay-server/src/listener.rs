@@ -126,7 +126,14 @@ fn listener_loop(
                     if shutdown.load(Ordering::Acquire) {
                         return Ok(());
                     }
-                    eprintln!("accept error: {}", cqe.result);
+                    let errno = -cqe.result;
+                    if errno == 24 {
+                        // EMFILE — out of file descriptors. Back off and let
+                        // existing connections close before accepting more.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    } else {
+                        eprintln!("accept error: {}", cqe.result);
+                    }
                 } else {
                     let client_fd = cqe.result;
 
@@ -134,9 +141,9 @@ fn listener_loop(
                         let idx = alloc_slot(&mut slots, client_fd);
                         submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
                     } else {
-                        // At capacity — close this fd. The kernel backlog holds
-                        // the rest. Accept is always resubmitted below.
-                        let _ = ring.push(Sqe::close(client_fd).user_data(0));
+                        // At capacity — close this fd synchronously. The kernel
+                        // backlog holds the rest.
+                        drop(unsafe { Socket::from_fd(client_fd) });
                     }
                 }
 
@@ -201,7 +208,7 @@ fn listener_loop(
 
                         if accept_tx.push(client_fd).is_err() {
                             eprintln!("accept ring full, dropping client {client_fd}");
-                            let _ = ring.push(Sqe::close(client_fd).user_data(0));
+                            drop(unsafe { Socket::from_fd(client_fd) });
                         }
                     } else {
                         submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
@@ -237,9 +244,9 @@ fn alloc_slot(slots: &mut Vec<HandshakeSlot>, fd: i32) -> usize {
     }
 }
 
-fn close_slot(ring: &mut IoUring, slot: &mut HandshakeSlot) {
+fn close_slot(_ring: &mut IoUring, slot: &mut HandshakeSlot) {
     slot.active = false;
-    let _ = ring.push(Sqe::close(slot.fd).user_data(0));
+    drop(unsafe { Socket::from_fd(slot.fd) });
 }
 
 fn submit_accept(

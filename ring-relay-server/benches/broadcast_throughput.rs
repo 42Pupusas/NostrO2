@@ -10,18 +10,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tungstenite::Message;
 
-const NUM_CLIENTS: usize = 100;
-const NUM_BROADCASTS: usize = 1_000;
+const NUM_CLIENTS: usize = 200;
 const PAYLOAD: &str = "broadcast payload: a typical relay event JSON would go here, padding";
 
 // ── Ring relay server ──────────────────────────────────────────────────
 
 fn bench_ring_broadcast(c: &mut Criterion) {
+    const NUM_BROADCASTS: usize = 10_000;
+
     let mut group = c.benchmark_group("broadcast_throughput");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(30));
 
-    group.bench_function("ring_relay_server", |b| {
+    group.bench_function("ring_relay_server_2M", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         b.iter_custom(|iters| {
@@ -74,7 +75,7 @@ fn bench_ring_broadcast(c: &mut Criterion) {
                 let start = Instant::now();
 
                 for _ in 0..NUM_BROADCASTS {
-                    sender.broadcast(PAYLOAD.to_string()).unwrap();
+                    sender.broadcast(PAYLOAD.to_string());
                 }
 
                 rt.block_on(async {
@@ -104,11 +105,13 @@ fn bench_ring_broadcast(c: &mut Criterion) {
 // ── Tokio-tungstenite server ───────────────────────────────────────────
 
 fn bench_tokio_broadcast(c: &mut Criterion) {
+    const NUM_BROADCASTS: usize = 5_000;
+
     let mut group = c.benchmark_group("broadcast_throughput");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(30));
 
-    group.bench_function("tokio_tungstenite_server", |b| {
+    group.bench_function("tokio_tungstenite_server_1M", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         b.iter_custom(|iters| {
