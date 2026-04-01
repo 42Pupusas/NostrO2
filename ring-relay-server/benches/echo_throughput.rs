@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tungstenite::Message;
 
-const NUM_CLIENTS: usize = 500;
-const MSGS_PER_CLIENT: usize = 2_000;
+const NUM_CLIENTS: usize = 2_000;
+const MSGS_PER_CLIENT: usize = 5_000;
 const PAYLOAD: &str = "hello from the benchmark client, this is a typical short message";
 
 /// Connect N clients, each splits into a writer task and reader task.
