@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const NUM_CLIENTS: usize = 100;
+const NUM_CLIENTS: usize = 500;
 
 /// Connect N clients concurrently via tokio-tungstenite. Returns count of successful connects.
 async fn connect_all(port: u16, num: usize) -> usize {

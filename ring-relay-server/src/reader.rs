@@ -53,9 +53,8 @@ fn reader_loop(
     writer_waker: &std::thread::Thread,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut ring = IoUring::new(256)?;
+    let mut ring = IoUring::new(4096)?;
     let mut slots: Vec<ClientSlot> = Vec::new();
-    let mut needs_resubmit = false;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -79,23 +78,19 @@ fn reader_loop(
                 slots.push(new_slot);
                 i
             };
-            submit_recv(&mut ring, &mut slots[idx], idx as u64)?;
+            // Best-effort submit — if SQ is full, recv_pending stays false
+            // and the slot will be retried in the resubmit pass below.
+            let _ = submit_recv(&mut ring, &mut slots[idx], idx as u64);
 
-            // Emit Connected — the consumer's recv() will register this fd
-            // with the writer before returning it, guaranteeing the writer
-            // knows about the fd before the user can send to it.
             let _ = event_tx.push(ClientMessage::Connected { client_id: fd });
             consumer_waker.unpark();
         }
 
-        // 2. Resubmit recv for slots that need it
-        if needs_resubmit {
-            for (idx, slot) in slots.iter_mut().enumerate() {
-                if !slot.recv_pending && !slot.dead {
-                    submit_recv(&mut ring, slot, idx as u64)?;
-                }
+        // 2. Resubmit recv for any slots that don't have one in-flight
+        for (idx, slot) in slots.iter_mut().enumerate() {
+            if !slot.recv_pending && !slot.dead {
+                let _ = submit_recv(&mut ring, slot, idx as u64);
             }
-            needs_resubmit = false;
         }
 
         if !slots.iter().any(|s| !s.dead) {
@@ -179,7 +174,6 @@ fn reader_loop(
                 }
             }
 
-            needs_resubmit = true;
         }
 
         ring.sync_cq();

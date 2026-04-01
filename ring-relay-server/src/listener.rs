@@ -2,6 +2,10 @@
 //!
 //! The entire handshake runs through SQEs — no blocking syscalls. Each accepted
 //! fd goes through a small state machine: Recv → parse HTTP → Send 101 → done.
+//!
+//! Backpressure: when in-flight handshakes fill the io_uring SQ, the accept SQE
+//! is withheld. Pending connections queue in the kernel's TCP listen backlog.
+//! When handshakes complete and free SQ slots, accept is resubmitted.
 
 use coyoquil::WsKey;
 use quetzalcoatl::spsc;
@@ -10,6 +14,13 @@ use ququmatz::types::{AcceptFlags, MsgFlags, SockAddrIn, AF_INET, SOCK_STREAM, S
 use ququmatz::{IoUring, Sqe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// SQ ring size. Determines max concurrent handshakes.
+const RING_SIZE: u32 = 1024;
+
+/// Reserve this many SQ slots for non-handshake ops (accept, close).
+/// When active handshakes reach RING_SIZE - RESERVED, we stop accepting.
+const RESERVED: usize = 8;
 
 /// Set up the TCP listener socket via `ququmatz::Socket`.
 pub(crate) fn setup_listener(addr: [u8; 4], port: u16) -> Result<Socket, Box<dyn std::error::Error + Send + Sync>> {
@@ -23,22 +34,19 @@ pub(crate) fn setup_listener(addr: [u8; 4], port: u16) -> Result<Socket, Box<dyn
         sin_zero: [0; 8],
     };
     sock.bind(&sock_addr)?;
-    sock.listen(128)?;
+    sock.listen(1024)?;
 
     Ok(sock)
 }
 
 // ── Handshake state machine ────────────────────────────────────────────
 
-/// Sentinel user_data for the accept SQE.
 const ACCEPT_UD: u64 = u64::MAX;
 
-/// Encode slot index + phase into user_data.
 fn encode_ud(slot: usize, phase: Phase) -> u64 {
     (slot as u64) | ((phase as u64) << 48)
 }
 
-/// Decode user_data back to (slot, phase).
 fn decode_ud(ud: u64) -> (usize, Phase) {
     let slot = (ud & 0x0000_FFFF_FFFF_FFFF) as usize;
     let phase = match ud >> 48 {
@@ -59,9 +67,7 @@ enum Phase {
 struct HandshakeSlot {
     fd: i32,
     buf: Vec<u8>,
-    /// How many bytes received so far (recv phase) or sent so far (send phase).
     progress: usize,
-    /// Total bytes to send (set after building the 101 response).
     send_total: usize,
     active: bool,
 }
@@ -95,11 +101,12 @@ fn listener_loop(
     accept_tx: spsc::Producer<i32>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut ring = IoUring::new(256)?;
-
+    let mut ring = IoUring::new(RING_SIZE)?;
     let mut slots: Vec<HandshakeSlot> = Vec::new();
+    let max_handshakes = RING_SIZE as usize - RESERVED;
 
-    // Submit the first accept
+    // Track whether we have an accept SQE in-flight
+    // Submit the first accept — always kept in-flight
     submit_accept(&mut ring, listener_fd)?;
 
     loop {
@@ -115,23 +122,30 @@ fn listener_loop(
             }
 
             if cqe.user_data == ACCEPT_UD {
-                // ── Accept completion ──
                 if cqe.is_err() {
-                    // Accept failed — if shutting down, exit cleanly
                     if shutdown.load(Ordering::Acquire) {
                         return Ok(());
                     }
                     eprintln!("accept error: {}", cqe.result);
                 } else {
                     let client_fd = cqe.result;
-                    let idx = alloc_slot(&mut slots, client_fd);
-                    submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
+
+                    if active_handshakes(&slots) < max_handshakes {
+                        let idx = alloc_slot(&mut slots, client_fd);
+                        submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
+                    } else {
+                        // At capacity — close this fd. The kernel backlog holds
+                        // the rest. Accept is always resubmitted below.
+                        let _ = ring.push(Sqe::close(client_fd).user_data(0));
+                    }
                 }
-                // Resubmit accept for next connection
+
+                // Always keep accept in-flight so submit_and_wait never starves
                 submit_accept(&mut ring, listener_fd)?;
                 continue;
             }
 
+            // Skip close CQEs (user_data = 0) and invalid slots
             let (idx, phase) = decode_ud(cqe.user_data);
             if idx >= slots.len() || !slots[idx].active {
                 continue;
@@ -140,7 +154,6 @@ fn listener_loop(
             match phase {
                 Phase::Recv => {
                     if cqe.is_err() || cqe.result <= 0 {
-                        // Handshake recv failed — close and free slot
                         close_slot(&mut ring, &mut slots[idx]);
                         continue;
                     }
@@ -149,14 +162,11 @@ fn listener_loop(
                     slots[idx].progress += n;
                     let total = slots[idx].progress;
 
-                    // Check for end of HTTP headers
                     if total >= 4 && slots[idx].buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
-                        // Parse and build response
                         match build_upgrade_response(&slots[idx].buf[..total]) {
                             Ok(response) => {
                                 let resp_bytes = response.into_bytes();
                                 let send_len = resp_bytes.len();
-                                slots[idx].buf.clear();
                                 slots[idx].buf = resp_bytes;
                                 slots[idx].progress = 0;
                                 slots[idx].send_total = send_len;
@@ -171,7 +181,6 @@ fn listener_loop(
                         eprintln!("HTTP request too large for fd {}", slots[idx].fd);
                         close_slot(&mut ring, &mut slots[idx]);
                     } else {
-                        // Need more data — resubmit recv for the remainder
                         submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
                     }
                 }
@@ -186,27 +195,28 @@ fn listener_loop(
                     slots[idx].progress += n;
 
                     if slots[idx].progress >= slots[idx].send_total {
-                        // Handshake complete — hand fd to reader.
-                        // The reader thread emits Connected after registering
-                        // the client with the writer, so send_text/broadcast
-                        // are safe to call immediately after recv() returns it.
+                        // Handshake complete — hand fd to reader
                         let client_fd = slots[idx].fd;
                         slots[idx].active = false;
 
                         if accept_tx.push(client_fd).is_err() {
                             eprintln!("accept ring full, dropping client {client_fd}");
-                            ring.push(Sqe::close(client_fd).user_data(0))?;
+                            let _ = ring.push(Sqe::close(client_fd).user_data(0));
                         }
                     } else {
-                        // Partial send — resubmit for the rest
                         submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
                     }
                 }
             }
         }
+
     }
 
     Ok(())
+}
+
+fn active_handshakes(slots: &[HandshakeSlot]) -> usize {
+    slots.iter().filter(|s| s.active).count()
 }
 
 fn build_upgrade_response(request_bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
