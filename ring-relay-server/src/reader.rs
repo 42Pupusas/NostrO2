@@ -4,8 +4,8 @@
 //! in-flight per client. On completion: decode frames via coyoquil (Role::Server)
 //! → push ClientMessages to the shared MPSC ring.
 
-use crate::{ClientMessage, Handler, HandlerResult, Parker, WriteCmd};
-use coyoquil::{DEFAULT_MAX_MESSAGE_SIZE, Frame, FrameDecoder, Role};
+use crate::{AcceptedClient, ClientMessage, Handler, HandlerResult, Parker, WriteCmd};
+use coyoquil::{CloseCode, DEFAULT_MAX_MESSAGE_SIZE, DeflateDecoder, Frame, FrameDecoder, Opcode, Role};
 use quetzalcoatl::mpsc::Producer;
 use quetzalcoatl::spsc;
 use ququmatz::types::{MsgFlags, TimeoutFlags};
@@ -20,13 +20,14 @@ const TIMEOUT_UD: u64 = u64::MAX;
 struct ClientSlot {
     fd: i32,
     decoder: FrameDecoder<DEFAULT_MAX_MESSAGE_SIZE>,
+    deflate_decoder: Option<DeflateDecoder>,
     recv_buf: Vec<u8>,
     dead: bool,
     recv_pending: bool,
 }
 
 pub fn reader_thread(
-    accept_rx: spsc::Consumer<i32>,
+    accept_rx: spsc::Consumer<AcceptedClient>,
     event_tx: Producer<ClientMessage>,
     writer_txs: Vec<Producer<WriteCmd>>,
     writer_wakers: Vec<std::thread::Thread>,
@@ -48,7 +49,7 @@ pub fn reader_thread(
 }
 
 fn reader_loop(
-    mut accept_rx: spsc::Consumer<i32>,
+    mut accept_rx: spsc::Consumer<AcceptedClient>,
     event_tx: &Producer<ClientMessage>,
     writer_txs: &[Producer<WriteCmd>],
     writer_wakers: &[std::thread::Thread],
@@ -59,6 +60,8 @@ fn reader_loop(
     let num_writer_shards = writer_txs.len();
     let mut ring = IoUring::new(4096)?;
     let mut slots: Vec<ClientSlot> = Vec::new();
+    // Scratch buffer for decompression — reused across frames to avoid allocs.
+    let mut decompress_buf: Vec<u8> = Vec::new();
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -66,10 +69,20 @@ fn reader_loop(
         }
 
         // 1. Accept new clients from the listener thread
-        while let Some(fd) = accept_rx.pop() {
+        while let Some(client) = accept_rx.pop() {
+            let fd = client.fd;
+            let deflate_config = client.deflate.clone();
+
+            let mut frame_decoder = FrameDecoder::new(Role::Server);
+            let deflate_decoder = deflate_config.as_ref().map(|config| {
+                frame_decoder.set_allowed_rsv(0x40);
+                DeflateDecoder::new(config, true, DEFAULT_MAX_MESSAGE_SIZE)
+            });
+
             let new_slot = ClientSlot {
                 fd,
-                decoder: FrameDecoder::new(Role::Server),
+                decoder: frame_decoder,
+                deflate_decoder,
                 recv_buf: vec![0u8; 65536],
                 dead: false,
                 recv_pending: false,
@@ -86,16 +99,25 @@ fn reader_loop(
             // and the slot will be retried in the resubmit pass below.
             let _ = submit_recv(&mut ring, &mut slots[idx], idx as u64);
 
-            // When a handler is set, register the fd with the writer
-            // directly from the reader thread so the writer knows about
-            // this client before any inline replies arrive.
-            if handler.is_some() {
-                let shard = fd as usize % num_writer_shards;
-                let _ = writer_txs[shard].push(WriteCmd::Register { fd });
-                writer_wakers[shard].unpark();
-            }
+            // Register fd with the writer (always, not just when handler is set)
+            // so the writer knows about this client before any sends arrive.
+            let shard = fd as usize % num_writer_shards;
+            let _ = writer_txs[shard].push(WriteCmd::Register {
+                fd,
+                deflate: deflate_config,
+            });
+            writer_wakers[shard].unpark();
 
-            push_event(event_tx, consumer_waker, ClientMessage::Connected { client_id: fd });
+            push_event(
+                event_tx,
+                consumer_waker,
+                ClientMessage::Connected {
+                    client_id: fd,
+                    path: client.path,
+                    subprotocol: client.subprotocol,
+                    headers: client.headers,
+                },
+            );
         }
 
         // 2. Resubmit recv for any slots that don't have one in-flight
@@ -139,12 +161,12 @@ fn reader_loop(
             }
 
             let n = if cqe.is_err() {
-                mark_dead(slot, event_tx, consumer_waker, Some(format!("recv error: {}", cqe.result)));
+                mark_dead(slot, event_tx, consumer_waker, Some(format!("recv error: {}", cqe.result)), None);
                 continue;
             } else {
                 let n = cqe.result as usize;
                 if n == 0 {
-                    mark_dead(slot, event_tx, consumer_waker, Some("connection closed (EOF)".into()));
+                    mark_dead(slot, event_tx, consumer_waker, Some("connection closed (EOF)".into()), None);
                     continue;
                 }
                 n
@@ -152,42 +174,54 @@ fn reader_loop(
 
             // Decode WebSocket frames
             if slot.decoder.push(&slot.recv_buf[..n]).is_err() {
-                mark_dead(slot, event_tx, consumer_waker, Some("WebSocket frame decode error".into()));
+                mark_dead(slot, event_tx, consumer_waker, Some("WebSocket frame decode error".into()), None);
                 continue;
             }
 
-            while let Ok(Some(frame)) = slot.decoder.next_frame() {
+            loop {
+                let rsv1 = slot.decoder.message_rsv1();
+                let Some(frame) = slot.decoder.next_frame().transpose() else {
+                    break;
+                };
+                let frame = match frame {
+                    Ok(f) => f,
+                    Err(_) => {
+                        mark_dead(slot, event_tx, consumer_waker, Some("WebSocket frame decode error".into()), None);
+                        break;
+                    }
+                };
+
                 match frame {
                     Frame::Text(text) => {
-                        if let Some(h) = handler {
-                            match h(slot.fd, text) {
-                                HandlerResult::Reply(response) => {
-                                    let shard = slot.fd as usize % num_writer_shards;
-                                    let _ = writer_txs[shard].push(WriteCmd::SendText {
-                                        fd: slot.fd,
-                                        text: response,
-                                    });
-                                    writer_wakers[shard].unpark();
+                        handle_text(slot.fd, text, handler, writer_txs, writer_wakers, num_writer_shards, event_tx, consumer_waker);
+                    }
+                    Frame::Binary(data) if rsv1 && slot.deflate_decoder.is_some() => {
+                        decompress_buf.clear();
+                        if slot.deflate_decoder.as_mut().unwrap()
+                            .decompress(data, &mut decompress_buf)
+                            .is_err()
+                        {
+                            mark_dead(slot, event_tx, consumer_waker, Some("deflate decompression failed".into()), None);
+                            break;
+                        }
+
+                        if slot.decoder.message_opcode() == Some(Opcode::Text) {
+                            match std::str::from_utf8(&decompress_buf) {
+                                Ok(text) => {
+                                    handle_text(slot.fd, text, handler, writer_txs, writer_wakers, num_writer_shards, event_tx, consumer_waker);
                                 }
-                                HandlerResult::Consumed => {}
-                                HandlerResult::PassThrough => {
-                                    push_event(
-                                        event_tx,
-                                        consumer_waker,
-                                        ClientMessage::Text {
-                                            client_id: slot.fd,
-                                            text: text.to_string(),
-                                        },
-                                    );
+                                Err(_) => {
+                                    mark_dead(slot, event_tx, consumer_waker, Some("invalid UTF-8 in decompressed text".into()), None);
+                                    break;
                                 }
                             }
                         } else {
                             push_event(
                                 event_tx,
                                 consumer_waker,
-                                ClientMessage::Text {
+                                ClientMessage::Binary {
                                     client_id: slot.fd,
-                                    text: text.to_string(),
+                                    data: decompress_buf.clone(),
                                 },
                             );
                         }
@@ -207,8 +241,9 @@ fn reader_loop(
                         let _ = writer_txs[shard].push(WriteCmd::Pong { fd: slot.fd });
                         writer_wakers[shard].unpark();
                     }
-                    Frame::Close(_) => {
-                        mark_dead(slot, event_tx, consumer_waker, None);
+                    Frame::Close(close_info) => {
+                        let close_code = close_info.map(|(code, _)| code);
+                        mark_dead(slot, event_tx, consumer_waker, None, close_code);
                         break;
                     }
                     _ => {}
@@ -252,6 +287,51 @@ fn reader_loop(
     }
 
     Ok(())
+}
+
+/// Process a decoded text message through the handler or push to event queue.
+fn handle_text(
+    fd: i32,
+    text: &str,
+    handler: Option<&Handler>,
+    writer_txs: &[Producer<WriteCmd>],
+    writer_wakers: &[std::thread::Thread],
+    num_writer_shards: usize,
+    event_tx: &Producer<ClientMessage>,
+    consumer_waker: &Parker,
+) {
+    if let Some(h) = handler {
+        match h(fd, text) {
+            HandlerResult::Reply(response) => {
+                let shard = fd as usize % num_writer_shards;
+                let _ = writer_txs[shard].push(WriteCmd::SendText {
+                    fd,
+                    text: response,
+                });
+                writer_wakers[shard].unpark();
+            }
+            HandlerResult::Consumed => {}
+            HandlerResult::PassThrough => {
+                push_event(
+                    event_tx,
+                    consumer_waker,
+                    ClientMessage::Text {
+                        client_id: fd,
+                        text: text.to_string(),
+                    },
+                );
+            }
+        }
+    } else {
+        push_event(
+            event_tx,
+            consumer_waker,
+            ClientMessage::Text {
+                client_id: fd,
+                text: text.to_string(),
+            },
+        );
+    }
 }
 
 fn submit_recv(
@@ -303,6 +383,7 @@ fn mark_dead(
     event_tx: &Producer<ClientMessage>,
     consumer_waker: &Parker,
     reason: Option<String>,
+    close_code: Option<CloseCode>,
 ) {
     slot.dead = true;
     push_event(
@@ -311,6 +392,7 @@ fn mark_dead(
         ClientMessage::Disconnected {
             client_id: slot.fd,
             reason,
+            close_code,
         },
     );
 }

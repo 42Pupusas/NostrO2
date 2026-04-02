@@ -17,7 +17,7 @@ fn connect_and_receive_connected_event() {
     let _client = connect(port);
 
     match server.recv() {
-        ClientMessage::Connected { client_id } => {
+        ClientMessage::Connected { client_id, .. } => {
             assert!(client_id > 0, "client_id should be a valid fd");
         }
         other => panic!("expected Connected, got {other:?}"),
@@ -34,7 +34,7 @@ fn echo_text_roundtrip() {
 
     // Wait for Connected event
     let client_id = match server.recv() {
-        ClientMessage::Connected { client_id } => client_id,
+        ClientMessage::Connected { client_id, .. } => client_id,
         other => panic!("expected Connected, got {other:?}"),
     };
 
@@ -66,13 +66,13 @@ fn multiple_clients() {
 
     let mut client1 = connect(port);
     let id1 = match server.recv() {
-        ClientMessage::Connected { client_id } => client_id,
+        ClientMessage::Connected { client_id, .. } => client_id,
         other => panic!("expected Connected, got {other:?}"),
     };
 
     let mut client2 = connect(port);
     let id2 = match server.recv() {
-        ClientMessage::Connected { client_id } => client_id,
+        ClientMessage::Connected { client_id, .. } => client_id,
         other => panic!("expected Connected, got {other:?}"),
     };
 
@@ -117,7 +117,7 @@ fn client_disconnect_produces_event() {
 
     let client = connect(port);
     let client_id = match server.recv() {
-        ClientMessage::Connected { client_id } => client_id,
+        ClientMessage::Connected { client_id, .. } => client_id,
         other => panic!("expected Connected, got {other:?}"),
     };
 

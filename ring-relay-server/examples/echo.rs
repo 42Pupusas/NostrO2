@@ -16,7 +16,7 @@ fn main() {
 
     loop {
         match server.recv() {
-            ClientMessage::Connected { client_id } => {
+            ClientMessage::Connected { client_id, .. } => {
                 println!("[+] Client {client_id} connected");
             }
             ClientMessage::Text { client_id, text } => {
@@ -27,7 +27,7 @@ fn main() {
                 println!("[<] Client {client_id}: {} bytes binary", data.len());
                 sender.send_binary(client_id, data);
             }
-            ClientMessage::Disconnected { client_id, reason } => {
+            ClientMessage::Disconnected { client_id, reason, .. } => {
                 println!("[-] Client {client_id} disconnected: {reason:?}");
             }
         }

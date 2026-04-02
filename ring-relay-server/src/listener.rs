@@ -7,7 +7,8 @@
 //! is withheld. Pending connections queue in the kernel's TCP listen backlog.
 //! When handshakes complete and free SQ slots, accept is resubmitted.
 
-use coyoquil::WsKey;
+use crate::AcceptedClient;
+use coyoquil::{DeflateConfig, UpgradeRequest, negotiate_subprotocol};
 use quetzalcoatl::spsc;
 use ququmatz::Socket;
 use ququmatz::types::{AcceptFlags, MsgFlags, SockAddrIn, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR};
@@ -70,6 +71,8 @@ struct HandshakeSlot {
     progress: usize,
     send_total: usize,
     active: bool,
+    /// Negotiation results, populated after parsing the upgrade request.
+    accepted: Option<AcceptedClient>,
 }
 
 impl HandshakeSlot {
@@ -80,6 +83,7 @@ impl HandshakeSlot {
             progress: 0,
             send_total: 0,
             active: true,
+            accepted: None,
         }
     }
 }
@@ -88,18 +92,28 @@ impl HandshakeSlot {
 
 pub fn listener_thread(
     listener_fd: i32,
-    accept_txs: Vec<spsc::Producer<i32>>,
+    accept_txs: Vec<spsc::Producer<AcceptedClient>>,
     shutdown: Arc<AtomicBool>,
+    subprotocols: Vec<String>,
+    deflate_policy: Option<DeflateConfig>,
 ) {
-    if let Err(e) = listener_loop(listener_fd, accept_txs, &shutdown) {
+    if let Err(e) = listener_loop(
+        listener_fd,
+        accept_txs,
+        &shutdown,
+        &subprotocols,
+        deflate_policy.as_ref(),
+    ) {
         eprintln!("listener thread fatal: {e}");
     }
 }
 
 fn listener_loop(
     listener_fd: i32,
-    accept_txs: Vec<spsc::Producer<i32>>,
+    accept_txs: Vec<spsc::Producer<AcceptedClient>>,
     shutdown: &AtomicBool,
+    subprotocols: &[String],
+    deflate_policy: Option<&DeflateConfig>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let num_reader_shards = accept_txs.len();
     let mut ring = IoUring::new(RING_SIZE)?;
@@ -171,13 +185,19 @@ fn listener_loop(
                     let total = slots[idx].progress;
 
                     if total >= 4 && slots[idx].buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
-                        match build_upgrade_response(&slots[idx].buf[..total]) {
-                            Ok(response) => {
+                        match build_upgrade(
+                            &slots[idx].buf[..total],
+                            slots[idx].fd,
+                            subprotocols,
+                            deflate_policy,
+                        ) {
+                            Ok((response, accepted)) => {
                                 let resp_bytes = response.into_bytes();
                                 let send_len = resp_bytes.len();
                                 slots[idx].buf = resp_bytes;
                                 slots[idx].progress = 0;
                                 slots[idx].send_total = send_len;
+                                slots[idx].accepted = Some(accepted);
                                 submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
                             }
                             Err(e) => {
@@ -203,12 +223,17 @@ fn listener_loop(
                     slots[idx].progress += n;
 
                     if slots[idx].progress >= slots[idx].send_total {
-                        // Handshake complete — hand fd to correct reader shard
+                        // Handshake complete — hand client to correct reader shard
                         let client_fd = slots[idx].fd;
                         slots[idx].active = false;
 
+                        let accepted = slots[idx]
+                            .accepted
+                            .take()
+                            .expect("accepted must be set after handshake");
+
                         let shard = client_fd as usize % num_reader_shards;
-                        if accept_txs[shard].push(client_fd).is_err() {
+                        if accept_txs[shard].push(accepted).is_err() {
                             eprintln!("accept ring full on shard {shard}, dropping client {client_fd}");
                             drop(unsafe { Socket::from_fd(client_fd) });
                         }
@@ -228,11 +253,77 @@ fn active_handshakes(slots: &[HandshakeSlot]) -> usize {
     slots.iter().filter(|s| s.active).count()
 }
 
-fn build_upgrade_response(request_bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+/// Parse the HTTP upgrade request, negotiate subprotocol and deflate,
+/// and return the 101 response string + the accepted client info.
+fn build_upgrade(
+    request_bytes: &[u8],
+    fd: i32,
+    subprotocols: &[String],
+    deflate_policy: Option<&DeflateConfig>,
+) -> Result<(String, AcceptedClient), Box<dyn std::error::Error + Send + Sync>> {
     let request = std::str::from_utf8(request_bytes)
         .map_err(|_| "invalid UTF-8 in HTTP request")?;
-    let ws_key = WsKey::from_request(request)?;
-    Ok(ws_key.upgrade_response())
+
+    let upgrade_req = UpgradeRequest::parse(request)?;
+
+    // Negotiate subprotocol
+    let supported_refs: Vec<&str> = subprotocols.iter().map(String::as_str).collect();
+    let subprotocol = if !upgrade_req.subprotocols().is_empty() && !supported_refs.is_empty() {
+        negotiate_subprotocol(upgrade_req.subprotocols(), &supported_refs)
+            .map(String::from)
+    } else {
+        None
+    };
+
+    // Negotiate deflate
+    let (deflate, deflate_header) = match (upgrade_req.extensions(), deflate_policy) {
+        (Some(ext), Some(policy)) if ext.contains("permessage-deflate") => {
+            match DeflateConfig::negotiate(ext, policy) {
+                Ok((config, header)) => (Some(config), Some(header)),
+                Err(_) => (None, None),
+            }
+        }
+        _ => (None, None),
+    };
+
+    // Capture path before building response (into_response borrows key only)
+    let path = upgrade_req.path().to_string();
+
+    // Build response
+    let mut response = upgrade_req.into_response();
+    if let Some(ref proto) = subprotocol {
+        response = response.subprotocol(proto);
+    }
+    if let Some(ref ext) = deflate_header {
+        response = response.extensions(ext);
+    }
+    let response_str = response.build();
+
+    // Extract all headers from the raw request
+    let headers = parse_headers(request);
+
+    let accepted = AcceptedClient {
+        fd,
+        path,
+        subprotocol,
+        deflate,
+        headers,
+    };
+
+    Ok((response_str, accepted))
+}
+
+/// Extract all HTTP headers as key-value pairs.
+fn parse_headers(request: &str) -> Vec<(String, String)> {
+    request
+        .lines()
+        .skip(1) // skip request line (GET /path HTTP/1.1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 fn alloc_slot(slots: &mut Vec<HandshakeSlot>, fd: i32) -> usize {

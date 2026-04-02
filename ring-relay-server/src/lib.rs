@@ -13,11 +13,22 @@ mod listener;
 mod reader;
 mod writer;
 
+use coyoquil::{CloseCode, DeflateConfig};
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{Consumer, Producer, RingBuffer};
 use quetzalcoatl::spsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Accepted client info passed from listener to reader.
+#[derive(Debug, Clone)]
+pub(crate) struct AcceptedClient {
+    pub fd: i32,
+    pub path: String,
+    pub subprotocol: Option<String>,
+    pub deflate: Option<DeflateConfig>,
+    pub headers: Vec<(String, String)>,
+}
 
 /// Messages received from connected WebSocket clients.
 #[derive(Debug, Clone)]
@@ -37,17 +48,25 @@ pub enum ClientMessage {
     /// A new client connected.
     Connected {
         client_id: i32,
+        /// The request path (e.g. "/chat").
+        path: String,
+        /// The negotiated subprotocol, if any.
+        subprotocol: Option<String>,
+        /// All HTTP headers from the upgrade request.
+        headers: Vec<(String, String)>,
     },
     /// A client disconnected.
     Disconnected {
         client_id: i32,
         reason: Option<String>,
+        /// The close code sent by the client, if a close frame was received.
+        close_code: Option<CloseCode>,
     },
 }
 
 /// Response from an inline message handler.
 ///
-/// Returned by the callback passed to [`WsServer::set_handler`].
+/// Returned by the callback passed to [`WsServer::bind_with_handler`].
 pub enum HandlerResult {
     /// Send a text frame back to the originating client.
     Reply(String),
@@ -67,15 +86,20 @@ pub(crate) type Handler = dyn Fn(i32, &str) -> HandlerResult + Send + Sync;
 #[derive(Debug, Clone)]
 pub(crate) enum WriteCmd {
     /// Register a new client fd with the writer.
-    Register { fd: i32 },
+    Register {
+        fd: i32,
+        deflate: Option<DeflateConfig>,
+    },
     /// Send a text frame to a specific client.
     SendText { fd: i32, text: String },
     /// Send a binary frame to a specific client.
     SendBinary { fd: i32, data: Vec<u8> },
     /// Send a text frame to all connected clients.
     Broadcast { text: String },
+    /// Send a binary frame to all connected clients.
+    BroadcastBinary { data: Vec<u8> },
     /// Send a close frame to a specific client.
-    Close { fd: i32 },
+    Close { fd: i32, code: CloseCode },
     /// Send a pong to a specific client.
     Pong { fd: i32 },
 }
@@ -95,6 +119,27 @@ impl Default for ShardConfig {
         Self {
             reader_shards: 1,
             writer_shards: 1,
+        }
+    }
+}
+
+/// Full server configuration.
+pub struct ServerConfig {
+    /// Reader/writer thread sharding.
+    pub shards: ShardConfig,
+    /// Subprotocols the server supports, in priority order.
+    /// The first client-offered protocol that matches is selected (RFC 6455 §4.2.2).
+    pub subprotocols: Vec<String>,
+    /// Deflate compression policy. `None` disables permessage-deflate.
+    pub deflate: Option<DeflateConfig>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            shards: ShardConfig::default(),
+            subprotocols: Vec::new(),
+            deflate: None,
         }
     }
 }
@@ -139,10 +184,17 @@ impl ServerSender {
         }
     }
 
-    /// Close a specific client connection.
-    pub fn close_client(&self, client_id: i32) {
+    /// Broadcast a binary message to all connected clients.
+    pub fn broadcast_binary(&self, data: Vec<u8>) {
+        for shard in 0..self.num_writer_shards() {
+            self.push_with_backpressure(shard, WriteCmd::BroadcastBinary { data: data.clone() });
+        }
+    }
+
+    /// Close a specific client connection with the given close code.
+    pub fn close_client(&self, client_id: i32, code: CloseCode) {
         let shard = self.writer_shard(client_id);
-        self.push_with_backpressure(shard, WriteCmd::Close { fd: client_id });
+        self.push_with_backpressure(shard, WriteCmd::Close { fd: client_id, code });
     }
 
     /// Push a command to the write ring with backpressure.
@@ -299,7 +351,13 @@ impl WsServer {
         max_clients: usize,
         config: ShardConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_inner(addr, port, max_clients, config, None)
+        Self::bind_inner(
+            addr,
+            port,
+            max_clients,
+            ServerConfig { shards: config, ..ServerConfig::default() },
+            None,
+        )
     }
 
     /// Start a sharded server with an inline message handler.
@@ -319,6 +377,35 @@ impl WsServer {
         config: ShardConfig,
         handler: impl Fn(i32, &str) -> HandlerResult + Send + Sync + 'static,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::bind_inner(
+            addr,
+            port,
+            max_clients,
+            ServerConfig { shards: config, ..ServerConfig::default() },
+            Some(Arc::new(handler)),
+        )
+    }
+
+    /// Start a server with full configuration.
+    ///
+    /// Combines sharding, subprotocol negotiation, and deflate compression.
+    pub fn bind_with_config(
+        addr: [u8; 4],
+        port: u16,
+        max_clients: usize,
+        config: ServerConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::bind_inner(addr, port, max_clients, config, None)
+    }
+
+    /// Start a server with full configuration and an inline handler.
+    pub fn bind_with_config_and_handler(
+        addr: [u8; 4],
+        port: u16,
+        max_clients: usize,
+        config: ServerConfig,
+        handler: impl Fn(i32, &str) -> HandlerResult + Send + Sync + 'static,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::bind_inner(addr, port, max_clients, config, Some(Arc::new(handler)))
     }
 
@@ -326,11 +413,11 @@ impl WsServer {
         addr: [u8; 4],
         port: u16,
         max_clients: usize,
-        config: ShardConfig,
+        config: ServerConfig,
         handler: Option<Arc<Handler>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let n = config.reader_shards.max(1);
-        let m = config.writer_shards.max(1);
+        let n = config.shards.reader_shards.max(1);
+        let m = config.shards.writer_shards.max(1);
 
         // Create listener socket on the main thread so we can query the port
         let listener_sock = listener::setup_listener(addr, port)?;
@@ -411,10 +498,18 @@ impl WsServer {
 
         // Spawn listener/accept thread
         let listener_shutdown = Arc::clone(&shutdown);
+        let listener_subprotocols: Vec<String> = config.subprotocols;
+        let listener_deflate = config.deflate;
         let listener_thread = std::thread::Builder::new()
             .name("ws-listener".into())
             .spawn(move || {
-                listener::listener_thread(listener_fd, accept_txs, listener_shutdown);
+                listener::listener_thread(
+                    listener_fd,
+                    accept_txs,
+                    listener_shutdown,
+                    listener_subprotocols,
+                    listener_deflate,
+                );
             })?;
 
         Ok(Self {
@@ -440,35 +535,13 @@ impl WsServer {
     }
 
     /// Blocking receive — wait for the next client message.
-    ///
-    /// When a `Connected` event is returned, the client is already registered
-    /// with the writer thread, so `send_text` / `broadcast` will reach it.
     pub fn recv(&mut self) -> ClientMessage {
-        let msg = self.consumer.recv();
-        self.register_if_connected(&msg);
-        msg
+        self.consumer.recv()
     }
 
     /// Non-blocking receive.
     pub fn try_recv(&mut self) -> Option<ClientMessage> {
-        let msg = self.consumer.try_recv();
-        if let Some(ref m) = msg {
-            self.register_if_connected(m);
-        }
-        msg
-    }
-
-    /// When we see a Connected event, register the fd with the correct
-    /// writer shard.  Because this runs on the consumer thread (the same
-    /// thread that calls send_text/broadcast), the Register command is
-    /// guaranteed to be in the writer's ring before any subsequent
-    /// SendText/Broadcast for this fd.
-    fn register_if_connected(&self, msg: &ClientMessage) {
-        if let ClientMessage::Connected { client_id } = msg {
-            let shard = self.sender.writer_shard(*client_id);
-            let _ = self.sender.writer_txs[shard].push(WriteCmd::Register { fd: *client_id });
-            self.sender.writer_wakers[shard].unpark();
-        }
+        self.consumer.try_recv()
     }
 }
 

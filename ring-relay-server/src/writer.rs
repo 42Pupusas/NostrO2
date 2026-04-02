@@ -4,7 +4,7 @@
 //! single MPSC ring, ensuring ordering between registration and send commands.
 
 use crate::WriteCmd;
-use coyoquil::Frame;
+use coyoquil::{CloseCode, DeflateEncoder, Frame};
 use quetzalcoatl::mpsc::Consumer;
 use ququmatz::types::MsgFlags;
 use ququmatz::{IoUring, Sqe};
@@ -18,6 +18,7 @@ struct WriterSlot {
     send_offset: usize,
     send_pending: bool,
     dead: bool,
+    deflate_encoder: Option<DeflateEncoder>,
 }
 
 pub fn writer_thread(
@@ -35,12 +36,14 @@ fn writer_loop(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut ring = IoUring::new(4096)?;
     let mut slots: Vec<WriterSlot> = Vec::new();
+    // Scratch buffer for compression — reused across frames.
+    let mut compress_buf: Vec<u8> = Vec::new();
 
     loop {
         if shutdown.load(Ordering::Acquire) {
             for slot in &mut slots {
                 if !slot.dead {
-                    let _ = send_close(&mut ring, slot);
+                    let _ = send_close(&mut ring, slot, CloseCode::Normal);
                 }
             }
             break;
@@ -52,13 +55,17 @@ fn writer_loop(
 
         for cmd in cmds {
             match cmd {
-                WriteCmd::Register { fd } => {
+                WriteCmd::Register { fd, deflate } => {
+                    let deflate_encoder = deflate.as_ref().map(|config| {
+                        DeflateEncoder::new(config, true)
+                    });
                     let new_slot = WriterSlot {
                         fd,
                         send_buf: Vec::with_capacity(65536),
                         send_offset: 0,
                         send_pending: false,
                         dead: false,
+                        deflate_encoder,
                     };
                     if let Some(i) = slots.iter().position(|s| s.dead && !s.send_pending) {
                         slots[i] = new_slot;
@@ -68,26 +75,48 @@ fn writer_loop(
                 }
                 WriteCmd::SendText { fd, text } => {
                     if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
-                        Frame::Text(&text).encode(&mut slot.send_buf).ok();
+                        encode_text(slot, &text, &mut compress_buf);
                     }
                 }
                 WriteCmd::SendBinary { fd, data } => {
                     if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
-                        Frame::Binary(&data).encode(&mut slot.send_buf).ok();
+                        encode_binary(slot, &data, &mut compress_buf);
                     }
                 }
                 WriteCmd::Broadcast { text } => {
-                    let mut encoded = Vec::new();
-                    Frame::Text(&text).encode(&mut encoded).ok();
+                    // Pre-encode the uncompressed frame for non-deflate slots
+                    let mut plain = Vec::new();
+                    Frame::Text(&text).encode(&mut plain).ok();
+
                     for slot in slots.iter_mut() {
-                        if !slot.dead {
-                            slot.send_buf.extend_from_slice(&encoded);
+                        if slot.dead {
+                            continue;
+                        }
+                        if slot.deflate_encoder.is_some() {
+                            encode_text(slot, &text, &mut compress_buf);
+                        } else {
+                            slot.send_buf.extend_from_slice(&plain);
                         }
                     }
                 }
-                WriteCmd::Close { fd } => {
+                WriteCmd::BroadcastBinary { data } => {
+                    let mut plain = Vec::new();
+                    Frame::Binary(&data).encode(&mut plain).ok();
+
+                    for slot in slots.iter_mut() {
+                        if slot.dead {
+                            continue;
+                        }
+                        if slot.deflate_encoder.is_some() {
+                            encode_binary(slot, &data, &mut compress_buf);
+                        } else {
+                            slot.send_buf.extend_from_slice(&plain);
+                        }
+                    }
+                }
+                WriteCmd::Close { fd, code } => {
                     if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
-                        let _ = send_close(&mut ring, slot);
+                        let _ = send_close(&mut ring, slot, code);
                     }
                 }
                 WriteCmd::Pong { fd } => {
@@ -125,6 +154,51 @@ fn writer_loop(
     }
 
     Ok(())
+}
+
+/// Encode a text frame, compressing if the slot has a deflate encoder.
+fn encode_text(slot: &mut WriterSlot, text: &str, compress_buf: &mut Vec<u8>) {
+    if let Some(ref mut encoder) = slot.deflate_encoder {
+        compress_buf.clear();
+        encoder.compress(text.as_bytes(), compress_buf);
+        // RSV1 + FIN + Text opcode, unmasked (server→client)
+        encode_compressed_frame(0xC1, compress_buf, &mut slot.send_buf);
+    } else {
+        Frame::Text(text).encode(&mut slot.send_buf).ok();
+    }
+}
+
+/// Encode a binary frame, compressing if the slot has a deflate encoder.
+fn encode_binary(slot: &mut WriterSlot, data: &[u8], compress_buf: &mut Vec<u8>) {
+    if let Some(ref mut encoder) = slot.deflate_encoder {
+        compress_buf.clear();
+        encoder.compress(data, compress_buf);
+        // RSV1 + FIN + Binary opcode, unmasked
+        encode_compressed_frame(0xC2, compress_buf, &mut slot.send_buf);
+    } else {
+        Frame::Binary(data).encode(&mut slot.send_buf).ok();
+    }
+}
+
+/// Write a compressed frame directly: byte0 (FIN+RSV1+opcode) + length + payload.
+///
+/// This bypasses `Frame::encode_compressed` because that method uses the
+/// Frame variant's payload (e.g. `Frame::Text` requires `&str`), but
+/// compressed bytes are not valid UTF-8.
+#[allow(clippy::cast_possible_truncation)]
+fn encode_compressed_frame(byte0: u8, payload: &[u8], out: &mut Vec<u8>) {
+    out.push(byte0);
+    let len = payload.len();
+    if len < 126 {
+        out.push(len as u8);
+    } else if len < 65536 {
+        out.push(126);
+        out.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        out.push(127);
+        out.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    out.extend_from_slice(payload);
 }
 
 /// Drain all ready CQEs, advancing send state for each completed slot.
@@ -190,10 +264,11 @@ fn try_submit_send(ring: &mut IoUring, slot: &mut WriterSlot, user_data: u64) ->
 fn send_close(
     ring: &mut IoUring,
     slot: &mut WriterSlot,
+    code: CloseCode,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     slot.send_buf.clear();
     slot.send_offset = 0;
-    Frame::Close(Some((1000, &[]))).encode(&mut slot.send_buf).ok();
+    Frame::Close(Some((code, &[]))).encode(&mut slot.send_buf).ok();
     let sqe = unsafe {
         Sqe::send(
             slot.fd,
