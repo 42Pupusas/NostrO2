@@ -50,5 +50,9 @@ name = "event_ingest"
 harness = false
 
 [[bench]]
+name = "event_ingest_multi"
+harness = false
+
+[[bench]]
 name = "fanout"
 harness = false
