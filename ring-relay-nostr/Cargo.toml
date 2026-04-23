@@ -31,6 +31,11 @@ tungstenite = "0.26"
 futures-util = { workspace = true }
 nostro2-signer = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
+# Head-to-head comparison against the actix+LMDB relay library.
+nostr-relay = "0.4.8"
+tempfile = "3"
+actix-rt = "2"
+actix-web = "4"
 
 [[example]]
 name = "relay"
@@ -61,4 +66,12 @@ harness = false
 
 [[bench]]
 name = "fanout_multi"
+harness = false
+
+[[bench]]
+name = "compare_ingest"
+harness = false
+
+[[bench]]
+name = "compare_fanout"
 harness = false
