@@ -23,7 +23,7 @@ use ring_relay_server::{
 
 pub use filter::matches;
 pub use info::{Limitation, RelayInfo};
-pub use protocol::{ClientMessage, ParseError};
+pub use protocol::{ClientMessage, ParseError, parse};
 
 /// Configuration for the Nostr relay layer.
 #[derive(Debug, Clone)]
