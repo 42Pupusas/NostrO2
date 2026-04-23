@@ -5,40 +5,76 @@
 //! shard. Parse + verify + filter-match + writer-ring push all happen on
 //! the reader thread, so no cross-thread hop per message.
 //!
-//! Fan-out is currently shard-local — an EVENT only reaches subscriptions
-//! owned by the shard it arrived on. Multi-shard fan-out (sub replication)
-//! is added in a follow-up step.
+//! ## Cross-shard fan-out
+//!
+//! Each shard is authoritative for the clients it accepted, but keeps a
+//! replica of every *other* shard's subscriptions so an EVENT arriving on
+//! shard A can match against subs owned by shard B and deliver directly to
+//! B's clients. Replication flows over a single broadcast ring of
+//! [`SubRepl`] messages:
+//!
+//! - `REQ` on shard A → update local state → push `SubRepl::Add` to broadcast.
+//! - `CLOSE`/FIFO-eviction on A → local remove → push `SubRepl::Remove`.
+//! - Client disconnect on A → local drop → push `SubRepl::ClientGone`.
+//! - Every shard drains the ring each iteration, applying peer messages to
+//!   its local replica and skipping its own (by comparing `owner`).
+//!
+//! Fan-out on EVENT walks both the local client table and the replica. The
+//! writer-ring routing (`fd % writer_shards`) already handles cross-shard
+//! delivery; each shard just pushes `WriteCmd::SendText { fd, ... }` for
+//! any matching subscriber, and the correct writer thread picks it up.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nostro2::{NostrNote, NostrSubscription};
+use quetzalcoatl::broadcast::arc::{ArcConsumer, ArcProducer};
 use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 
-use crate::{RelayConfig, filter, protocol};
 use crate::protocol::ClientMessage;
+use crate::{RelayConfig, filter, protocol};
 
-/// Subscriptions owned by a single connected client.
+/// A sub-replication message broadcast from one shard to all others.
+pub(crate) enum SubRepl {
+    Add {
+        owner: u32,
+        client_id: i32,
+        sub_id: Arc<str>,
+        filters: Arc<[NostrSubscription]>,
+    },
+    Remove {
+        owner: u32,
+        client_id: i32,
+        sub_id: Arc<str>,
+    },
+    /// A client disconnected from its owning shard; drop all its replica subs.
+    ClientGone {
+        owner: u32,
+        client_id: i32,
+    },
+}
+
+/// Subscriptions owned by a single connected client (local, authoritative view).
 #[derive(Default)]
 struct ClientState {
     /// Insertion-ordered map of sub_id → filters. The `order` VecDeque gives
     /// O(1) FIFO pop for eviction.
-    subs: HashMap<String, Vec<NostrSubscription>>,
-    order: VecDeque<String>,
+    subs: HashMap<Arc<str>, Arc<[NostrSubscription]>>,
+    order: VecDeque<Arc<str>>,
 }
 
 impl ClientState {
     fn insert_sub(
         &mut self,
-        sub_id: String,
-        filters: Vec<NostrSubscription>,
+        sub_id: Arc<str>,
+        filters: Arc<[NostrSubscription]>,
         cap: usize,
-    ) -> Option<String> {
+    ) -> Option<Arc<str>> {
         // Replacing an existing sub with the same id: remove it from order
         // first so re-insertion puts it at the back.
         if self.subs.remove(&sub_id).is_some()
-            && let Some(pos) = self.order.iter().position(|s| s == &sub_id)
+            && let Some(pos) = self.order.iter().position(|s| s.as_ref() == sub_id.as_ref())
         {
             self.order.remove(pos);
         }
@@ -51,36 +87,141 @@ impl ClientState {
             None
         };
 
-        self.order.push_back(sub_id.clone());
+        self.order.push_back(Arc::clone(&sub_id));
         self.subs.insert(sub_id, filters);
         evicted
     }
 
-    fn remove_sub(&mut self, sub_id: &str) {
-        if self.subs.remove(sub_id).is_some()
-            && let Some(pos) = self.order.iter().position(|s| s == sub_id)
-        {
-            self.order.remove(pos);
+    fn remove_sub(&mut self, sub_id: &str) -> bool {
+        if self.subs.remove(sub_id).is_some() {
+            if let Some(pos) = self.order.iter().position(|s| s.as_ref() == sub_id) {
+                self.order.remove(pos);
+            }
+            true
+        } else {
+            false
         }
     }
 }
+
+/// Replicated subs from one peer-owned client (owner, client_id) → sub_id → filters.
+type ReplicaClient = HashMap<Arc<str>, Arc<[NostrSubscription]>>;
 
 /// Per-shard Nostr dispatcher. One instance per reader thread.
 pub struct ShardDispatcher {
     config: Arc<RelayConfig>,
     sender: ServerSender,
+    /// This shard's index, stamped into every outgoing SubRepl message so
+    /// peers can skip our own broadcasts on readback.
+    owner_id: u32,
     clients: HashMap<i32, ClientState>,
     /// Arrival order on this shard, for FIFO eviction at capacity.
     client_order: VecDeque<i32>,
+    /// Replicated peer subs: (owner, client_id) → sub_id → filters.
+    replica: HashMap<(u32, i32), ReplicaClient>,
+    /// Outbound replication channel; None when reader_shards == 1 (no peers).
+    repl_tx: Option<ArcProducer<SubRepl>>,
+    /// Inbound replication channel for this shard's replica view. None on
+    /// single-shard configs.
+    repl_rx: Option<ArcConsumer<SubRepl>>,
 }
 
 impl ShardDispatcher {
-    pub fn new(config: Arc<RelayConfig>, sender: ServerSender) -> Self {
+    pub(crate) fn new(
+        config: Arc<RelayConfig>,
+        sender: ServerSender,
+        owner_id: u32,
+        repl_tx: Option<ArcProducer<SubRepl>>,
+        repl_rx: Option<ArcConsumer<SubRepl>>,
+    ) -> Self {
         Self {
             config,
             sender,
+            owner_id,
             clients: HashMap::new(),
             client_order: VecDeque::new(),
+            replica: HashMap::new(),
+            repl_tx,
+            repl_rx,
+        }
+    }
+
+    /// Drain any pending replication messages from peers, applying them to
+    /// the local replica. Call at the top of each loop iteration.
+    pub fn drain_replication(&mut self) {
+        let Some(rx) = self.repl_rx.as_mut() else {
+            return;
+        };
+        while let Some(msg) = rx.pop() {
+            match &*msg {
+                SubRepl::Add {
+                    owner,
+                    client_id,
+                    sub_id,
+                    filters,
+                } => {
+                    let owner = *owner;
+                    let client_id = *client_id;
+                    if owner == self.owner_id {
+                        continue; // skip our own echoes
+                    }
+                    self.replica
+                        .entry((owner, client_id))
+                        .or_default()
+                        .insert(Arc::clone(sub_id), Arc::clone(filters));
+                }
+                SubRepl::Remove {
+                    owner,
+                    client_id,
+                    sub_id,
+                } => {
+                    let owner = *owner;
+                    let client_id = *client_id;
+                    if owner == self.owner_id {
+                        continue;
+                    }
+                    if let Some(subs) = self.replica.get_mut(&(owner, client_id)) {
+                        subs.remove(sub_id.as_ref());
+                        if subs.is_empty() {
+                            self.replica.remove(&(owner, client_id));
+                        }
+                    }
+                }
+                SubRepl::ClientGone { owner, client_id } => {
+                    let owner = *owner;
+                    let client_id = *client_id;
+                    if owner == self.owner_id {
+                        continue;
+                    }
+                    self.replica.remove(&(owner, client_id));
+                }
+            }
+        }
+    }
+
+    /// Push a replication message with backpressure. Broadcast rings block
+    /// the caller until space is available; a REQ storm on one shard will
+    /// slow that shard's own dispatch but can't stall peers.
+    fn push_repl(&self, mut msg: SubRepl) {
+        let Some(tx) = self.repl_tx.as_ref() else {
+            return;
+        };
+        let mut spins = 0u32;
+        loop {
+            match tx.push(msg) {
+                Ok(()) => return,
+                Err(returned) => {
+                    msg = returned;
+                    if spins < 64 {
+                        std::hint::spin_loop();
+                    } else if spins < 256 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_micros(10));
+                    }
+                    spins = spins.saturating_add(1);
+                }
+            }
         }
     }
 
@@ -101,8 +242,7 @@ impl ShardDispatcher {
 
     fn on_connect(&mut self, client_id: i32) {
         // Per-shard FIFO eviction. The server layer already caps total fds
-        // at `max_clients`, so this is defensive — catches cases where the
-        // Nostr state persists past the WS accept.
+        // at `max_clients`, so this is defensive.
         while self.client_order.len() >= self.config.max_clients {
             if let Some(old) = self.client_order.pop_front() {
                 self.clients.remove(&old);
@@ -119,9 +259,16 @@ impl ShardDispatcher {
     }
 
     fn on_disconnect(&mut self, client_id: i32) {
-        self.clients.remove(&client_id);
+        let had = self.clients.remove(&client_id).is_some();
         if let Some(pos) = self.client_order.iter().position(|&c| c == client_id) {
             self.client_order.remove(pos);
+        }
+        if had {
+            // Tell peers to drop this client's replica entry.
+            self.push_repl(SubRepl::ClientGone {
+                owner: self.owner_id,
+                client_id,
+            });
         }
     }
 
@@ -160,12 +307,25 @@ impl ShardDispatcher {
         self.sender
             .send_text(client_id, protocol::ok(&id, true, ""));
 
-        // Shard-local fan-out. Cross-shard fan-out comes with sub replication.
+        // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
                 if filters.iter().any(|f| filter::matches(&note, f)) {
                     let frame = protocol::event(sub_id, &note);
                     self.sender.send_text(other_id, frame);
+                    break;
+                }
+            }
+        }
+
+        // Cross-shard fan-out via replicated subs. `writer_shard` routing
+        // (fd % writer_shards) inside ServerSender handles delivery to the
+        // correct writer thread; we just push.
+        for (&(_owner, client_id), subs) in &self.replica {
+            for (sub_id, filters) in subs {
+                if filters.iter().any(|f| filter::matches(&note, f)) {
+                    let frame = protocol::event(sub_id, &note);
+                    self.sender.send_text(client_id, frame);
                     break;
                 }
             }
@@ -204,22 +364,51 @@ impl ShardDispatcher {
             return;
         };
 
-        let evicted = state.insert_sub(sub_id.clone(), filters, self.config.max_subs_per_conn);
+        let sub_id_arc: Arc<str> = Arc::from(sub_id.into_boxed_str());
+        let filters_arc: Arc<[NostrSubscription]> = Arc::from(filters.into_boxed_slice());
+
+        let evicted = state.insert_sub(
+            Arc::clone(&sub_id_arc),
+            Arc::clone(&filters_arc),
+            self.config.max_subs_per_conn,
+        );
 
         if let Some(old_sub) = evicted {
             self.sender.send_text(
                 client_id,
                 protocol::closed(&old_sub, "rate-limited: subscription evicted (fifo)"),
             );
+            self.push_repl(SubRepl::Remove {
+                owner: self.owner_id,
+                client_id,
+                sub_id: old_sub,
+            });
         }
 
+        // Replicate the new sub to peer shards.
+        self.push_repl(SubRepl::Add {
+            owner: self.owner_id,
+            client_id,
+            sub_id: Arc::clone(&sub_id_arc),
+            filters: filters_arc,
+        });
+
         // Ephemeral: no stored events to replay. Immediate EOSE per NIP-01.
-        self.sender.send_text(client_id, protocol::eose(&sub_id));
+        self.sender.send_text(client_id, protocol::eose(&sub_id_arc));
     }
 
     fn on_close_sub(&mut self, client_id: i32, sub_id: &str) {
-        if let Some(state) = self.clients.get_mut(&client_id) {
-            state.remove_sub(sub_id);
+        let removed = if let Some(state) = self.clients.get_mut(&client_id) {
+            state.remove_sub(sub_id)
+        } else {
+            false
+        };
+        if removed {
+            self.push_repl(SubRepl::Remove {
+                owner: self.owner_id,
+                client_id,
+                sub_id: Arc::from(sub_id.to_owned().into_boxed_str()),
+            });
         }
     }
 }
@@ -231,6 +420,9 @@ pub(crate) fn run_shard(
     sender: ServerSender,
     config: Arc<RelayConfig>,
     shutdown: Arc<AtomicBool>,
+    owner_id: u32,
+    repl_tx: Option<ArcProducer<SubRepl>>,
+    repl_rx: Option<ArcConsumer<SubRepl>>,
 ) {
     let mut core = match ReaderCore::new(4096) {
         Ok(c) => c,
@@ -239,12 +431,14 @@ pub(crate) fn run_shard(
             return;
         }
     };
-    let mut dispatcher = ShardDispatcher::new(config, sender.clone());
+    let mut dispatcher = ShardDispatcher::new(config, sender.clone(), owner_id, repl_tx, repl_rx);
 
-    // For each new client: register it with the writer shard that owns its
-    // fd (the built-in WsServer reader does this automatically; we own our
-    // own reader loop so we handle it here).
     while !shutdown.load(Ordering::Acquire) {
+        // 1. Apply any replication updates from peers first, so an EVENT in
+        //    step 3 sees the latest sub view.
+        dispatcher.drain_replication();
+
+        // 2. Accept any new clients on our SPSC ring.
         while let Some(client) = accept_rx.pop() {
             let fd = client.fd;
             let deflate = client.deflate.clone();
@@ -257,6 +451,8 @@ pub(crate) fn run_shard(
             continue;
         }
 
+        // 3. Drive the I/O: parse + verify + fan-out all happen inline via
+        //    ShardDispatcher::handle inside poll_once.
         if let Err(e) = core.poll_once(|event| dispatcher.handle(event)) {
             eprintln!("nostr shard fatal: poll_once: {e}");
             return;
@@ -273,10 +469,19 @@ mod tests {
     #[test]
     fn client_state_fifo_eviction() {
         let mut state = ClientState::default();
-        let filters = vec![NostrSubscription::default()];
-        assert!(state.insert_sub("a".into(), filters.clone(), 2).is_none());
-        assert!(state.insert_sub("b".into(), filters.clone(), 2).is_none());
-        let evicted = state.insert_sub("c".into(), filters, 2);
+        let filters: Arc<[NostrSubscription]> =
+            Arc::from(vec![NostrSubscription::default()].into_boxed_slice());
+        assert!(
+            state
+                .insert_sub(Arc::from("a"), Arc::clone(&filters), 2)
+                .is_none()
+        );
+        assert!(
+            state
+                .insert_sub(Arc::from("b"), Arc::clone(&filters), 2)
+                .is_none()
+        );
+        let evicted = state.insert_sub(Arc::from("c"), filters, 2);
         assert_eq!(evicted.as_deref(), Some("a"));
         assert!(!state.subs.contains_key("a"));
         assert!(state.subs.contains_key("b"));
@@ -286,10 +491,11 @@ mod tests {
     #[test]
     fn client_state_replace_same_id() {
         let mut state = ClientState::default();
-        let f = vec![NostrSubscription::default()];
-        state.insert_sub("a".into(), f.clone(), 2);
-        state.insert_sub("b".into(), f.clone(), 2);
-        let evicted = state.insert_sub("a".into(), f, 2);
+        let f: Arc<[NostrSubscription]> =
+            Arc::from(vec![NostrSubscription::default()].into_boxed_slice());
+        state.insert_sub(Arc::from("a"), Arc::clone(&f), 2);
+        state.insert_sub(Arc::from("b"), Arc::clone(&f), 2);
+        let evicted = state.insert_sub(Arc::from("a"), f, 2);
         assert!(evicted.is_none());
         assert_eq!(state.order.len(), 2);
     }

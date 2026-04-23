@@ -121,23 +121,70 @@ impl NostrRelay {
             ServerComponents::prepare(addr, port, config.max_clients, server_config)?;
         let port = builder.port();
         let shutdown = builder.shutdown_flag();
+        let n = accept_rxs.len();
         let config = Arc::new(config);
+
+        // Cross-shard sub replication via one broadcast ring. Only allocate
+        // when there's more than one shard — a single-shard relay has no
+        // peers to replicate to.
+        //
+        // The broadcast ring caps its consumer count at creation (max_consumers
+        // = N), so we must distribute exactly N consumer handles across the
+        // shards — the seed consumer to shard 0, N-1 clones to shards 1..N.
+        // Producer is MP so we can freely clone.
+        let (repl_producer, mut repl_consumer_opt) = if n > 1 {
+            let cap = quetzalcoatl::capacity::Capacity::at_least(
+                (config.max_clients * config.max_subs_per_conn).max(4096),
+            );
+            let (p, c) = quetzalcoatl::broadcast::arc::ArcRingBuffer::<shard::SubRepl>::new(
+                cap, n,
+            )
+            .split();
+            (Some(p), Some(c))
+        } else {
+            (None, None)
+        };
 
         // Spawn one reader thread per shard, each running a ShardDispatcher
         // inline on the I/O thread.
-        let mut reader_threads = Vec::with_capacity(accept_rxs.len());
+        let mut reader_threads = Vec::with_capacity(n);
         for (i, accept_rx) in accept_rxs.into_iter().enumerate() {
             let sender = builder.sender();
             let cfg = Arc::clone(&config);
             let shard_shutdown = Arc::clone(&shutdown);
+            let owner_id = i as u32;
+
+            // Producer is cloneable (MP); clone one per shard.
+            let repl_tx = repl_producer.clone();
+            // Consumer is cloneable, but each clone claims a fresh slot. Hand
+            // the seed to shard 0, clone for shards 1..N-1, then give the
+            // seed to the last shard to avoid needing an extra slot.
+            let repl_rx = if i + 1 < n {
+                repl_consumer_opt.clone()
+            } else {
+                repl_consumer_opt.take()
+            };
 
             let handle = std::thread::Builder::new()
                 .name(format!("nostr-shard-{i}"))
                 .spawn(move || {
-                    shard::run_shard(accept_rx, sender, cfg, shard_shutdown);
+                    shard::run_shard(
+                        accept_rx,
+                        sender,
+                        cfg,
+                        shard_shutdown,
+                        owner_id,
+                        repl_tx,
+                        repl_rx,
+                    );
                 })?;
             reader_threads.push(handle);
         }
+
+        // Seed producer is still alive here; drop it so only shard-owned
+        // producer clones remain. Consumer seed was handed to the last shard
+        // (or was None in single-shard mode).
+        drop(repl_producer);
 
         let components = builder.start_listener()?;
 

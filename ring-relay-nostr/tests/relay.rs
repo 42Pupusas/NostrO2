@@ -249,3 +249,57 @@ async fn unknown_verb_gets_notice() {
 
     shutdown.shutdown();
 }
+
+/// Exercises cross-shard sub replication: with reader_shards=2, open several
+/// subscriber connections (likely landing on both shards) and one publisher.
+/// Every subscriber should receive every event regardless of which shard the
+/// publisher's connection lives on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_shard_fanout() {
+    use ring_relay_server::ShardConfig;
+
+    let mut cfg = RelayConfig::default();
+    cfg.shards = ShardConfig {
+        reader_shards: 2,
+        writer_shards: 2,
+    };
+    let (port, shutdown) = spawn_relay(cfg);
+
+    // Open 4 subscribers; with fd % 2 routing at least one will land on a
+    // different shard than the publisher, so the test always exercises the
+    // replication path at N=2. If all happen to collide on one shard the
+    // test still passes — but that's vanishingly unlikely with 4+1 fds.
+    let mut subs = Vec::with_capacity(4);
+    for i in 0..4 {
+        let mut ws = connect(port).await;
+        let req = format!(r#"["REQ","s{i}",{{"kinds":[1]}}]"#);
+        send(&mut ws, &req).await;
+        let eose = recv_text(&mut ws).await;
+        assert_eq!(eose[0], "EOSE");
+        subs.push(ws);
+    }
+
+    // Give replication a brief moment to propagate SubRepl::Add messages
+    // across peer shards before we publish.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut pub_ws = connect(port).await;
+    let note = signed_note("cross-shard");
+    let id = note.id.clone().unwrap();
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut pub_ws, &frame).await;
+
+    let ok = recv_text(&mut pub_ws).await;
+    assert_eq!(ok[0], "OK");
+    assert_eq!(ok[2], true);
+
+    // Every subscriber must see the event, regardless of shard placement.
+    for (i, sub) in subs.iter_mut().enumerate() {
+        let evt = recv_text(sub).await;
+        assert_eq!(evt[0], "EVENT", "sub {i} did not receive EVENT");
+        assert_eq!(evt[1], format!("s{i}"));
+        assert_eq!(evt[2]["id"].as_str().unwrap(), id);
+    }
+
+    shutdown.shutdown();
+}
