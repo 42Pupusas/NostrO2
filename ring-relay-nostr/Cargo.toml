@@ -75,3 +75,7 @@ harness = false
 [[bench]]
 name = "compare_fanout"
 harness = false
+
+[[bench]]
+name = "idle_scale"
+harness = false

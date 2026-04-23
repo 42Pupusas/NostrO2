@@ -1,14 +1,24 @@
-//! Head-to-head fan-out bench: ring-relay-nostr vs nostr-relay 0.4.8.
+//! Idle-connection scaling bench: ring-relay-nostr vs nostr-relay 0.4.8.
 //!
-//! Measures **only** the fan-out cycle — publish a batch of events, wait
-//! for every subscriber to receive every event. Relay spawn, the 64 sub +
-//! 4 pub TCP connects, REQ propagation, and teardown are all outside the
-//! timed region.
+//! Measures fan-out throughput as the number of **idle** connected clients
+//! grows. Idle clients connect over WebSocket, stay connected, and do
+//! nothing — no REQ, no EVENT. They exist to pressure the I/O layer.
 //!
-//! Tmpfs caveat: nostr-relay's LMDB is pointed at /dev/shm so we don't
-//! measure disk speed, but the DB code path still runs (write batching
-//! every 100ms, serialization, LMDB bookkeeping). ring-relay-nostr has no
-//! persistence by design.
+//! The hypothesis being tested: io_uring should scale better on
+//! concurrent-connection count than epoll-backed tokio, because fd count
+//! in itself shouldn't cost anything at recv time — the ring only serves
+//! fds that complete an operation. epoll pays a syscall + bookkeeping per
+//! ready fd per round.
+//!
+//! Active cohort (kept tiny so idle clients dominate the comparison):
+//!   - 4 publishers
+//!   - 16 subscribers with an open filter (receive every event)
+//!
+//! Idle cohort (variable): 0, 1000, 5000, 10000 connected clients with no
+//! subscription.
+//!
+//! Each timed iteration publishes 25 events per publisher and waits for
+//! every active subscriber to receive all 100 events.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -28,49 +38,42 @@ use tokio_tungstenite::tungstenite::Message;
 use common::{Relay, presign_for};
 
 const NUM_PUBS: usize = 4;
-const EVENTS_PER_ITER: usize = 25; // per pub, per iteration
-const NUM_SUBS: usize = 64;
+const EVENTS_PER_ITER: usize = 25;
+const NUM_ACTIVE_SUBS: usize = 16;
+const WORKERS: usize = 2;
 
 type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
-/// Pre-built harness. The relay is running, every subscriber is connected
-/// and subscribed, every publisher is connected. Each timed iteration pushes
-/// a batch of events down `iter_trigger_tx` and waits on `delivered` to
-/// reach the new target.
-struct FanoutHarness {
+/// Harness with an active cohort (pubs + active subs) and an idle cohort.
+struct IdleHarness {
     relay: Option<Relay>,
     rt: Runtime,
     pub_sinks: Vec<WsSink>,
     delivered: Arc<AtomicUsize>,
-    /// Pool of pre-signed events per publisher. Each iteration consumes
-    /// `EVENTS_PER_ITER` entries from each.
     pub_pools: Vec<Arc<Vec<String>>>,
-    /// Cursor into the pool — how many events each pub has already sent.
     pub_cursor: usize,
-    sub_tasks: Vec<JoinHandle<()>>,
+    active_sub_tasks: Vec<JoinHandle<()>>,
     pub_drain_tasks: Vec<JoinHandle<()>>,
+    idle_tasks: Vec<JoinHandle<()>>,
 }
 
-impl FanoutHarness {
-    /// Spin up a relay, connect NUM_SUBS subscribers and NUM_PUBS publishers,
-    /// send REQs and drain EOSEs. Pre-sign `total_iters * EVENTS_PER_ITER`
-    /// events per publisher so every iteration has fresh content (avoids
-    /// nostr-relay's event-id dedup).
-    fn new(rt: Runtime, relay: Relay, total_iters: u64) -> Self {
+impl IdleHarness {
+    fn new(rt: Runtime, relay: Relay, total_iters: u64, idle_count: usize) -> Self {
         let port = relay.port;
         let url = format!("ws://127.0.0.1:{port}");
         let delivered = Arc::new(AtomicUsize::new(0));
         let total_events_per_pub = (total_iters as usize) * EVENTS_PER_ITER;
 
-        // Pre-sign all events upfront (untimed).
         let pub_pools: Vec<Arc<Vec<String>>> = (0..NUM_PUBS)
             .map(|i| presign_for(total_events_per_pub, &format!("pub{i}")))
             .collect();
 
-        // Connect and subscribe all subs, then all pubs. Return pub sinks
-        // and the background tasks that will keep receiving forever.
-        let (sub_tasks, pub_sinks, pub_drain_tasks) =
-            rt.block_on(connect_all(&url, delivered.clone()));
+        // Idle clients first so the active cohort competes with them for
+        // whatever per-fd work the relay does.
+        let idle_tasks = rt.block_on(connect_idle(&url, idle_count));
+
+        let (active_sub_tasks, pub_sinks, pub_drain_tasks) =
+            rt.block_on(connect_active(&url, delivered.clone()));
 
         Self {
             relay: Some(relay),
@@ -79,23 +82,18 @@ impl FanoutHarness {
             delivered,
             pub_pools,
             pub_cursor: 0,
-            sub_tasks,
+            active_sub_tasks,
             pub_drain_tasks,
+            idle_tasks,
         }
     }
 
-    /// Run one timed iteration. Publish the next slice of events from each
-    /// pub, wait for every subscriber to have received each event.
-    /// Returns when `delivered` has caught up to the new target.
     fn iterate(&mut self) {
         let start_cursor = self.pub_cursor;
         let end_cursor = start_cursor + EVENTS_PER_ITER;
-        // Deliveries from this iteration: NUM_SUBS × (NUM_PUBS × EVENTS_PER_ITER).
         let before = self.delivered.load(Ordering::Relaxed);
-        let target = before + NUM_SUBS * NUM_PUBS * EVENTS_PER_ITER;
+        let target = before + NUM_ACTIVE_SUBS * NUM_PUBS * EVENTS_PER_ITER;
 
-        // Publish all pubs in parallel so the client-side send is not a
-        // serial bottleneck on the measurement.
         let pools = self.pub_pools.clone();
         let sinks = std::mem::take(&mut self.pub_sinks);
         let returned: Vec<WsSink> = self.rt.block_on(async {
@@ -118,10 +116,7 @@ impl FanoutHarness {
         });
         self.pub_sinks = returned;
 
-        // Tight spin with periodic yield. Subscriber tasks run on tokio
-        // workers, so blocking this thread with thread::sleep only adds
-        // poll-grain latency without helping throughput.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(120);
         let mut spins: u32 = 0;
         loop {
             let n = self.delivered.load(Ordering::Relaxed);
@@ -146,42 +141,81 @@ impl FanoutHarness {
     }
 }
 
-impl Drop for FanoutHarness {
+impl Drop for IdleHarness {
     fn drop(&mut self) {
-        // Abort background tasks and close sinks before dropping the relay.
-        for t in self.sub_tasks.drain(..) {
+        for t in self.active_sub_tasks.drain(..) {
             t.abort();
         }
         for t in self.pub_drain_tasks.drain(..) {
             t.abort();
         }
-        // Dropping pub_sinks closes their halves. Then drop the relay.
+        for t in self.idle_tasks.drain(..) {
+            t.abort();
+        }
         self.pub_sinks.clear();
         drop(self.relay.take());
     }
 }
 
-async fn connect_all(
+/// Open `count` WebSocket connections that stay silent forever. No REQ.
+/// The relay should hold the fd but do no Nostr work per idle client.
+///
+/// We connect in batches to avoid SYN floods / accept backpressure.
+async fn connect_idle(url: &str, count: usize) -> Vec<JoinHandle<()>> {
+    let mut tasks = Vec::with_capacity(count);
+    if count == 0 {
+        return tasks;
+    }
+
+    const BATCH: usize = 256;
+    for chunk_start in (0..count).step_by(BATCH) {
+        let chunk_end = (chunk_start + BATCH).min(count);
+        let mut batch_handles = Vec::with_capacity(chunk_end - chunk_start);
+        for _ in chunk_start..chunk_end {
+            let url = url.to_string();
+            batch_handles.push(tokio::spawn(async move {
+                match tokio_tungstenite::connect_async(&url).await {
+                    Ok((ws, _)) => {
+                        let (_write, mut read) = ws.split();
+                        // Drain forever; we never send anything. An idle
+                        // client should just sit here waiting for frames
+                        // that never come (no REQ = no EVENT deliveries).
+                        while let Some(Ok(_)) = read.next().await {}
+                    }
+                    Err(_) => {}
+                }
+            }));
+        }
+        tasks.extend(batch_handles);
+        // Small pause so the relay can keep up with accept / HTTP upgrade.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Wait a beat so the last batch of connects is definitely established
+    // before the bench's timed region starts.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    tasks
+}
+
+async fn connect_active(
     url: &str,
     delivered: Arc<AtomicUsize>,
 ) -> (Vec<JoinHandle<()>>, Vec<WsSink>, Vec<JoinHandle<()>>) {
-    // Subscribers: connect, send REQ, wait for EOSE. Keep the reader half
-    // running forever incrementing `delivered` on every EVENT frame.
-    let mut sub_tasks = Vec::with_capacity(NUM_SUBS);
-    let mut eose_rxs = Vec::with_capacity(NUM_SUBS);
-    for i in 0..NUM_SUBS {
+    let mut active_sub_tasks = Vec::with_capacity(NUM_ACTIVE_SUBS);
+    let mut eose_rxs = Vec::with_capacity(NUM_ACTIVE_SUBS);
+    for i in 0..NUM_ACTIVE_SUBS {
         let url = url.to_string();
         let delivered = delivered.clone();
         let (eose_tx, eose_rx) = mpsc::unbounded_channel::<()>();
         eose_rxs.push(eose_rx);
-        sub_tasks.push(tokio::spawn(async move {
+        active_sub_tasks.push(tokio::spawn(async move {
             let (ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
-                .expect("sub connect");
+                .expect("active sub connect");
             let (mut write, mut read) = ws.split();
-            let req = format!(r#"["REQ","s{i}",{{"kinds":[1]}}]"#);
+            let req = format!(r#"["REQ","a{i}",{{"kinds":[1]}}]"#);
             write.send(Message::Text(req.into())).await.expect("REQ");
-            // Forever: drain. First text frame is EOSE; signal and keep going.
             let mut eose_sent = false;
             loop {
                 match read.next().await {
@@ -197,19 +231,14 @@ async fn connect_all(
                     _ => break,
                 }
             }
-            drop(write);
         }));
     }
-
-    // Wait for every sub's EOSE before proceeding.
     for mut rx in eose_rxs {
-        let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        let _ = tokio::time::timeout(Duration::from_secs(30), rx.recv())
             .await
-            .expect("EOSE timeout");
+            .expect("active EOSE timeout");
     }
 
-    // Publishers: connect. Split; hand the sink back to the harness, spawn
-    // a drain task for the reader half so OK acks don't back up.
     let mut pub_sinks = Vec::with_capacity(NUM_PUBS);
     let mut pub_drain_tasks = Vec::with_capacity(NUM_PUBS);
     for _ in 0..NUM_PUBS {
@@ -219,39 +248,37 @@ async fn connect_all(
         let (write, mut read) = ws.split();
         pub_sinks.push(write);
         pub_drain_tasks.push(tokio::spawn(async move {
-            while let Some(Ok(_)) = read.next().await {
-                // Drain OKs silently; they're not part of the measurement.
-            }
+            while let Some(Ok(_)) = read.next().await {}
         }));
     }
 
-    (sub_tasks, pub_sinks, pub_drain_tasks)
+    (active_sub_tasks, pub_sinks, pub_drain_tasks)
 }
 
 fn bench(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compare_fanout");
+    let mut group = c.benchmark_group("idle_scale");
     group.sample_size(10);
-    group.measurement_time(Duration::from_secs(15));
-    // Each iteration delivers NUM_SUBS × (NUM_PUBS × EVENTS_PER_ITER) events.
-    let deliveries_per_iter = NUM_SUBS * NUM_PUBS * EVENTS_PER_ITER;
+    group.measurement_time(Duration::from_secs(20));
+    let deliveries_per_iter = NUM_ACTIVE_SUBS * NUM_PUBS * EVENTS_PER_ITER;
     group.throughput(Throughput::Elements(deliveries_per_iter as u64));
 
-    for &workers in &[1usize, 2, 4] {
-        let max_clients = NUM_SUBS + NUM_PUBS + 8;
+    for &idle in &[0usize, 1000, 5000, 10000] {
+        let total_clients = idle + NUM_ACTIVE_SUBS + NUM_PUBS;
+        // ring-relay-nostr's max_clients has to fit everyone + slack.
+        let max_clients = total_clients + 64;
 
         group.bench_with_input(
-            BenchmarkId::new("ring", workers),
-            &workers,
-            |b, &w| {
+            BenchmarkId::new("ring", idle),
+            &idle,
+            |b, &n| {
                 b.iter_custom(|iters| {
                     let rt = tokio::runtime::Builder::new_multi_thread()
                         .worker_threads(6)
                         .enable_all()
                         .build()
                         .unwrap();
-                    let relay = Relay::spawn_ring(w, max_clients);
-                    let mut h = FanoutHarness::new(rt, relay, iters);
-                    // Timed region: iters × fan-out cycles.
+                    let relay = Relay::spawn_ring(WORKERS, max_clients);
+                    let mut h = IdleHarness::new(rt, relay, iters, n);
                     let start = Instant::now();
                     for _ in 0..iters {
                         h.iterate();
@@ -264,17 +291,17 @@ fn bench(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("nostr_relay", workers),
-            &workers,
-            |b, &w| {
+            BenchmarkId::new("nostr_relay", idle),
+            &idle,
+            |b, &n| {
                 b.iter_custom(|iters| {
                     let rt = tokio::runtime::Builder::new_multi_thread()
                         .worker_threads(6)
                         .enable_all()
                         .build()
                         .unwrap();
-                    let relay = Relay::spawn_nostr_relay(w);
-                    let mut h = FanoutHarness::new(rt, relay, iters);
+                    let relay = Relay::spawn_nostr_relay(WORKERS);
+                    let mut h = IdleHarness::new(rt, relay, iters, n);
                     let start = Instant::now();
                     for _ in 0..iters {
                         h.iterate();
