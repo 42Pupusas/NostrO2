@@ -1,6 +1,7 @@
 target/
 Cargo.lock
 flamegraph.svg
+flamegraphs/
 perf.data
 perf.data.old
 .claude/

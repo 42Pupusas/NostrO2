@@ -40,6 +40,15 @@ actix-web = "4"
 [[example]]
 name = "relay"
 
+[[example]]
+name = "profile_server"
+
+[[example]]
+name = "profile_load_ingest"
+
+[[example]]
+name = "profile_load_fanout"
+
 [[bench]]
 name = "filter_match"
 harness = false

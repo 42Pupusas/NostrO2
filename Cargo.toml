@@ -68,3 +68,9 @@ wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
+# Profiling-friendly release build: keep debug info so flamegraphs
+# symbolicate without penalizing release perf. Frame pointers are enabled
+# via RUSTFLAGS at profile-run time (see scripts in ring-relay-nostr).
+[profile.release]
+debug = "line-tables-only"
+
