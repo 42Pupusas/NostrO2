@@ -189,10 +189,30 @@ pub fn notice(message: &str) -> String {
     serde_json::to_string(&("NOTICE", message)).expect("NOTICE serialization cannot fail")
 }
 
-/// Encode `["EVENT", sub_id, note]` for fan-out.
+/// Serialize a note to its JSON object form for reuse across a fan-out pass.
+///
+/// Pair with [`event_from_serialized`]: serialize once per event, then build
+/// each subscriber's frame cheaply by splicing the JSON. That's ~N times
+/// faster than re-serializing the whole note per matching subscriber.
 #[must_use]
-pub fn event(sub_id: &str, note: &NostrNote) -> String {
-    serde_json::to_string(&("EVENT", sub_id, note)).expect("EVENT serialization cannot fail")
+pub fn serialize_note(note: &NostrNote) -> String {
+    serde_json::to_string(note).expect("note serialization cannot fail")
+}
+
+/// Encode `["EVENT", sub_id, <note_json>]` where `note_json` is the already-
+/// serialized JSON object form of a `NostrNote` (typically from
+/// [`serialize_note`]).
+#[must_use]
+pub fn event_from_serialized(sub_id: &str, note_json: &str) -> String {
+    let sub_id_json = serde_json::to_string(sub_id).expect("sub_id serialization cannot fail");
+    // `["EVENT",` + sub_id JSON + `,` + note JSON + `]`
+    let mut out = String::with_capacity(10 + sub_id_json.len() + note_json.len());
+    out.push_str("[\"EVENT\",");
+    out.push_str(&sub_id_json);
+    out.push(',');
+    out.push_str(note_json);
+    out.push(']');
+    out
 }
 
 #[cfg(test)]

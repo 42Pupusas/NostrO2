@@ -307,11 +307,16 @@ impl ShardDispatcher {
         self.sender
             .send_text(client_id, protocol::ok(&id, true, ""));
 
+        // Serialize the note once and reuse its JSON across every matching
+        // subscriber. Per-sub work is just prefixing ["EVENT","<sub_id>",
+        // and wrapping in brackets — cheap string concat.
+        let note_json = protocol::serialize_note(&note);
+
         // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
                 if filters.iter().any(|f| filter::matches(&note, f)) {
-                    let frame = protocol::event(sub_id, &note);
+                    let frame = protocol::event_from_serialized(sub_id, &note_json);
                     self.sender.send_text(other_id, frame);
                     break;
                 }
@@ -324,7 +329,7 @@ impl ShardDispatcher {
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
                 if filters.iter().any(|f| filter::matches(&note, f)) {
-                    let frame = protocol::event(sub_id, &note);
+                    let frame = protocol::event_from_serialized(sub_id, &note_json);
                     self.sender.send_text(client_id, frame);
                     break;
                 }
