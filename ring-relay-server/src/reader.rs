@@ -465,6 +465,7 @@ fn dispatch_event(
 }
 
 /// Process a decoded text message through the handler or push to event queue.
+#[allow(clippy::too_many_arguments)]
 fn handle_text(
     fd: i32,
     text: &str,

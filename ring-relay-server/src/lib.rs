@@ -159,6 +159,7 @@ impl Default for ShardConfig {
 }
 
 /// Full server configuration.
+#[derive(Default)]
 pub struct ServerConfig {
     /// Reader/writer thread sharding.
     pub shards: ShardConfig,
@@ -180,19 +181,6 @@ pub struct ServerConfig {
     /// otherwise handshake setup will fail.
     #[cfg(feature = "ktls")]
     pub tls: Option<std::sync::Arc<rustls::ServerConfig>>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            shards: ShardConfig::default(),
-            subprotocols: Vec::new(),
-            deflate: None,
-            http_handler: None,
-            #[cfg(feature = "ktls")]
-            tls: None,
-        }
-    }
 }
 
 /// Handle for sending messages to connected clients.
