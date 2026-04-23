@@ -18,8 +18,9 @@ mod kernel_tls;
 #[cfg(feature = "ktls")]
 mod syscall;
 
-use coyoquil::DeflateConfig;
-pub use coyoquil::CloseCode;
+pub use coyoquil::{CloseCode, DeflateConfig};
+pub use reader::{ReaderCore, ReaderEvent};
+pub use quetzalcoatl::spsc::Consumer as AcceptedClientRx;
 
 #[cfg(feature = "ktls")]
 pub use rustls;
@@ -29,9 +30,13 @@ use quetzalcoatl::spsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Accepted client info passed from listener to reader.
+/// Accepted client info handed from the listener to a reader shard.
+///
+/// Exposed publicly so [`ServerComponents`] consumers (e.g. a downstream
+/// crate running its own per-shard reader loop) can drive [`ReaderCore`]
+/// with the listener's accept stream.
 #[derive(Debug, Clone)]
-pub(crate) struct AcceptedClient {
+pub struct AcceptedClient {
     pub fd: i32,
     pub path: String,
     pub subprotocol: Option<String>,
@@ -243,6 +248,26 @@ impl ServerSender {
         self.push_with_backpressure(shard, WriteCmd::Close { fd: client_id, code });
     }
 
+    /// Register a freshly-accepted client fd with the writer shard that owns it.
+    ///
+    /// Call this from a custom reader loop when a new client arrives via the
+    /// listener's `AcceptedClient` stream, before any sends to that fd. The
+    /// built-in [`WsServer`] reader does this automatically; external drivers
+    /// using [`ServerComponents`] must do it themselves.
+    pub fn register(&self, client_id: i32, deflate: Option<DeflateConfig>) {
+        let shard = self.writer_shard(client_id);
+        self.push_with_backpressure(shard, WriteCmd::Register { fd: client_id, deflate });
+    }
+
+    /// Queue a Pong frame to a client in response to a Ping.
+    ///
+    /// Used by custom reader loops that receive [`ReaderEvent::Ping`] and
+    /// must respond. The built-in [`WsServer`] reader does this automatically.
+    pub fn pong(&self, client_id: i32) {
+        let shard = self.writer_shard(client_id);
+        self.push_with_backpressure(shard, WriteCmd::Pong { fd: client_id });
+    }
+
     /// Push a command to the write ring with backpressure.
     ///
     /// Never drops: spins briefly, then yields, then sleeps in escalating
@@ -353,20 +378,264 @@ impl Parker {
     }
 }
 
-/// The WebSocket server.
+/// The low-level server components: listener, writer threads, and a
+/// [`ServerSender`]. Does **not** spawn reader threads — callers build
+/// their own reader loop on top (using [`ReaderCore`] or equivalent).
 ///
-/// Spawns an accept loop, reader IO thread(s), and writer IO thread(s).
-/// All lock-free, all io_uring. Use [`ShardConfig`] to spread load
-/// across multiple cores.
-pub struct WsServer {
-    consumer: ServerConsumer,
+/// Use this when you want the opinionated parts (accept loop, HTTP upgrade,
+/// optional kTLS, writer threads with batching and deflate) but want to own
+/// the per-message pipeline, so that parsing / application logic runs on
+/// the I/O thread that read the bytes.
+///
+/// For a simpler all-in-one server that spawns default reader threads and
+/// delivers `ClientMessage`s via an MPSC ring, use [`WsServer`].
+///
+/// # Lifetime
+///
+/// Dropping `ServerComponents` signals shutdown, closes the listener, and
+/// joins the listener + writer threads. Any reader threads the caller
+/// spawned must be **joined by the caller before** `ServerComponents` is
+/// dropped — otherwise those readers will try to push writes into already-
+/// dead writer rings.
+pub struct ServerComponents {
     sender: ServerSender,
     port: u16,
     listener_fd: i32,
     listener_thread: Option<std::thread::JoinHandle<()>>,
-    reader_threads: Vec<std::thread::JoinHandle<()>>,
     writer_threads: Vec<std::thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+}
+
+/// Stream of accepted clients for one reader shard.
+///
+/// Handed out by [`ServerComponents::build`], one per configured reader shard.
+/// Drive a [`ReaderCore`] with these: on each iteration, pop any new
+/// `AcceptedClient`s and pass them to [`ReaderCore::accept`].
+pub type AcceptStream = AcceptedClientRx<AcceptedClient>;
+
+/// Intermediate state between writer setup and listener startup.
+///
+/// Returned by [`ServerComponents::prepare`]. The caller spawns its reader
+/// threads using the provided [`AcceptStream`]s, then calls
+/// [`ServerBuilder::start_listener`] to start accepting clients. This two-phase
+/// startup guarantees readers are running before the first accept lands —
+/// otherwise there is a window where the kernel has accepted a connection but
+/// no reader is yet draining the `AcceptedClient` from its SPSC ring.
+pub struct ServerBuilder {
+    sender: ServerSender,
+    port: u16,
+    listener_fd: i32,
+    writer_threads: Vec<std::thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+    writer_txs: Vec<Producer<WriteCmd>>,
+    writer_wakers: Vec<std::thread::Thread>,
+    accept_txs: Vec<spsc::Producer<AcceptedClient>>,
+    subprotocols: Vec<String>,
+    deflate: Option<DeflateConfig>,
+    http_handler: Option<Arc<HttpHandler>>,
+    #[cfg(feature = "ktls")]
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+}
+
+impl ServerBuilder {
+    /// The port the listener socket is bound to.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// A cloneable sender handle. Clone it and hand clones to reader threads
+    /// so they can emit `WriteCmd`s without going through a shared state.
+    pub fn sender(&self) -> ServerSender {
+        self.sender.clone()
+    }
+
+    /// Shared shutdown flag. Clone it into reader threads so they exit when
+    /// it flips to `true`.
+    pub fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown)
+    }
+
+    /// Spawn the listener thread and return the finalized [`ServerComponents`].
+    ///
+    /// Call this **after** all reader threads have been spawned, so the first
+    /// accept never lands on an SPSC ring with no drainer.
+    pub fn start_listener(self) -> Result<ServerComponents, Box<dyn std::error::Error + Send + Sync>> {
+        let listener_shutdown = Arc::clone(&self.shutdown);
+        let listener_fd = self.listener_fd;
+        let accept_txs = self.accept_txs;
+        let subprotocols = self.subprotocols;
+        let deflate = self.deflate;
+        let http_handler = self.http_handler;
+        #[cfg(feature = "ktls")]
+        let tls = self.tls;
+        let listener_thread = std::thread::Builder::new()
+            .name("ws-listener".into())
+            .spawn(move || {
+                listener::listener_thread(
+                    listener_fd,
+                    accept_txs,
+                    listener_shutdown,
+                    subprotocols,
+                    deflate,
+                    http_handler,
+                    #[cfg(feature = "ktls")]
+                    tls,
+                );
+            })?;
+
+        Ok(ServerComponents {
+            sender: self.sender,
+            port: self.port,
+            listener_fd: self.listener_fd,
+            listener_thread: Some(listener_thread),
+            writer_threads: self.writer_threads,
+            shutdown: self.shutdown,
+        })
+    }
+}
+
+impl ServerComponents {
+    /// First phase of startup: bind the listener socket, allocate rings, spawn
+    /// writer threads. Returns a [`ServerBuilder`] and one [`AcceptStream`] per
+    /// reader shard.
+    ///
+    /// The caller then:
+    /// 1. Spawns its own reader threads, each draining one `AcceptStream`.
+    /// 2. Calls [`ServerBuilder::start_listener`] to begin accepting clients.
+    ///
+    /// Splitting startup in two phases avoids a race where the listener accepts
+    /// a client before the reader thread for its shard is running.
+    pub fn prepare(
+        addr: [u8; 4],
+        port: u16,
+        max_clients: usize,
+        config: ServerConfig,
+    ) -> Result<(ServerBuilder, Vec<AcceptStream>), Box<dyn std::error::Error + Send + Sync>> {
+        let n = config.shards.reader_shards.max(1);
+        let m = config.shards.writer_shards.max(1);
+
+        let listener_sock = listener::setup_listener(addr, port)?;
+        let bound_addr = listener_sock.local_addr()?;
+        let actual_port = u16::from_be(bound_addr.sin_port);
+        let listener_fd = listener_sock.into_fd();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // M MPSC rings, one per writer shard. Full capacity per shard so a
+        // slow shard doesn't head-of-line-block pushes to other shards.
+        let mut writer_txs: Vec<Producer<WriteCmd>> = Vec::with_capacity(m);
+        let mut writer_rxs = Vec::with_capacity(m);
+        for _ in 0..m {
+            let cap = (max_clients * 16).max(1024);
+            let (tx, rx) = RingBuffer::new(Capacity::at_least(cap)).split();
+            writer_txs.push(tx);
+            writer_rxs.push(rx);
+        }
+
+        // N SPSC rings: listener → reader_shard[i].
+        let mut accept_txs = Vec::with_capacity(n);
+        let mut accept_rxs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let cap = (max_clients / n).max(64);
+            let (tx, rx) = spsc::RingBuffer::new(Capacity::at_least(cap)).split();
+            accept_txs.push(tx);
+            accept_rxs.push(rx);
+        }
+
+        // Spawn M writer threads.
+        let mut writer_wakers: Vec<std::thread::Thread> = Vec::with_capacity(m);
+        let mut writer_threads = Vec::with_capacity(m);
+        for (i, write_rx) in writer_rxs.into_iter().enumerate() {
+            let ws = Arc::clone(&shutdown);
+            let handle = std::thread::Builder::new()
+                .name(format!("ws-writer-{i}"))
+                .spawn(move || {
+                    writer::writer_thread(write_rx, ws);
+                })?;
+            writer_wakers.push(handle.thread().clone());
+            writer_threads.push(handle);
+        }
+
+        let sender = ServerSender {
+            writer_txs: writer_txs.clone(),
+            writer_wakers: writer_wakers.clone(),
+        };
+
+        Ok((
+            ServerBuilder {
+                sender,
+                port: actual_port,
+                listener_fd,
+                writer_threads,
+                shutdown,
+                writer_txs,
+                writer_wakers,
+                accept_txs,
+                subprotocols: config.subprotocols,
+                deflate: config.deflate,
+                http_handler: config.http_handler,
+                #[cfg(feature = "ktls")]
+                tls: config.tls,
+            },
+            accept_rxs,
+        ))
+    }
+
+    /// The port the listener is bound to.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// A cloneable sender handle.
+    pub fn sender(&self) -> ServerSender {
+        self.sender.clone()
+    }
+
+    /// Shared shutdown flag. The listener + writer threads exit when this is
+    /// set to `true`. Callers should set it before joining their own reader
+    /// threads, then drop `ServerComponents` to join listener + writers.
+    pub fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown)
+    }
+}
+
+impl Drop for ServerComponents {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+
+        // Shutdown the listener socket so its in-flight accept SQE completes.
+        {
+            let sock = unsafe { ququmatz::Socket::from_fd(self.listener_fd) };
+            let _ = sock.shutdown(ququmatz::types::ShutdownHow::Both);
+        }
+
+        if let Some(h) = self.listener_thread.as_ref() {
+            h.thread().unpark();
+        }
+        for h in &self.writer_threads {
+            h.thread().unpark();
+        }
+
+        if let Some(h) = self.listener_thread.take() {
+            let _ = h.join();
+        }
+        for h in self.writer_threads.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
+/// The WebSocket server.
+///
+/// Spawns an accept loop, reader IO thread(s), and writer IO thread(s).
+/// All lock-free, all io_uring. Use [`ShardConfig`] to spread load
+/// across multiple cores. For callers that want to own the per-message
+/// pipeline (parse + verify + dispatch on the I/O thread), use
+/// [`ServerComponents`] instead.
+pub struct WsServer {
+    consumer: ServerConsumer,
+    components: ServerComponents,
+    reader_threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl WsServer {
@@ -462,70 +731,21 @@ impl WsServer {
         config: ServerConfig,
         handler: Option<Arc<Handler>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let n = config.shards.reader_shards.max(1);
-        let m = config.shards.writer_shards.max(1);
-
-        // Create listener socket on the main thread so we can query the port
-        let listener_sock = listener::setup_listener(addr, port)?;
-        let bound_addr = listener_sock.local_addr()?;
-        let actual_port = u16::from_be(bound_addr.sin_port);
-        let listener_fd = listener_sock.into_fd();
-
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let (builder, accept_rxs) = ServerComponents::prepare(addr, port, max_clients, config)?;
 
         // MPSC ring: all reader shards push ClientMessages, consumer pops.
-        // MPSC Producer is Clone, so each reader shard gets a clone.
         let event_capacity = max_clients * 64;
         let (event_tx, event_rx) = RingBuffer::new(Capacity::at_least(event_capacity)).split();
         let consumer = ServerConsumer::new(event_rx);
         let consumer_waker = consumer.waker();
 
-        // M MPSC rings: one per writer shard.
-        // ServerSender + reader shards push WriteCmds, each writer shard pops its own ring.
-        // Each shard gets the FULL capacity — don't divide by M, because the
-        // echo thread (or any single-threaded consumer) pushes to shards
-        // sequentially and any one shard blocking causes head-of-line blocking
-        // for all shards.
-        let mut writer_txs: Vec<Producer<WriteCmd>> = Vec::with_capacity(m);
-        let mut writer_rxs = Vec::with_capacity(m);
-        for _ in 0..m {
-            let cap = (max_clients * 16).max(1024);
-            let (tx, rx) = RingBuffer::new(Capacity::at_least(cap)).split();
-            writer_txs.push(tx);
-            writer_rxs.push(rx);
-        }
+        let shutdown = builder.shutdown_flag();
+        let writer_txs = builder.writer_txs.clone();
+        let writer_wakers = builder.writer_wakers.clone();
 
-        // N SPSC rings: listener → reader_shard[i]
-        let mut accept_txs = Vec::with_capacity(n);
-        let mut accept_rxs = Vec::with_capacity(n);
-        for _ in 0..n {
-            let cap = (max_clients / n).max(64);
-            let (tx, rx) = spsc::RingBuffer::new(Capacity::at_least(cap)).split();
-            accept_txs.push(tx);
-            accept_rxs.push(rx);
-        }
-
-        // Spawn M writer threads
-        let mut writer_wakers: Vec<std::thread::Thread> = Vec::with_capacity(m);
-        let mut writer_threads = Vec::with_capacity(m);
-        for (i, write_rx) in writer_rxs.into_iter().enumerate() {
-            let ws = Arc::clone(&shutdown);
-            let handle = std::thread::Builder::new()
-                .name(format!("ws-writer-{i}"))
-                .spawn(move || {
-                    writer::writer_thread(write_rx, ws);
-                })?;
-            writer_wakers.push(handle.thread().clone());
-            writer_threads.push(handle);
-        }
-
-        let sender = ServerSender {
-            writer_txs: writer_txs.clone(),
-            writer_wakers: writer_wakers.clone(),
-        };
-
-        // Spawn N reader threads
-        let mut reader_threads = Vec::with_capacity(n);
+        // Spawn readers BEFORE starting the listener, so no accept can land on
+        // an empty SPSC ring.
+        let mut reader_threads = Vec::with_capacity(accept_rxs.len());
         for (i, accept_rx) in accept_rxs.into_iter().enumerate() {
             let etx = event_tx.clone();
             let wtxs = writer_txs.clone();
@@ -542,48 +762,23 @@ impl WsServer {
             reader_threads.push(handle);
         }
 
-        // Spawn listener/accept thread
-        let listener_shutdown = Arc::clone(&shutdown);
-        let listener_subprotocols: Vec<String> = config.subprotocols;
-        let listener_deflate = config.deflate;
-        let listener_http_handler = config.http_handler;
-        #[cfg(feature = "ktls")]
-        let listener_tls = config.tls;
-        let listener_thread = std::thread::Builder::new()
-            .name("ws-listener".into())
-            .spawn(move || {
-                listener::listener_thread(
-                    listener_fd,
-                    accept_txs,
-                    listener_shutdown,
-                    listener_subprotocols,
-                    listener_deflate,
-                    listener_http_handler,
-                    #[cfg(feature = "ktls")]
-                    listener_tls,
-                );
-            })?;
+        let components = builder.start_listener()?;
 
         Ok(Self {
             consumer,
-            sender,
-            port: actual_port,
-            listener_fd,
-            listener_thread: Some(listener_thread),
+            components,
             reader_threads,
-            writer_threads,
-            shutdown,
         })
     }
 
     /// The port the server is listening on.
     pub fn port(&self) -> u16 {
-        self.port
+        self.components.port()
     }
 
     /// Get a cloneable sender handle.
     pub fn sender(&self) -> ServerSender {
-        self.sender.clone()
+        self.components.sender()
     }
 
     /// Blocking receive — wait for the next client message.
@@ -599,36 +794,19 @@ impl WsServer {
 
 impl Drop for WsServer {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        // Set the shared shutdown flag first so readers notice when we unpark.
+        self.components.shutdown.store(true, Ordering::Release);
 
-        // Shutdown the listener socket — the in-flight accept SQE completes
-        // with an error, the listener thread sees the shutdown flag and exits.
-        // The Socket drop then closes the fd.
-        {
-            let sock = unsafe { ququmatz::Socket::from_fd(self.listener_fd) };
-            let _ = sock.shutdown(ququmatz::types::ShutdownHow::Both);
-        }
-
-        // Wake parked threads so they notice the shutdown flag.
-        if let Some(h) = self.listener_thread.as_ref() {
-            h.thread().unpark();
-        }
+        // Wake parked reader threads so they notice the shutdown flag, then
+        // join them. Readers must exit before ServerComponents drops, since
+        // they push into writer rings that the components' Drop tears down.
         for h in &self.reader_threads {
             h.thread().unpark();
-        }
-        for h in &self.writer_threads {
-            h.thread().unpark();
-        }
-
-        if let Some(h) = self.listener_thread.take() {
-            let _ = h.join();
         }
         for h in self.reader_threads.drain(..) {
             let _ = h.join();
         }
-        for h in self.writer_threads.drain(..) {
-            let _ = h.join();
-        }
+        // ServerComponents' Drop handles listener + writer shutdown/join.
     }
 }
 

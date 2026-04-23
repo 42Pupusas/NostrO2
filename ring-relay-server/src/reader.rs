@@ -39,7 +39,7 @@ struct ClientSlot {
 /// Text and binary payloads borrow from scratch buffers owned by the core —
 /// they are only valid for the duration of the callback call. Callbacks must
 /// copy before stashing.
-pub(crate) enum ReaderEvent<'a> {
+pub enum ReaderEvent<'a> {
     Connected {
         fd: i32,
         path: String,
@@ -70,14 +70,14 @@ pub(crate) enum ReaderEvent<'a> {
 ///
 /// Drives I/O and framing mechanically; all routing/dispatch decisions are in
 /// the callback the driver passes to [`ReaderCore::poll_once`].
-pub(crate) struct ReaderCore {
+pub struct ReaderCore {
     ring: IoUring,
     slots: Vec<ClientSlot>,
     decompress_buf: Vec<u8>,
 }
 
 impl ReaderCore {
-    pub(crate) fn new(ring_capacity: u32) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn new(ring_capacity: u32) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Self {
             ring: IoUring::new(ring_capacity)?,
             slots: Vec::new(),
@@ -88,7 +88,7 @@ impl ReaderCore {
     /// Register a freshly-accepted client. Sets up the WebSocket frame decoder
     /// (and optional deflate decoder), reuses a dead slot if available, and
     /// submits the first recv SQE. Emits a `Connected` event through `cb`.
-    pub(crate) fn accept<F>(&mut self, client: AcceptedClient, mut cb: F)
+    pub fn accept<F>(&mut self, client: AcceptedClient, mut cb: F)
     where
         F: FnMut(ReaderEvent<'_>),
     {
@@ -130,14 +130,14 @@ impl ReaderCore {
     }
 
     /// Return true if the core currently has no live slots.
-    pub(crate) fn is_idle(&self) -> bool {
+    pub fn is_idle(&self) -> bool {
         !self.slots.iter().any(|s| !s.dead)
     }
 
     /// One iteration of the I/O loop: resubmit missing recvs, submit a timeout,
     /// wait for a completion, drain completions, emit decoded events, close
     /// dead fds.
-    pub(crate) fn poll_once<F>(
+    pub fn poll_once<F>(
         &mut self,
         mut cb: F,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -276,13 +276,13 @@ impl ReaderCore {
     }
 
     /// Park the thread briefly when there are no live slots to service.
-    pub(crate) fn park_timeout(&self) {
+    pub fn park_timeout(&self) {
         std::thread::park_timeout(std::time::Duration::from_millis(1));
     }
 
     /// Cancel any in-flight recvs and close any remaining client fds.
     /// Call before dropping the core at shutdown.
-    pub(crate) fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         let mut pending = 0;
         for (idx, slot) in self.slots.iter().enumerate() {
             if slot.recv_pending && !slot.dead {
