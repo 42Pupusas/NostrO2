@@ -5,7 +5,9 @@
 //! comes back as [`ClientMessage::Unknown`] so the dispatcher can NOTICE it.
 
 use nostro2::{NostrNote, NostrSubscription};
-use serde_json::Value;
+use serde::Deserialize;
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use std::fmt;
 
 /// A parsed client → relay message.
 #[derive(Debug, Clone)]
@@ -50,43 +52,111 @@ impl std::fmt::Display for ParseError {
 /// Returns [`ParseError`] for malformed JSON or known verbs with bad payloads.
 /// Unknown verbs are returned as [`ClientMessage::Unknown`], not an error.
 pub fn parse(text: &str) -> Result<ClientMessage, ParseError> {
-    let value: Value = serde_json::from_str(text).map_err(|_| ParseError::NotJson)?;
-    let arr = value.as_array().ok_or(ParseError::NotArray)?;
-    let tag = arr
-        .first()
-        .and_then(Value::as_str)
-        .ok_or(ParseError::BadTag)?;
+    serde_json::from_str::<ClientMessage>(text).map_err(ParseError::from_serde)
+}
 
-    match tag {
-        "EVENT" => {
-            let payload = arr.get(1).ok_or(ParseError::BadPayload("EVENT missing note"))?;
-            let note: NostrNote = serde_json::from_value(payload.clone())
-                .map_err(|_| ParseError::BadPayload("EVENT note"))?;
-            Ok(ClientMessage::Event(note))
-        }
-        "REQ" => {
-            let sub_id = arr
-                .get(1)
-                .and_then(Value::as_str)
-                .ok_or(ParseError::BadPayload("REQ missing sub id"))?
-                .to_string();
-            let mut filters = Vec::with_capacity(arr.len().saturating_sub(2));
-            for raw in arr.iter().skip(2) {
-                let filter: NostrSubscription = serde_json::from_value(raw.clone())
-                    .map_err(|_| ParseError::BadPayload("REQ filter"))?;
-                filters.push(filter);
+impl ParseError {
+    fn from_serde(err: serde_json::Error) -> Self {
+        // The visitor surfaces specific failure kinds via custom error messages;
+        // generic JSON errors fall back to NotJson / NotArray based on category.
+        use serde_json::error::Category;
+        match err.classify() {
+            Category::Eof | Category::Syntax => Self::NotJson,
+            Category::Io => Self::NotJson,
+            Category::Data => {
+                let msg = err.to_string();
+                if msg.starts_with("NotArray") {
+                    Self::NotArray
+                } else if msg.starts_with("Empty") {
+                    Self::Empty
+                } else if msg.starts_with("BadTag") {
+                    Self::BadTag
+                } else if let Some(rest) = msg.strip_prefix("BadPayload:") {
+                    // Map the embedded reason back to a &'static str; the set
+                    // below mirrors every literal the visitor emits.
+                    let reason: &'static str = match rest.trim() {
+                        "EVENT missing note" => "EVENT missing note",
+                        "EVENT note" => "EVENT note",
+                        "REQ missing sub id" => "REQ missing sub id",
+                        "REQ filter" => "REQ filter",
+                        "CLOSE missing sub id" => "CLOSE missing sub id",
+                        _ => "unknown",
+                    };
+                    Self::BadPayload(reason)
+                } else {
+                    Self::NotArray
+                }
             }
-            Ok(ClientMessage::Req { sub_id, filters })
         }
-        "CLOSE" => {
-            let sub_id = arr
-                .get(1)
-                .and_then(Value::as_str)
-                .ok_or(ParseError::BadPayload("CLOSE missing sub id"))?
-                .to_string();
-            Ok(ClientMessage::Close { sub_id })
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientMessage {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_seq(ClientMessageVisitor)
+    }
+}
+
+/// Visits a NIP-01 client frame in array form. Reads the verb tag first, then
+/// dispatches to the verb-specific shape. Avoids the `serde_json::Value`
+/// round-trip the older `parse` implementation used.
+///
+/// Error messages are prefixed (`NotArray`, `BadTag`, `BadPayload:<reason>`)
+/// so `ParseError::from_serde` can recover the typed variant from the string
+/// serde_json hands back. Not beautiful, but keeps the public error type
+/// unchanged.
+struct ClientMessageVisitor;
+
+impl<'de> Visitor<'de> for ClientMessageVisitor {
+    type Value = ClientMessage;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a NIP-01 client frame")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        // Try to read the first element as a string; anything else (missing,
+        // non-string) is reported as BadTag to match the old parser's
+        // behavior. The old parser treated `[]` and `[123]` identically
+        // because it used `Value::as_str` + `ok_or(BadTag)`.
+        let tag: String = match seq.next_element::<String>() {
+            Ok(Some(t)) => t,
+            Ok(None) | Err(_) => return Err(de::Error::custom("BadTag")),
+        };
+
+        match tag.as_str() {
+            "EVENT" => {
+                let note: NostrNote = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: EVENT missing note"))?;
+                // Ensure no trailing elements (tolerant: ignore extras).
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessage::Event(note))
+            }
+            "REQ" => {
+                let sub_id: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: REQ missing sub id"))?;
+                let mut filters = Vec::new();
+                while let Some(filter) = seq.next_element::<NostrSubscription>()? {
+                    filters.push(filter);
+                }
+                Ok(ClientMessage::Req { sub_id, filters })
+            }
+            "CLOSE" => {
+                let sub_id: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: CLOSE missing sub id"))?;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessage::Close { sub_id })
+            }
+            _ => {
+                // Unknown verb: drain remaining elements so the full frame is
+                // consumed, then return Unknown.
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessage::Unknown(tag))
+            }
         }
-        other => Ok(ClientMessage::Unknown(other.to_string())),
     }
 }
 
