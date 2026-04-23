@@ -7,7 +7,7 @@
 //! is withheld. Pending connections queue in the kernel's TCP listen backlog.
 //! When handshakes complete and free SQ slots, accept is resubmitted.
 
-use crate::AcceptedClient;
+use crate::{AcceptedClient, HttpHandler, HttpRequest};
 use coyoquil::{DeflateConfig, UpgradeRequest, negotiate_subprotocol};
 use quetzalcoatl::spsc;
 use ququmatz::Socket;
@@ -73,6 +73,9 @@ struct HandshakeSlot {
     active: bool,
     /// Negotiation results, populated after parsing the upgrade request.
     accepted: Option<AcceptedClient>,
+    /// When true, this slot is serving a plain HTTP response — close the fd
+    /// on send completion instead of handing it to a reader shard.
+    http_only: bool,
 }
 
 impl HandshakeSlot {
@@ -84,6 +87,7 @@ impl HandshakeSlot {
             send_total: 0,
             active: true,
             accepted: None,
+            http_only: false,
         }
     }
 }
@@ -96,6 +100,8 @@ pub fn listener_thread(
     shutdown: Arc<AtomicBool>,
     subprotocols: Vec<String>,
     deflate_policy: Option<DeflateConfig>,
+    http_handler: Option<Arc<HttpHandler>>,
+    #[cfg(feature = "ktls")] tls: Option<Arc<rustls::ServerConfig>>,
 ) {
     if let Err(e) = listener_loop(
         listener_fd,
@@ -103,6 +109,9 @@ pub fn listener_thread(
         &shutdown,
         &subprotocols,
         deflate_policy.as_ref(),
+        http_handler.as_deref(),
+        #[cfg(feature = "ktls")]
+        tls.as_ref(),
     ) {
         eprintln!("listener thread fatal: {e}");
     }
@@ -114,6 +123,8 @@ fn listener_loop(
     shutdown: &AtomicBool,
     subprotocols: &[String],
     deflate_policy: Option<&DeflateConfig>,
+    http_handler: Option<&HttpHandler>,
+    #[cfg(feature = "ktls")] tls: Option<&Arc<rustls::ServerConfig>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let num_reader_shards = accept_txs.len();
     let mut ring = IoUring::new(RING_SIZE)?;
@@ -153,8 +164,33 @@ fn listener_loop(
                     let client_fd = cqe.result;
 
                     if active_handshakes(&slots) < max_handshakes {
-                        let idx = alloc_slot(&mut slots, client_fd);
-                        submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
+                        // When kTLS is configured, terminate TLS on this fd
+                        // *before* starting the HTTP upgrade exchange. The
+                        // handshake is synchronous on the listener thread —
+                        // acceptable for low-rate connection churn; if this
+                        // becomes a bottleneck we'll move it to a pool.
+                        #[cfg(feature = "ktls")]
+                        let tls_ok = if let Some(cfg) = tls {
+                            match crate::kernel_tls::setup(client_fd, Arc::clone(cfg)) {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    eprintln!(
+                                        "kTLS setup failed for fd {client_fd}: {e}"
+                                    );
+                                    drop(unsafe { Socket::from_fd(client_fd) });
+                                    false
+                                }
+                            }
+                        } else {
+                            true
+                        };
+                        #[cfg(not(feature = "ktls"))]
+                        let tls_ok = true;
+
+                        if tls_ok {
+                            let idx = alloc_slot(&mut slots, client_fd);
+                            submit_handshake_recv(&mut ring, &mut slots[idx], idx)?;
+                        }
                     } else {
                         // At capacity — close this fd synchronously. The kernel
                         // backlog holds the rest.
@@ -185,25 +221,68 @@ fn listener_loop(
                     let total = slots[idx].progress;
 
                     if total >= 4 && slots[idx].buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
-                        match build_upgrade(
+                        // Branch: WebSocket upgrade vs plain HTTP (NIP-11 etc).
+                        let is_ws_upgrade = request_has_upgrade_websocket(
                             &slots[idx].buf[..total],
-                            slots[idx].fd,
-                            subprotocols,
-                            deflate_policy,
-                        ) {
-                            Ok((response, accepted)) => {
-                                let resp_bytes = response.into_bytes();
-                                let send_len = resp_bytes.len();
-                                slots[idx].buf = resp_bytes;
-                                slots[idx].progress = 0;
-                                slots[idx].send_total = send_len;
-                                slots[idx].accepted = Some(accepted);
-                                submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
+                        );
+
+                        if is_ws_upgrade {
+                            match build_upgrade(
+                                &slots[idx].buf[..total],
+                                slots[idx].fd,
+                                subprotocols,
+                                deflate_policy,
+                            ) {
+                                Ok((response, accepted)) => {
+                                    let resp_bytes = response.into_bytes();
+                                    let send_len = resp_bytes.len();
+                                    slots[idx].buf = resp_bytes;
+                                    slots[idx].progress = 0;
+                                    slots[idx].send_total = send_len;
+                                    slots[idx].accepted = Some(accepted);
+                                    submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "handshake parse failed for fd {}: {e}",
+                                        slots[idx].fd
+                                    );
+                                    close_slot(&mut ring, &mut slots[idx]);
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("handshake parse failed for fd {}: {e}", slots[idx].fd);
-                                close_slot(&mut ring, &mut slots[idx]);
+                        } else if let Some(h) = http_handler {
+                            match invoke_http_handler(&slots[idx].buf[..total], h) {
+                                Ok(resp_bytes) => {
+                                    let send_len = resp_bytes.len();
+                                    slots[idx].buf = resp_bytes;
+                                    slots[idx].progress = 0;
+                                    slots[idx].send_total = send_len;
+                                    slots[idx].http_only = true;
+                                    submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "http handler failed for fd {}: {e}",
+                                        slots[idx].fd
+                                    );
+                                    close_slot(&mut ring, &mut slots[idx]);
+                                }
                             }
+                        } else {
+                            // Plain HTTP with no handler — send a 400 and close.
+                            let body = b"400 Bad Request: WebSocket upgrade required\r\n";
+                            let resp = format!(
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let mut resp_bytes = resp.into_bytes();
+                            resp_bytes.extend_from_slice(body);
+                            let send_len = resp_bytes.len();
+                            slots[idx].buf = resp_bytes;
+                            slots[idx].progress = 0;
+                            slots[idx].send_total = send_len;
+                            slots[idx].http_only = true;
+                            submit_handshake_send(&mut ring, &mut slots[idx], idx)?;
                         }
                     } else if total >= 4096 {
                         eprintln!("HTTP request too large for fd {}", slots[idx].fd);
@@ -223,6 +302,12 @@ fn listener_loop(
                     slots[idx].progress += n;
 
                     if slots[idx].progress >= slots[idx].send_total {
+                        if slots[idx].http_only {
+                            // Plain HTTP response sent — close and free the slot.
+                            close_slot(&mut ring, &mut slots[idx]);
+                            continue;
+                        }
+
                         // Handshake complete — hand client to correct reader shard
                         let client_fd = slots[idx].fd;
                         slots[idx].active = false;
@@ -311,6 +396,54 @@ fn build_upgrade(
     };
 
     Ok((response_str, accepted))
+}
+
+/// Cheap scan to decide whether the request is a WebSocket upgrade.
+///
+/// Looks for a line that contains both `Upgrade` (header name) and `websocket`
+/// (token, case-insensitive). False positives from request bodies would be
+/// possible in principle, but GET-based WS upgrades have no body.
+fn request_has_upgrade_websocket(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    for line in text.lines() {
+        if line.is_empty() {
+            break; // end of headers
+        }
+        let Some((key, val)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("upgrade")
+            && val
+                .split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("websocket"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Run the user's HTTP handler and return its response bytes.
+fn invoke_http_handler(
+    request_bytes: &[u8],
+    handler: &HttpHandler,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let request = std::str::from_utf8(request_bytes)
+        .map_err(|_| "invalid UTF-8 in HTTP request")?;
+    let request_line = request.lines().next().ok_or("empty request")?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().ok_or("missing method")?;
+    let path = parts.next().ok_or("missing path")?;
+
+    let headers = parse_headers(request);
+    let req = HttpRequest {
+        path,
+        method,
+        headers: &headers,
+    };
+    Ok(handler(req))
 }
 
 /// Extract all HTTP headers as key-value pairs.

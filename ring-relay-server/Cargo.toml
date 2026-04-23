@@ -18,6 +18,14 @@ serde_json = { workspace = true }
 coyoquil = "0.2.1"
 # IO-uring
 ququmatz = "0.4.0"
+# TLS (optional — only for kTLS)
+rustls = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable kTLS termination on the server side.
+# Requires Linux kernel with CONFIG_TLS and `modprobe tls` loaded.
+ktls = ["dep:rustls"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -25,6 +33,10 @@ tungstenite = "0.26"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
+# For kTLS integration tests
+rustls = { workspace = true }
+rcgen = "0.13"
+rustls-pemfile = "2"
 
 [[example]]
 name = "echo"

@@ -13,7 +13,16 @@ mod listener;
 mod reader;
 mod writer;
 
-use coyoquil::{CloseCode, DeflateConfig};
+#[cfg(feature = "ktls")]
+mod kernel_tls;
+#[cfg(feature = "ktls")]
+mod syscall;
+
+use coyoquil::DeflateConfig;
+pub use coyoquil::CloseCode;
+
+#[cfg(feature = "ktls")]
+pub use rustls;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{Consumer, Producer, RingBuffer};
 use quetzalcoatl::spsc;
@@ -82,6 +91,26 @@ pub enum HandlerResult {
 /// so it must be fast — no blocking, no heavy computation.
 pub(crate) type Handler = dyn Fn(i32, &str) -> HandlerResult + Send + Sync;
 
+/// A non-WebSocket HTTP request seen by the listener.
+///
+/// The listener invokes [`HttpHandler`] when a complete HTTP request arrives
+/// that lacks an `Upgrade: websocket` header. The handler returns the full
+/// HTTP response (status line + headers + body) as bytes. The connection is
+/// closed after the response is sent.
+pub struct HttpRequest<'a> {
+    /// Request path, e.g. `/` or `/info`.
+    pub path: &'a str,
+    /// Request method, typically `GET`.
+    pub method: &'a str,
+    /// All request headers.
+    pub headers: &'a [(String, String)],
+}
+
+/// Handler for non-WebSocket HTTP requests. Runs on the listener thread,
+/// so it must be fast. Return the full HTTP response bytes; the listener
+/// closes the connection after sending.
+pub type HttpHandler = dyn Fn(HttpRequest<'_>) -> Vec<u8> + Send + Sync;
+
 /// Commands sent to the writer thread.
 #[derive(Debug, Clone)]
 pub(crate) enum WriteCmd {
@@ -107,6 +136,7 @@ pub(crate) enum WriteCmd {
 /// Configuration for reader/writer thread sharding.
 ///
 /// Defaults to 1 shard each (single-threaded, original behavior).
+#[derive(Debug, Clone)]
 pub struct ShardConfig {
     /// Number of reader threads (each owns an io_uring recv ring).
     pub reader_shards: usize,
@@ -132,6 +162,19 @@ pub struct ServerConfig {
     pub subprotocols: Vec<String>,
     /// Deflate compression policy. `None` disables permessage-deflate.
     pub deflate: Option<DeflateConfig>,
+    /// Optional handler for plain HTTP requests (no `Upgrade: websocket` header).
+    /// Invoked on the listener thread; must return the full response bytes.
+    /// The connection is closed after sending. Used for NIP-11 and similar.
+    pub http_handler: Option<Arc<HttpHandler>>,
+    /// TLS config for kernel-offloaded TLS. When set, every accepted connection
+    /// completes a TLS handshake on the listener thread, then the kernel's
+    /// TLS engine is armed via `TCP_ULP=tls` + `TLS_TX`/`TLS_RX` setsockopts.
+    /// The subsequent io_uring data path sees plaintext.
+    ///
+    /// The rustls config **must** have `enable_secret_extraction = true`,
+    /// otherwise handshake setup will fail.
+    #[cfg(feature = "ktls")]
+    pub tls: Option<std::sync::Arc<rustls::ServerConfig>>,
 }
 
 impl Default for ServerConfig {
@@ -140,6 +183,9 @@ impl Default for ServerConfig {
             shards: ShardConfig::default(),
             subprotocols: Vec::new(),
             deflate: None,
+            http_handler: None,
+            #[cfg(feature = "ktls")]
+            tls: None,
         }
     }
 }
@@ -500,6 +546,9 @@ impl WsServer {
         let listener_shutdown = Arc::clone(&shutdown);
         let listener_subprotocols: Vec<String> = config.subprotocols;
         let listener_deflate = config.deflate;
+        let listener_http_handler = config.http_handler;
+        #[cfg(feature = "ktls")]
+        let listener_tls = config.tls;
         let listener_thread = std::thread::Builder::new()
             .name("ws-listener".into())
             .spawn(move || {
@@ -509,6 +558,9 @@ impl WsServer {
                     listener_shutdown,
                     listener_subprotocols,
                     listener_deflate,
+                    listener_http_handler,
+                    #[cfg(feature = "ktls")]
+                    listener_tls,
                 );
             })?;
 
