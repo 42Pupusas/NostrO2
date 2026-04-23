@@ -1,0 +1,33 @@
+[package]
+name = "ring-relay-nostr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Ephemeral Nostr relay (NIP-01) built on ring-relay-server."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+readme = "../README.md"
+categories = ["network-programming", "concurrency"]
+keywords = ["nostr", "relay", "nip-01", "ephemeral", "io-uring"]
+
+[dependencies]
+ring-relay-server = { path = "../ring-relay-server", version = "0.1.0" }
+nostro2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+# Enable kernel-offloaded TLS (kTLS) on the server side.
+# Requires Linux with the `tls` kernel module loaded.
+ktls = ["ring-relay-server/ktls"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tokio-tungstenite = { workspace = true }
+tungstenite = "0.26"
+futures-util = { workspace = true }
+nostro2-signer = { workspace = true }
+
+[[example]]
+name = "relay"
