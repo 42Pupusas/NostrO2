@@ -83,6 +83,11 @@ fn writer_loop(
                         encode_binary(slot, &data, &mut compress_buf);
                     }
                 }
+                WriteCmd::SendEventFrame { fd, sub_id, note_bytes } => {
+                    if let Some(slot) = slots.iter_mut().find(|s| s.fd == fd && !s.dead) {
+                        encode_event_frame(slot, &sub_id, &note_bytes, &mut compress_buf);
+                    }
+                }
                 WriteCmd::Broadcast { text } => {
                     // Pre-encode the uncompressed frame for non-deflate slots
                     let mut plain = Vec::new();
@@ -165,6 +170,124 @@ fn encode_text(slot: &mut WriterSlot, text: &str, compress_buf: &mut Vec<u8>) {
         encode_compressed_frame(0xC1, compress_buf, &mut slot.send_buf);
     } else {
         Frame::Text(text).encode(&mut slot.send_buf).ok();
+    }
+}
+
+/// Encode a NIP-01 `["EVENT","<sub_id>",<note>]` text frame directly into
+/// the slot's WS send-buffer. Avoids allocating an intermediate `String`
+/// for the JSON payload — useful when fanning one event out to many
+/// subscribers, where this runs once per sub with `note_bytes` aliased via
+/// `Arc<[u8]>` across all subs.
+///
+/// For deflate-enabled slots the payload still has to land in the
+/// compressor first, so this composes into `compress_buf` (reused scratch)
+/// before emitting the RSV1 frame. For plaintext slots the payload is
+/// written straight into `send_buf` with a precomputed length header — no
+/// extra copy.
+fn encode_event_frame(
+    slot: &mut WriterSlot,
+    sub_id: &str,
+    note_bytes: &[u8],
+    compress_buf: &mut Vec<u8>,
+) {
+    // Payload bytes: `["EVENT","<sub_id>",<note>]`. Length depends on
+    // whether the sub_id needs JSON-escaping (quotes, backslashes,
+    // control chars). NIP-01 sub_ids are up to 64 ASCII alphanumerics
+    // in practice, so the fast path never escapes.
+    let sub_id_escape_extra = json_escape_extra_bytes(sub_id);
+    // `["EVENT",` (9) + `"` (1) + sub_id + escape padding + `"` (1) + `,` (1) + note + `]` (1)
+    let payload_len = 9 + 1 + sub_id.len() + sub_id_escape_extra + 1 + 1 + note_bytes.len() + 1;
+
+    if let Some(ref mut encoder) = slot.deflate_encoder {
+        // Compose the uncompressed payload into a scratch buffer, then
+        // compress. The compressor input isn't the target of this helper
+        // — if you have deflate clients on the fan-out path, most of the
+        // gain is the shared `Arc<[u8]>` note body across subs, not the
+        // write path itself.
+        compress_buf.clear();
+        let mut scratch: Vec<u8> = Vec::with_capacity(payload_len);
+        append_event_payload(&mut scratch, sub_id, sub_id_escape_extra, note_bytes);
+        encoder.compress(&scratch, compress_buf);
+        encode_compressed_frame(0xC1, compress_buf, &mut slot.send_buf);
+    } else {
+        // Plaintext fast path: write the WS header, then splice the
+        // payload components directly into send_buf. No per-frame heap
+        // allocation.
+        write_ws_text_header(&mut slot.send_buf, payload_len);
+        append_event_payload(&mut slot.send_buf, sub_id, sub_id_escape_extra, note_bytes);
+    }
+}
+
+/// Count the extra bytes needed to JSON-escape `s`. Returns 0 for the
+/// common case of an ASCII-safe sub_id, so the length math stays an
+/// addition.
+fn json_escape_extra_bytes(s: &str) -> usize {
+    let mut extra = 0;
+    for b in s.bytes() {
+        match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0C => extra += 1,
+            0..=0x1F => extra += 5, // `\u00XX` is 6 chars vs the 1-byte original
+            _ => {}
+        }
+    }
+    extra
+}
+
+/// Write `["EVENT","<sub_id>",<note>]` into `out`. When
+/// `sub_id_escape_extra` is 0 the sub_id bytes are copied verbatim
+/// between the quotes; otherwise a full escape pass runs.
+fn append_event_payload(out: &mut Vec<u8>, sub_id: &str, sub_id_escape_extra: usize, note_bytes: &[u8]) {
+    out.extend_from_slice(b"[\"EVENT\",\"");
+    if sub_id_escape_extra == 0 {
+        out.extend_from_slice(sub_id.as_bytes());
+    } else {
+        append_json_escaped(out, sub_id);
+    }
+    out.push(b'"');
+    out.push(b',');
+    out.extend_from_slice(note_bytes);
+    out.push(b']');
+}
+
+/// JSON-escape `s` into `out` (no surrounding quotes). Matches the
+/// `serde_json` escape set: `"`, `\`, `\n`, `\r`, `\t`, `\b`, `\f`, and
+/// `\u00XX` for other control chars.
+fn append_json_escaped(out: &mut Vec<u8>, s: &str) {
+    for b in s.bytes() {
+        match b {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0C => out.extend_from_slice(b"\\f"),
+            0..=0x1F => {
+                out.extend_from_slice(b"\\u00");
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push(HEX[(b >> 4) as usize]);
+                out.push(HEX[(b & 0x0F) as usize]);
+            }
+            _ => out.push(b),
+        }
+    }
+}
+
+/// Write the unmasked WS text-frame header (`0x81 ...length...`) for a
+/// payload of `payload_len` bytes. Mirrors `coyoquil::Frame::encode`
+/// without requiring a `Frame::Text(&str)`, so the payload can be
+/// composed piecewise afterwards.
+#[allow(clippy::cast_possible_truncation)]
+fn write_ws_text_header(out: &mut Vec<u8>, payload_len: usize) {
+    out.push(0x81);
+    if payload_len < 126 {
+        out.push(payload_len as u8);
+    } else if payload_len < 65536 {
+        out.push(126);
+        out.extend_from_slice(&(payload_len as u16).to_be_bytes());
+    } else {
+        out.push(127);
+        out.extend_from_slice(&(payload_len as u64).to_be_bytes());
     }
 }
 

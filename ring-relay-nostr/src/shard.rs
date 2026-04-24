@@ -306,18 +306,22 @@ impl ShardDispatcher {
 
         self.sender.send_text(client_id, protocol::ok(id, true, ""));
 
-        // `note_json` is the exact substring of the inbound frame, handed
-        // to us by serde_json's `RawValue` capture during parse. Splicing
-        // it straight into fan-out frames skips any reserialize pass —
-        // the outbound bytes for a given note are produced once (by the
-        // sending client) and reused verbatim for every matching sub.
+        // `note_json` is the exact substring of the inbound frame captured
+        // via serde_json's `RawValue`. Promote it to an `Arc<[u8]>` once,
+        // then clone that Arc per matching sub — writer-side composition
+        // splices it straight into each subscriber's WS send-buffer
+        // without a per-sub `String` allocation.
+        let note_bytes: Arc<[u8]> = Arc::from(note_json.as_bytes());
 
         // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
                 if filters.iter().any(|f| filter::matches_view(note, f)) {
-                    let frame = protocol::event_from_serialized(sub_id, note_json);
-                    self.sender.send_text(other_id, frame);
+                    self.sender.send_event_frame(
+                        other_id,
+                        Arc::clone(sub_id),
+                        Arc::clone(&note_bytes),
+                    );
                     break;
                 }
             }
@@ -329,8 +333,11 @@ impl ShardDispatcher {
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
                 if filters.iter().any(|f| filter::matches_view(note, f)) {
-                    let frame = protocol::event_from_serialized(sub_id, note_json);
-                    self.sender.send_text(client_id, frame);
+                    self.sender.send_event_frame(
+                        client_id,
+                        Arc::clone(sub_id),
+                        Arc::clone(&note_bytes),
+                    );
                     break;
                 }
             }

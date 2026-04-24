@@ -128,6 +128,19 @@ pub(crate) enum WriteCmd {
     SendText { fd: i32, text: String },
     /// Send a binary frame to a specific client.
     SendBinary { fd: i32, data: Vec<u8> },
+    /// Fan-out helper: send a NIP-01 `["EVENT", sub_id, <note>]` text frame
+    /// assembled directly in the writer from pre-captured components.
+    ///
+    /// Lets the caller amortize the note-body allocation across every
+    /// matching subscriber: one `Arc<[u8]>` is produced for the event, then
+    /// cloned (refcount bump, no heap traffic) into one `SendEventFrame` per
+    /// sub. The writer composes the text payload directly into its WS
+    /// send-buffer — no intermediate `String`.
+    SendEventFrame {
+        fd: i32,
+        sub_id: Arc<str>,
+        note_bytes: Arc<[u8]>,
+    },
     /// Send a text frame to all connected clients.
     Broadcast { text: String },
     /// Send a binary frame to all connected clients.
@@ -214,6 +227,23 @@ impl ServerSender {
     pub fn send_binary(&self, client_id: i32, data: Vec<u8>) {
         let shard = self.writer_shard(client_id);
         self.push_with_backpressure(shard, WriteCmd::SendBinary { fd: client_id, data });
+    }
+
+    /// Queue a NIP-01 `["EVENT", sub_id, <note>]` text frame for delivery,
+    /// composed inside the writer from pre-captured pieces.
+    ///
+    /// Designed for relay-style fan-out where one event is delivered to N
+    /// matching subscribers: the caller produces `note_bytes` once (as an
+    /// `Arc<[u8]>` sharing the event's JSON), clones it per sub (refcount
+    /// bump), and pairs each clone with the subscriber's `sub_id`. The
+    /// writer composes the `["EVENT", sub_id, <note>]` payload directly
+    /// into its WS send-buffer — no intermediate `String` per sub.
+    pub fn send_event_frame(&self, client_id: i32, sub_id: Arc<str>, note_bytes: Arc<[u8]>) {
+        let shard = self.writer_shard(client_id);
+        self.push_with_backpressure(
+            shard,
+            WriteCmd::SendEventFrame { fd: client_id, sub_id, note_bytes },
+        );
     }
 
     /// Broadcast a text message to all connected clients.

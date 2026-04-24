@@ -79,6 +79,11 @@ name = "heap_fanout_view"
 [[example]]
 name = "heap_fanout_view_reserialize"
 
+# End-to-end heap profile: real NostrRelay + real WebSocket subscribers,
+# measures total alloc traffic along the live fan-out path.
+[[example]]
+name = "heap_fanout_live"
+
 [[bench]]
 name = "filter_match"
 harness = false
