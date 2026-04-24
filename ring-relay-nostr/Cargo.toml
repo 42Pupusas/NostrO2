@@ -59,6 +59,13 @@ name = "profile_load_fanout"
 [[example]]
 name = "heap_parse_ingest"
 
+# Same workload as `heap_parse_ingest`, but parses into `NostrNoteView<'_>`
+# (borrowed, zero-copy). Run with:
+#   cargo run --release --example heap_parse_ingest_view
+# Diff the resulting `dhat-heap.json` against the owned baseline.
+[[example]]
+name = "heap_parse_ingest_view"
+
 [[bench]]
 name = "filter_match"
 harness = false

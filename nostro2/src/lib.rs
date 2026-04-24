@@ -101,8 +101,10 @@ mod relay_events;
 mod subscriptions;
 mod tags;
 pub mod validation;
+pub mod view;
 
 pub use note::{NostrNote, NostrNoteBuilder};
+pub use view::{NostrNoteView, TagsView};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
 pub use tags::{NostrTag, NostrTags};
