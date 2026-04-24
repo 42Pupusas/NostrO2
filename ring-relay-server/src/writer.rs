@@ -59,9 +59,16 @@ fn writer_loop(
                     let deflate_encoder = deflate.as_ref().map(|config| {
                         DeflateEncoder::new(config, true)
                     });
+                    // Start small. `Vec::extend_from_slice` will grow the
+                    // buffer geometrically on first real send, so quiet
+                    // connections (a huge fraction on any public relay)
+                    // never pay for 64 KiB of writer scratch they don't
+                    // use. At 5k idle clients that's the difference
+                    // between ~320 MiB of pre-allocated send_bufs and
+                    // almost nothing.
                     let new_slot = WriterSlot {
                         fd,
-                        send_buf: Vec::with_capacity(65536),
+                        send_buf: Vec::new(),
                         send_offset: 0,
                         send_pending: false,
                         dead: false,
@@ -367,15 +374,7 @@ fn drain_completions(ring: &mut IoUring, slots: &mut [WriterSlot]) {
 /// On failure, `send_pending` stays false so the caller can retry later.
 fn try_submit_send(ring: &mut IoUring, slot: &mut WriterSlot, user_data: u64) -> bool {
     let data = &slot.send_buf[slot.send_offset..];
-    let sqe = unsafe {
-        Sqe::send(
-            slot.fd,
-            data.as_ptr(),
-            data.len() as u32,
-            MsgFlags::default(),
-        )
-    }
-    .user_data(user_data);
+    let sqe = Sqe::send(slot.fd, data, MsgFlags::default()).user_data(user_data);
     if ring.push(sqe).is_ok() {
         slot.send_pending = true;
         true
@@ -392,15 +391,7 @@ fn send_close(
     slot.send_buf.clear();
     slot.send_offset = 0;
     Frame::Close(Some((code, &[]))).encode(&mut slot.send_buf).ok();
-    let sqe = unsafe {
-        Sqe::send(
-            slot.fd,
-            slot.send_buf.as_ptr(),
-            slot.send_buf.len() as u32,
-            MsgFlags::default(),
-        )
-    }
-    .user_data(0);
+    let sqe = Sqe::send(slot.fd, &slot.send_buf, MsgFlags::default()).user_data(0);
     ring.push(sqe)?;
     ring.submit()?;
     slot.dead = true;

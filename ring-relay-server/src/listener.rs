@@ -479,15 +479,7 @@ fn submit_accept(
     ring: &mut IoUring,
     listener_fd: i32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let sqe = unsafe {
-        Sqe::accept(
-            listener_fd,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            AcceptFlags::default(),
-        )
-    }
-    .user_data(ACCEPT_UD);
+    let sqe = Sqe::accept(listener_fd, AcceptFlags::default()).user_data(ACCEPT_UD);
     ring.push(sqe)?;
     Ok(())
 }
@@ -498,15 +490,8 @@ fn submit_handshake_recv(
     idx: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let offset = slot.progress;
-    let sqe = unsafe {
-        Sqe::recv(
-            slot.fd,
-            slot.buf.as_mut_ptr().add(offset),
-            (slot.buf.len() - offset) as u32,
-            MsgFlags::default(),
-        )
-    }
-    .user_data(encode_ud(idx, Phase::Recv));
+    let sqe = Sqe::recv(slot.fd, &mut slot.buf[offset..], MsgFlags::default())
+        .user_data(encode_ud(idx, Phase::Recv));
     ring.push(sqe)?;
     Ok(())
 }
@@ -517,14 +502,11 @@ fn submit_handshake_send(
     idx: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let offset = slot.progress;
-    let sqe = unsafe {
-        Sqe::send(
-            slot.fd,
-            slot.buf.as_ptr().add(offset),
-            (slot.send_total - offset) as u32,
-            MsgFlags::default(),
-        )
-    }
+    let sqe = Sqe::send(
+        slot.fd,
+        &slot.buf[offset..slot.send_total],
+        MsgFlags::default(),
+    )
     .user_data(encode_ud(idx, Phase::Send));
     ring.push(sqe)?;
     Ok(())

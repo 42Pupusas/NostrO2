@@ -154,8 +154,7 @@ impl ReaderCore {
         // Submit a timeout so we wake periodically even with no recv traffic,
         // giving the driver a chance to poll accept_rx / shutdown.
         let ts = Timespec::from_millis(5);
-        let timeout_sqe = unsafe { Sqe::timeout(&raw const ts, 0, TimeoutFlags::default()) }
-            .user_data(TIMEOUT_UD);
+        let timeout_sqe = Sqe::timeout(&ts, 0, TimeoutFlags::default()).user_data(TIMEOUT_UD);
         self.ring.push(timeout_sqe)?;
         self.ring.submit_and_wait(1)?;
 
@@ -515,15 +514,7 @@ fn submit_recv(
     slot: &mut ClientSlot,
     user_data: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let sqe = unsafe {
-        Sqe::recv(
-            slot.fd,
-            slot.recv_buf.as_mut_ptr(),
-            slot.recv_buf.len() as u32,
-            MsgFlags::default(),
-        )
-    }
-    .user_data(user_data);
+    let sqe = Sqe::recv(slot.fd, &mut slot.recv_buf, MsgFlags::default()).user_data(user_data);
     ring.push(sqe)?;
     slot.recv_pending = true;
     Ok(())

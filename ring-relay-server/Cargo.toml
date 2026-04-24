@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 # WebSocket RFC6455 codec
 coyoquil = "0.2.1"
 # IO-uring
-ququmatz = "0.4.0"
+ququmatz = "0.9.0"
 # TLS (optional — only for kTLS)
 rustls = { workspace = true, optional = true }
 
