@@ -28,11 +28,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nostro2::{NostrNote, NostrSubscription};
+use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 use quetzalcoatl::broadcast::arc::{ArcConsumer, ArcProducer};
 use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 
-use crate::protocol::ClientMessage;
+use crate::protocol::ClientMessageView;
 use crate::{RelayConfig, filter, protocol};
 
 /// A sub-replication message broadcast from one shard to all others.
@@ -273,7 +273,7 @@ impl ShardDispatcher {
     }
 
     fn on_text(&mut self, client_id: i32, text: &str) {
-        let parsed = match protocol::parse(text) {
+        let parsed = match protocol::parse_view(text) {
             Ok(msg) => msg,
             Err(e) => {
                 self.sender
@@ -283,10 +283,10 @@ impl ShardDispatcher {
         };
 
         match parsed {
-            ClientMessage::Event(note) => self.on_event(client_id, note),
-            ClientMessage::Req { sub_id, filters } => self.on_req(client_id, sub_id, filters),
-            ClientMessage::Close { sub_id } => self.on_close_sub(client_id, &sub_id),
-            ClientMessage::Unknown(verb) => {
+            ClientMessageView::Event(note) => self.on_event(client_id, &note),
+            ClientMessageView::Req { sub_id, filters } => self.on_req(client_id, sub_id, filters),
+            ClientMessageView::Close { sub_id } => self.on_close_sub(client_id, sub_id),
+            ClientMessageView::Unknown(verb) => {
                 self.sender.send_text(
                     client_id,
                     protocol::notice(&format!("unsupported verb: {verb}")),
@@ -295,27 +295,26 @@ impl ShardDispatcher {
         }
     }
 
-    fn on_event(&mut self, client_id: i32, note: NostrNote) {
-        let id = note.id.clone().unwrap_or_default();
+    fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>) {
+        let id = note.id.as_deref().unwrap_or("");
 
-        if !self.validate_event(&note) {
+        if !self.validate_event(note) {
             self.sender
-                .send_text(client_id, protocol::ok(&id, false, "invalid: bad event"));
+                .send_text(client_id, protocol::ok(id, false, "invalid: bad event"));
             return;
         }
 
-        self.sender
-            .send_text(client_id, protocol::ok(&id, true, ""));
+        self.sender.send_text(client_id, protocol::ok(id, true, ""));
 
         // Serialize the note once and reuse its JSON across every matching
         // subscriber. Per-sub work is just prefixing ["EVENT","<sub_id>",
         // and wrapping in brackets — cheap string concat.
-        let note_json = protocol::serialize_note(&note);
+        let note_json = protocol::serialize_note_view(note);
 
         // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
-                if filters.iter().any(|f| filter::matches(&note, f)) {
+                if filters.iter().any(|f| filter::matches_view(note, f)) {
                     let frame = protocol::event_from_serialized(sub_id, &note_json);
                     self.sender.send_text(other_id, frame);
                     break;
@@ -328,7 +327,7 @@ impl ShardDispatcher {
         // correct writer thread; we just push.
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
-                if filters.iter().any(|f| filter::matches(&note, f)) {
+                if filters.iter().any(|f| filter::matches_view(note, f)) {
                     let frame = protocol::event_from_serialized(sub_id, &note_json);
                     self.sender.send_text(client_id, frame);
                     break;
@@ -337,7 +336,7 @@ impl ShardDispatcher {
         }
     }
 
-    fn validate_event(&self, note: &NostrNote) -> bool {
+    fn validate_event(&self, note: &NostrNoteView<'_>) -> bool {
         if !note.verify() {
             return false;
         }
@@ -356,11 +355,11 @@ impl ShardDispatcher {
         true
     }
 
-    fn on_req(&mut self, client_id: i32, sub_id: String, filters: Vec<NostrSubscription>) {
+    fn on_req(&mut self, client_id: i32, sub_id: &str, filters: Vec<NostrSubscription>) {
         if filters.len() > self.config.max_filters_per_sub {
             self.sender.send_text(
                 client_id,
-                protocol::closed(&sub_id, "invalid: too many filters"),
+                protocol::closed(sub_id, "invalid: too many filters"),
             );
             return;
         }
@@ -369,7 +368,7 @@ impl ShardDispatcher {
             return;
         };
 
-        let sub_id_arc: Arc<str> = Arc::from(sub_id.into_boxed_str());
+        let sub_id_arc: Arc<str> = Arc::from(sub_id);
         let filters_arc: Arc<[NostrSubscription]> = Arc::from(filters.into_boxed_slice());
 
         let evicted = state.insert_sub(
