@@ -17,7 +17,7 @@ nostro2 = { workspace = true }
 quetzalcoatl = "0.6.0"
 serde_json = { workspace = true }
 # WebSockets RFC6455 codec
-coyoquil = "0.1.0"
+coyoquil = "0.3.0"
 # IO-uring
 ququmatz = "0.4.0"
 # TLS

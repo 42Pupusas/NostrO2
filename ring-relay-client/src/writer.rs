@@ -4,7 +4,7 @@
 //! pong queues, encodes frames via coyoquil, and submits batched
 //! send SQEs through a single io_uring.
 
-use coyoquil::{Frame, MaskKey};
+use coyoquil::{CloseCode, Frame, MaskKey};
 use quetzalcoatl::broadcast;
 use quetzalcoatl::mpsc::Consumer;
 use quetzalcoatl::spsc;
@@ -178,7 +178,7 @@ fn send_close(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     slot.send_buf.clear();
     slot.send_offset = 0;
-    Frame::Close(Some((1000, &[]))).encode_masked(MaskKey::new(), &mut slot.send_buf);
+    Frame::Close(Some((CloseCode::Normal, &[]))).encode_masked(MaskKey::new(), &mut slot.send_buf);
     let sqe = unsafe {
         Sqe::send(
             slot.fd,
