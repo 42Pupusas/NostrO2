@@ -17,19 +17,28 @@ use coyoquil::{CloseCode, DEFAULT_MAX_MESSAGE_SIZE, DeflateDecoder, Frame, Frame
 use quetzalcoatl::mpsc::Producer;
 use quetzalcoatl::spsc;
 use ququmatz::types::{MsgFlags, TimeoutFlags};
-use ququmatz::{IoUring, Sqe, Timespec};
+use ququmatz::{IoUring, ProvidedBufferRing, Sqe, Timespec};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Sentinel user_data for the periodic timeout SQE.
 const TIMEOUT_UD: u64 = u64::MAX;
 
+/// Buffer group id for the reader's provided-buffer pool.
+const RECV_BGID: u16 = 0;
+/// Number of buffers in the provided-buffer pool (must be a power of two).
+const RECV_POOL_ENTRIES: u32 = 1024;
+/// Size of each buffer in the provided-buffer pool, in bytes.
+const RECV_BUF_SIZE: u32 = 16384;
+
+/// Kernel -ENOBUFS returned when no provided buffer is available.
+const ENOBUFS: i32 = -105;
+
 /// Per-client state held by the reader thread.
 struct ClientSlot {
     fd: i32,
     decoder: FrameDecoder<DEFAULT_MAX_MESSAGE_SIZE>,
     deflate_decoder: Option<DeflateDecoder>,
-    recv_buf: Vec<u8>,
     dead: bool,
     recv_pending: bool,
 }
@@ -71,6 +80,10 @@ pub enum ReaderEvent<'a> {
 /// Drives I/O and framing mechanically; all routing/dispatch decisions are in
 /// the callback the driver passes to [`ReaderCore::poll_once`].
 pub struct ReaderCore {
+    // Field order matters: `pbuf` is declared before `ring` so that on drop
+    // (Rust drops struct fields in declaration order) the provided-buffer
+    // ring is unregistered before the `IoUring` it was registered against.
+    pbuf: ProvidedBufferRing,
     ring: IoUring,
     slots: Vec<ClientSlot>,
     decompress_buf: Vec<u8>,
@@ -78,8 +91,11 @@ pub struct ReaderCore {
 
 impl ReaderCore {
     pub fn new(ring_capacity: u32) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut ring = IoUring::new(ring_capacity)?;
+        let pbuf = ring.register_provided_buffers(RECV_BGID, RECV_POOL_ENTRIES, RECV_BUF_SIZE)?;
         Ok(Self {
-            ring: IoUring::new(ring_capacity)?,
+            pbuf,
+            ring,
             slots: Vec::new(),
             decompress_buf: Vec::new(),
         })
@@ -105,7 +121,6 @@ impl ReaderCore {
             fd,
             decoder: frame_decoder,
             deflate_decoder,
-            recv_buf: vec![0u8; 65536],
             dead: false,
             recv_pending: false,
         };
@@ -168,98 +183,170 @@ impl ReaderCore {
                 continue;
             }
 
+            let buf_id_opt = cqe.buffer_id();
+            let result = cqe.result;
+
             let slot = &mut self.slots[idx];
             slot.recv_pending = false;
 
             if slot.dead {
+                if let Some(buf_id) = buf_id_opt {
+                    self.pbuf.recycle(buf_id);
+                }
                 continue;
             }
 
-            let n = if cqe.is_err() {
-                mark_dead_emit(slot, &mut cb, Some(format!("recv error: {}", cqe.result)), None);
+            // -ENOBUFS: kernel had no buffer to fill. Don't mark the slot
+            // dead — just let the resubmit pass try again next iteration.
+            if result == ENOBUFS {
+                continue;
+            }
+
+            let n = if result < 0 {
+                if let Some(buf_id) = buf_id_opt {
+                    self.pbuf.recycle(buf_id);
+                }
+                mark_dead_emit(slot, &mut cb, Some(format!("recv error: {result}")), None);
                 continue;
             } else {
-                let n = cqe.result as usize;
+                let n = result as usize;
                 if n == 0 {
+                    if let Some(buf_id) = buf_id_opt {
+                        self.pbuf.recycle(buf_id);
+                    }
                     mark_dead_emit(slot, &mut cb, Some("connection closed (EOF)".into()), None);
                     continue;
                 }
                 n
             };
 
-            if slot.decoder.push(&slot.recv_buf[..n]).is_err() {
-                mark_dead_emit(slot, &mut cb, Some("WebSocket frame decode error".into()), None);
+            let Some(buf_id) = buf_id_opt else {
+                mark_dead_emit(slot, &mut cb, Some("missing buffer_id in CQE".into()), None);
                 continue;
-            }
+            };
 
+            let bytes = match self.pbuf.buffer_mut(buf_id, n as u32) {
+                Some(b) => b,
+                None => {
+                    self.pbuf.recycle(buf_id);
+                    mark_dead_emit(slot, &mut cb, Some("invalid buffer_id".into()), None);
+                    continue;
+                }
+            };
+
+            let fd = slot.fd;
+            let has_deflate = slot.deflate_decoder.is_some();
+            // Mirror the prior push/next_frame semantics where `message_rsv1`
+            // was read BEFORE advancing the decoder, i.e. reflects the last
+            // frame the decoder produced on a previous poll. For the parse()
+            // fast path we capture the same "before" state once per batch.
+            let initial_rsv1 = slot.decoder.message_rsv1();
+            let initial_opcode = slot.decoder.message_opcode();
+
+            // Split-borrow the slot's fields so we can hand `decoder` to the
+            // FrameIter while still touching `deflate_decoder` inside the loop.
+            let ClientSlot {
+                decoder,
+                deflate_decoder,
+                dead,
+                ..
+            } = slot;
+            let decompress_buf = &mut self.decompress_buf;
+
+            let mut iter = decoder.parse(bytes);
+            let mut carry_rsv1 = initial_rsv1;
+            let mut carry_opcode = initial_opcode;
             loop {
-                let rsv1 = slot.decoder.message_rsv1();
-                let Some(frame) = slot.decoder.next_frame().transpose() else {
-                    break;
-                };
-                let frame = match frame {
+                let next = iter.next();
+                let Some(result) = next else { break };
+                let frame = match result {
                     Ok(f) => f,
                     Err(_) => {
-                        mark_dead_emit(slot, &mut cb, Some("WebSocket frame decode error".into()), None);
+                        *dead = true;
+                        cb(ReaderEvent::Disconnected {
+                            fd,
+                            reason: Some("WebSocket frame decode error".into()),
+                            close_code: None,
+                        });
                         break;
                     }
                 };
 
                 match frame {
                     Frame::Text(text) => {
-                        cb(ReaderEvent::Text { fd: slot.fd, text });
+                        cb(ReaderEvent::Text { fd, text });
+                        carry_rsv1 = false;
+                        carry_opcode = Some(Opcode::Text);
                     }
-                    Frame::Binary(data) if rsv1 && slot.deflate_decoder.is_some() => {
-                        self.decompress_buf.clear();
-                        if slot
-                            .deflate_decoder
+                    Frame::Binary(data) if carry_rsv1 && has_deflate => {
+                        decompress_buf.clear();
+                        if deflate_decoder
                             .as_mut()
                             .unwrap()
-                            .decompress(data, &mut self.decompress_buf)
+                            .decompress(data, decompress_buf)
                             .is_err()
                         {
-                            mark_dead_emit(slot, &mut cb, Some("deflate decompression failed".into()), None);
+                            *dead = true;
+                            cb(ReaderEvent::Disconnected {
+                                fd,
+                                reason: Some("deflate decompression failed".into()),
+                                close_code: None,
+                            });
                             break;
                         }
 
-                        if slot.decoder.message_opcode() == Some(Opcode::Text) {
-                            match std::str::from_utf8(&self.decompress_buf) {
+                        if carry_opcode == Some(Opcode::Text) {
+                            match std::str::from_utf8(decompress_buf) {
                                 Ok(text) => {
-                                    cb(ReaderEvent::Text { fd: slot.fd, text });
+                                    cb(ReaderEvent::Text { fd, text });
                                 }
                                 Err(_) => {
-                                    mark_dead_emit(
-                                        slot,
-                                        &mut cb,
-                                        Some("invalid UTF-8 in decompressed text".into()),
-                                        None,
-                                    );
+                                    *dead = true;
+                                    cb(ReaderEvent::Disconnected {
+                                        fd,
+                                        reason: Some(
+                                            "invalid UTF-8 in decompressed text".into(),
+                                        ),
+                                        close_code: None,
+                                    });
                                     break;
                                 }
                             }
                         } else {
                             cb(ReaderEvent::Binary {
-                                fd: slot.fd,
-                                data: &self.decompress_buf,
+                                fd,
+                                data: decompress_buf,
                             });
                         }
+                        carry_rsv1 = true;
                     }
                     Frame::Binary(data) => {
-                        cb(ReaderEvent::Binary { fd: slot.fd, data });
+                        cb(ReaderEvent::Binary { fd, data });
+                        carry_rsv1 = has_deflate; // next binary on this conn is likely rsv1
+                        carry_opcode = Some(Opcode::Binary);
                     }
                     Frame::Ping(_) => {
-                        cb(ReaderEvent::Ping { fd: slot.fd });
+                        cb(ReaderEvent::Ping { fd });
                     }
                     Frame::Close(close_info) => {
                         let close_code = close_info.map(|(code, _)| code);
-                        mark_dead_emit(slot, &mut cb, None, close_code);
+                        *dead = true;
+                        cb(ReaderEvent::Disconnected {
+                            fd,
+                            reason: None,
+                            close_code,
+                        });
                         break;
                     }
                     _ => {}
                 }
             }
+            drop(iter);
+
+            self.pbuf.recycle(buf_id);
         }
 
+        self.pbuf.commit();
         self.ring.sync_cq();
 
         // Close fds of dead slots immediately to prevent fd leaks.
@@ -514,7 +601,13 @@ fn submit_recv(
     slot: &mut ClientSlot,
     user_data: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let sqe = Sqe::recv(slot.fd, &mut slot.recv_buf, MsgFlags::default()).user_data(user_data);
+    // With IOSQE_BUFFER_SELECT the kernel picks a buffer from the pool at
+    // completion time; we pass a null buffer in the SQE itself.
+    let sqe = unsafe {
+        Sqe::recv_ptr(slot.fd, core::ptr::null_mut(), 0, MsgFlags::default())
+    }
+    .buffer_select(RECV_BGID)
+    .user_data(user_data);
     ring.push(sqe)?;
     slot.recv_pending = true;
     Ok(())
