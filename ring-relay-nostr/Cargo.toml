@@ -36,6 +36,10 @@ nostr-relay = "0.4.8"
 tempfile = "3"
 actix-rt = "2"
 actix-web = "4"
+# Heap profiler. Enabled via the `dhat-heap` feature on the measurement
+# examples below — dropping in `dhat::Profiler::new_heap()` records every
+# allocation and writes `dhat-heap.json` for `dh_view.html`.
+dhat = "0.3"
 
 [[example]]
 name = "relay"
@@ -48,6 +52,12 @@ name = "profile_load_ingest"
 
 [[example]]
 name = "profile_load_fanout"
+
+# Heap-profile the client→relay parse path. Run with:
+#   cargo run --release --example heap_parse_ingest
+# Produces `dhat-heap.json` in the cwd; open in `dh_view.html`.
+[[example]]
+name = "heap_parse_ingest"
 
 [[bench]]
 name = "filter_match"
