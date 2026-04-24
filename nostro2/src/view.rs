@@ -25,17 +25,60 @@
 
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::fmt;
+
+/// Internal wrapper around `Cow<'a, str>` with a custom `Deserialize` that
+/// actually honors `visit_borrowed_str` — unlike serde's stock
+/// `Cow<'a, str>` impl, which always funnels through `visit_string` and
+/// allocates even when the source has no escapes.
+struct CowStr<'a>(Cow<'a, str>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for CowStr<'a> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V<'a>(std::marker::PhantomData<&'a ()>);
+
+        impl<'de, 'a> Visitor<'de> for V<'a>
+        where
+            'de: 'a,
+        {
+            type Value = CowStr<'a>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a string")
+            }
+
+            fn visit_borrowed_str<E: de::Error>(self, v: &'a str) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Borrowed(v)))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                // Copy path: serde_json hands us a slice of its internal
+                // scratch buffer (used when the source JSON had escapes).
+                Ok(CowStr(Cow::Owned(v.to_owned())))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Owned(v)))
+            }
+        }
+
+        d.deserialize_str(V(std::marker::PhantomData))
+    }
+}
 
 /// Borrowed view over the tag array of a note.
 ///
 /// Stores every tag cell in one flat vector with row offsets in a second
-/// vector — two allocations total, no matter how many tags. Iteration is a
-/// simple slice walk.
+/// vector — two allocations total, no matter how many tags. Cells are
+/// `Cow<'a, str>`: when the source JSON has no escape sequences in a cell,
+/// the cell is a zero-copy slice of the input; cells containing escapes
+/// (`\"`, `\n`, etc.) fall back to owned `String` because the unescaped
+/// bytes don't exist contiguously in the input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TagsView<'a> {
     /// Every cell of every row, flattened in row-major order.
-    cells: Vec<&'a str>,
+    cells: Vec<Cow<'a, str>>,
     /// `offsets[i]` is the start index in `cells` for row `i`;
     /// `offsets.last()` is always `cells.len()` (closing sentinel).
     offsets: Vec<u32>,
@@ -60,15 +103,15 @@ impl<'a> TagsView<'a> {
     /// Borrow row `i` as a slice of cells, or `None` if out of range.
     #[must_use]
     #[inline]
-    pub fn row(&self, i: usize) -> Option<&[&'a str]> {
+    pub fn row(&self, i: usize) -> Option<&[Cow<'a, str>]> {
         let start = *self.offsets.get(i)? as usize;
         let end = *self.offsets.get(i + 1)? as usize;
         Some(&self.cells[start..end])
     }
 
-    /// Iterate rows as `&[&str]` slices. Walks the offset table directly,
-    /// so no per-row bounds recheck.
-    pub fn iter(&self) -> impl Iterator<Item = &[&'a str]> {
+    /// Iterate rows as cell slices. Walks the offset table directly, so no
+    /// per-row bounds recheck.
+    pub fn iter(&self) -> impl Iterator<Item = &[Cow<'a, str>]> {
         self.offsets
             .windows(2)
             .map(|w| &self.cells[w[0] as usize..w[1] as usize])
@@ -91,7 +134,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for TagsView<'a> {
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let cap = seq.size_hint().unwrap_or(4);
-                let mut cells: Vec<&'a str> = Vec::with_capacity(cap * 2);
+                let mut cells: Vec<Cow<'a, str>> = Vec::with_capacity(cap * 2);
                 let mut offsets: Vec<u32> = Vec::with_capacity(cap + 1);
                 offsets.push(0);
 
@@ -118,7 +161,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for TagsView<'a> {
 /// Deserializes one tag row directly into a caller-provided cell buffer.
 /// Avoids the transient `Vec` a `Deserialize`-based row type would need.
 struct RowSeed<'buf, 'a> {
-    cells: &'buf mut Vec<&'a str>,
+    cells: &'buf mut Vec<Cow<'a, str>>,
 }
 
 impl<'de: 'a, 'a> DeserializeSeed<'de> for RowSeed<'_, 'a> {
@@ -126,7 +169,7 @@ impl<'de: 'a, 'a> DeserializeSeed<'de> for RowSeed<'_, 'a> {
 
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
         struct RowVisitor<'buf, 'a> {
-            cells: &'buf mut Vec<&'a str>,
+            cells: &'buf mut Vec<Cow<'a, str>>,
         }
 
         impl<'de: 'a, 'a> Visitor<'de> for RowVisitor<'_, 'a> {
@@ -137,8 +180,8 @@ impl<'de: 'a, 'a> DeserializeSeed<'de> for RowSeed<'_, 'a> {
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-                while let Some(cell) = seq.next_element::<&'a str>()? {
-                    self.cells.push(cell);
+                while let Some(cell) = seq.next_element::<CowStr<'a>>()? {
+                    self.cells.push(cell.0);
                 }
                 Ok(())
             }
@@ -150,17 +193,22 @@ impl<'de: 'a, 'a> DeserializeSeed<'de> for RowSeed<'_, 'a> {
 
 /// Borrowed view over a Nostr note parsed from a JSON frame.
 ///
-/// All string fields are slices into the source buffer. The view itself
-/// holds two small `Vec`s for the tag index (see [`TagsView`]).
+/// String fields are `Cow<'a, str>` — they borrow from the source buffer
+/// when the JSON contains no escape sequences in that field, and fall back
+/// to an owned `String` otherwise (`serde_json` cannot hand back a slice for
+/// an escaped string because the unescaped bytes don't exist contiguously
+/// in the input).
+///
+/// The tag index itself (see [`TagsView`]) is always two small `Vec`s.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NostrNoteView<'a> {
-    pub pubkey: &'a str,
+    pub pubkey: Cow<'a, str>,
     pub created_at: i64,
     pub kind: u32,
     pub tags: TagsView<'a>,
-    pub content: &'a str,
-    pub id: Option<&'a str>,
-    pub sig: Option<&'a str>,
+    pub content: Cow<'a, str>,
+    pub id: Option<Cow<'a, str>>,
+    pub sig: Option<Cow<'a, str>>,
 }
 
 impl<'de: 'a, 'a> Deserialize<'de> for NostrNoteView<'a> {
@@ -216,23 +264,23 @@ impl<'de: 'a, 'a> Deserialize<'de> for NostrNoteView<'a> {
             }
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                let mut pubkey: Option<&'a str> = None;
+                let mut pubkey: Option<Cow<'a, str>> = None;
                 let mut created_at: Option<i64> = None;
                 let mut kind: Option<u32> = None;
                 let mut tags: Option<TagsView<'a>> = None;
-                let mut content: Option<&'a str> = None;
-                let mut id: Option<&'a str> = None;
-                let mut sig: Option<&'a str> = None;
+                let mut content: Option<Cow<'a, str>> = None;
+                let mut id: Option<Cow<'a, str>> = None;
+                let mut sig: Option<Cow<'a, str>> = None;
 
                 while let Some(key) = map.next_key::<Field>()? {
                     match key {
-                        Field::Pubkey => pubkey = Some(map.next_value::<&'a str>()?),
+                        Field::Pubkey => pubkey = Some(map.next_value::<CowStr<'a>>()?.0),
                         Field::CreatedAt => created_at = Some(map.next_value::<i64>()?),
                         Field::Kind => kind = Some(map.next_value::<u32>()?),
                         Field::Tags => tags = Some(map.next_value::<TagsView<'a>>()?),
-                        Field::Content => content = Some(map.next_value::<&'a str>()?),
-                        Field::Id => id = map.next_value::<Option<&'a str>>()?,
-                        Field::Sig => sig = map.next_value::<Option<&'a str>>()?,
+                        Field::Content => content = Some(map.next_value::<CowStr<'a>>()?.0),
+                        Field::Id => id = map.next_value::<Option<CowStr<'a>>>()?.map(|c| c.0),
+                        Field::Sig => sig = map.next_value::<Option<CowStr<'a>>>()?.map(|c| c.0),
                         Field::Ignore => {
                             let _ = map.next_value::<de::IgnoredAny>()?;
                         }
@@ -289,11 +337,11 @@ impl NostrNoteView<'_> {
 
         let payload = (
             0,
-            self.pubkey,
+            self.pubkey.as_ref(),
             self.created_at,
             self.kind,
             TagsSer(&self.tags),
-            self.content,
+            self.content.as_ref(),
         );
         let mut hasher = sha2::Sha256::new();
         serde_json::to_writer(Sha256Writer(&mut hasher), &payload)?;
@@ -303,18 +351,18 @@ impl NostrNoteView<'_> {
     /// Decode the stored `id` hex into raw bytes (no allocation).
     #[must_use]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
-        let id = self.id?;
+        let id = self.id.as_deref()?;
         let mut out = [0_u8; 32];
-        hex::decode_to_slice(id, &mut out).ok()?;
+        hex::decode_to_slice(id.as_bytes(), &mut out).ok()?;
         Some(out)
     }
 
     /// Decode the stored `sig` hex into raw bytes (no allocation).
     #[must_use]
     pub fn sig_bytes(&self) -> Option<[u8; 64]> {
-        let sig = self.sig?;
+        let sig = self.sig.as_deref()?;
         let mut out = [0_u8; 64];
-        hex::decode_to_slice(sig, &mut out).ok()?;
+        hex::decode_to_slice(sig.as_bytes(), &mut out).ok()?;
         Some(out)
     }
 
@@ -323,7 +371,7 @@ impl NostrNoteView<'_> {
     #[must_use]
     pub fn pubkey_bytes(&self) -> [u8; 32] {
         let mut out = [0_u8; 32];
-        let _ = hex::decode_to_slice(self.pubkey, &mut out);
+        let _ = hex::decode_to_slice(self.pubkey.as_bytes(), &mut out);
         out
     }
 
@@ -412,12 +460,12 @@ mod tests {
     fn parses_all_fields() {
         let json = sample_note_json();
         let view: NostrNoteView<'_> = serde_json::from_str(&json).unwrap();
-        assert_eq!(view.pubkey, "a".repeat(64));
+        assert_eq!(view.pubkey.as_ref(), "a".repeat(64));
         assert_eq!(view.created_at, 1_700_000_000);
         assert_eq!(view.kind, 1);
-        assert_eq!(view.content, "hello view");
+        assert_eq!(view.content.as_ref(), "hello view");
         let expected_id = "b".repeat(64);
-        assert_eq!(view.id, Some(expected_id.as_str()));
+        assert_eq!(view.id.as_deref(), Some(expected_id.as_str()));
         assert_eq!(view.tags.len(), 3);
     }
 
@@ -426,10 +474,11 @@ mod tests {
         let json = sample_note_json();
         let view: NostrNoteView<'_> = serde_json::from_str(&json).unwrap();
         let row0 = view.tags.row(0).unwrap();
-        assert_eq!(row0, &["t", "nostr"]);
+        assert_eq!(row0[0].as_ref(), "t");
+        assert_eq!(row0[1].as_ref(), "nostr");
         let row1 = view.tags.row(1).unwrap();
-        assert_eq!(row1[0], "p");
-        assert_eq!(row1[1], &"d".repeat(64));
+        assert_eq!(row1[0].as_ref(), "p");
+        assert_eq!(row1[1].as_ref(), &"d".repeat(64));
     }
 
     #[test]
@@ -441,6 +490,38 @@ mod tests {
         assert_eq!(rows[0][0], "t");
         assert_eq!(rows[1][0], "p");
         assert_eq!(rows[2][0], "e");
+    }
+
+    #[test]
+    fn escape_free_fields_are_borrowed() {
+        // Content with no escapes → every string field should be a
+        // Cow::Borrowed slice of the input buffer.
+        let json = sample_note_json();
+        let view: NostrNoteView<'_> = serde_json::from_str(&json).unwrap();
+        assert!(matches!(view.pubkey, Cow::Borrowed(_)));
+        assert!(matches!(view.content, Cow::Borrowed(_)));
+        assert!(matches!(view.id, Some(Cow::Borrowed(_))));
+        for row in view.tags.iter() {
+            for cell in row {
+                assert!(
+                    matches!(cell, Cow::Borrowed(_)),
+                    "expected borrowed tag cell, got {cell:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn escaped_content_falls_back_to_owned() {
+        // `\"` inside content forces serde_json to unescape into its
+        // scratch buffer, so we can't borrow that field. Must still parse,
+        // still round-trip, just via Cow::Owned.
+        let json =
+            r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi \"there\"","id":"b","sig":"c"}"#;
+        let view: NostrNoteView<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(view.content.as_ref(), "hi \"there\"");
+        assert!(matches!(view.content, Cow::Owned(_)));
+        assert!(matches!(view.pubkey, Cow::Borrowed(_)));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! NIP-01 filter matching against `NostrNote`.
 
-use nostro2::{NostrNote, NostrSubscription};
+use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 
 /// Check whether `note` matches `filter` per NIP-01 semantics.
 ///
@@ -55,6 +55,73 @@ pub fn matches(note: &NostrNote, filter: &NostrSubscription) -> bool {
             for tag in note.tags.iter() {
                 if tag.first().map(String::as_str) == Some(tag_name)
                     && let Some(val) = tag.get(1)
+                    && values.iter().any(|v| v == val)
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Borrowed-input counterpart to [`matches`]. Same NIP-01 semantics — all
+/// supplied filter fields are ANDed, list fields are ORed internally, tag
+/// filters require a per-key match on the note. Works off the zero-copy
+/// [`NostrNoteView`] so the relay hot path never needs an owned
+/// [`NostrNote`].
+#[must_use]
+pub fn matches_view(note: &NostrNoteView<'_>, filter: &NostrSubscription) -> bool {
+    if let Some(ids) = &filter.ids {
+        let Some(id) = note.id.as_deref() else {
+            return false;
+        };
+        if !ids.iter().any(|i| id.starts_with(i.as_str()) || i == id) {
+            return false;
+        }
+    }
+
+    let pubkey = note.pubkey.as_ref();
+    if let Some(authors) = &filter.authors
+        && !authors
+            .iter()
+            .any(|a| pubkey.starts_with(a.as_str()) || a == pubkey)
+    {
+        return false;
+    }
+
+    if let Some(kinds) = &filter.kinds
+        && !kinds.contains(&note.kind)
+    {
+        return false;
+    }
+
+    if let Some(since) = filter.since
+        && (note.created_at as i128) < (since as i128)
+    {
+        return false;
+    }
+
+    if let Some(until) = filter.until
+        && (note.created_at as i128) > (until as i128)
+    {
+        return false;
+    }
+
+    if let Some(tag_filters) = &filter.tags {
+        for (key, values) in tag_filters {
+            let Some(tag_name) = key.strip_prefix('#') else {
+                continue;
+            };
+            let mut matched = false;
+            for tag in note.tags.iter() {
+                if tag.first().map(AsRef::as_ref) == Some(tag_name)
+                    && let Some(val) = tag.get(1).map(AsRef::as_ref)
                     && values.iter().any(|v| v == val)
                 {
                     matched = true;
@@ -153,5 +220,48 @@ mod tests {
         let note = note_kind(1);
         let prefix = note.id.as_ref().unwrap()[..16].to_string();
         assert!(matches(&note, &NostrSubscription::new().ids(vec![prefix])));
+    }
+
+    /// Helper: serialize the owned note to JSON and reparse as a view, so
+    /// the view tests run against a freshly-parsed `NostrNoteView` backed
+    /// by the JSON string.
+    fn note_and_view<'a>(note: &NostrNote, buf: &'a mut String) -> nostro2::NostrNoteView<'a> {
+        *buf = serde_json::to_string(note).unwrap();
+        serde_json::from_str(buf).unwrap()
+    }
+
+    #[test]
+    fn view_matches_parity_with_owned() {
+        // Spot-check every branch of the matcher against its owned twin.
+        let mut note = note_kind(1);
+        note.tags.add_custom_tag("t", "nostr");
+        note.tags.add_pubkey_tag(&"d".repeat(64), None);
+
+        let mut buf = String::new();
+        let view = note_and_view(&note, &mut buf);
+
+        for filter in [
+            NostrSubscription::default(),
+            NostrSubscription::new().kind(1),
+            NostrSubscription::new().kind(7),
+            NostrSubscription::new().authors(vec![note.pubkey.clone()]),
+            NostrSubscription::new().authors(vec!["z".repeat(64)]),
+            NostrSubscription::new().since(999),
+            NostrSubscription::new().since(1001),
+            NostrSubscription::new().until(1001),
+            NostrSubscription::new().until(999),
+            NostrSubscription::new().tag("#t", "nostr"),
+            NostrSubscription::new().tag("#t", "bitcoin"),
+            NostrSubscription::new()
+                .tag("#t", "nostr")
+                .tag("#p", &"d".repeat(64)),
+            NostrSubscription::new().ids(vec![note.id.as_ref().unwrap()[..16].to_string()]),
+        ] {
+            assert_eq!(
+                matches(&note, &filter),
+                matches_view(&view, &filter),
+                "view/owned disagree on {filter:?}"
+            );
+        }
     }
 }

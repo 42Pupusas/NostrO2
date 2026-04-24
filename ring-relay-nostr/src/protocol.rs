@@ -4,7 +4,7 @@
 //! verbs a NIP-01 relay must handle: `EVENT`, `REQ`, `CLOSE`. Anything else
 //! comes back as [`ClientMessage::Unknown`] so the dispatcher can NOTICE it.
 
-use nostro2::{NostrNote, NostrSubscription};
+use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use std::fmt;
@@ -22,6 +22,28 @@ pub enum ClientMessage {
     },
     /// Well-formed JSON array but unknown verb — worth a NOTICE.
     Unknown(String),
+}
+
+/// Parsed client → relay message with borrowed payloads.
+///
+/// The `EVENT` variant carries a [`NostrNoteView`] that borrows from the
+/// input frame buffer. The `Req` sub_id and unknown-verb strings borrow
+/// too — those are short strings already present in the wire frame, no
+/// reason to allocate. Subscription filters are parsed to owned
+/// [`NostrSubscription`]s for now because they outlive the parse call
+/// (the shard dispatcher stores them). Revisit when we have a
+/// subscription view type.
+#[derive(Debug, Clone)]
+pub enum ClientMessageView<'a> {
+    Event(NostrNoteView<'a>),
+    Req {
+        sub_id: &'a str,
+        filters: Vec<NostrSubscription>,
+    },
+    Close {
+        sub_id: &'a str,
+    },
+    Unknown(&'a str),
 }
 
 /// Reason a message could not be parsed.
@@ -53,6 +75,19 @@ impl std::fmt::Display for ParseError {
 /// Unknown verbs are returned as [`ClientMessage::Unknown`], not an error.
 pub fn parse(text: &str) -> Result<ClientMessage, ParseError> {
     serde_json::from_str::<ClientMessage>(text).map_err(ParseError::from_serde)
+}
+
+/// Parse a client → relay frame into a borrowed view.
+///
+/// The returned [`ClientMessageView`] references slices of `text`; the
+/// caller must ensure `text` outlives every read of the view. In the
+/// shard dispatcher this is automatic because everything downstream of
+/// `on_text` runs synchronously inside the reader callback.
+///
+/// # Errors
+/// Same error taxonomy as [`parse`].
+pub fn parse_view(text: &str) -> Result<ClientMessageView<'_>, ParseError> {
+    serde_json::from_str::<ClientMessageView<'_>>(text).map_err(ParseError::from_serde)
 }
 
 impl ParseError {
@@ -160,6 +195,62 @@ impl<'de> Visitor<'de> for ClientMessageVisitor {
     }
 }
 
+impl<'de: 'a, 'a> Deserialize<'de> for ClientMessageView<'a> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_seq(ClientMessageViewVisitor(std::marker::PhantomData))
+    }
+}
+
+/// Borrowed counterpart to [`ClientMessageVisitor`]. Same error taxonomy so
+/// `ParseError::from_serde` can recover the same variants.
+struct ClientMessageViewVisitor<'a>(std::marker::PhantomData<&'a ()>);
+
+impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
+    type Value = ClientMessageView<'a>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a NIP-01 client frame")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let tag: &'a str = match seq.next_element::<&'a str>() {
+            Ok(Some(t)) => t,
+            Ok(None) | Err(_) => return Err(de::Error::custom("BadTag")),
+        };
+
+        match tag {
+            "EVENT" => {
+                let note: NostrNoteView<'a> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: EVENT missing note"))?;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessageView::Event(note))
+            }
+            "REQ" => {
+                let sub_id: &'a str = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: REQ missing sub id"))?;
+                let mut filters = Vec::new();
+                while let Some(filter) = seq.next_element::<NostrSubscription>()? {
+                    filters.push(filter);
+                }
+                Ok(ClientMessageView::Req { sub_id, filters })
+            }
+            "CLOSE" => {
+                let sub_id: &'a str = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::custom("BadPayload: CLOSE missing sub id"))?;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessageView::Close { sub_id })
+            }
+            other => {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessageView::Unknown(other))
+            }
+        }
+    }
+}
+
 /// Encode `["OK", event_id, accepted, message]` per NIP-20 / NIP-01.
 ///
 /// `message` convention: prefix with `"duplicate: "`, `"invalid: "`,
@@ -197,6 +288,51 @@ pub fn notice(message: &str) -> String {
 #[must_use]
 pub fn serialize_note(note: &NostrNote) -> String {
     serde_json::to_string(note).expect("note serialization cannot fail")
+}
+
+/// View-based counterpart to [`serialize_note`]. Emits the note as the same
+/// canonical JSON object the owned path would, walking the flat tag index
+/// directly — no intermediate owned `NostrNote`.
+#[must_use]
+pub fn serialize_note_view(note: &NostrNoteView<'_>) -> String {
+    use serde::ser::{SerializeMap, SerializeSeq};
+
+    struct TagsSer<'b, 'a>(&'b nostro2::TagsView<'a>);
+    impl serde::Serialize for TagsSer<'_, '_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            let mut seq = s.serialize_seq(Some(self.0.len()))?;
+            for row in self.0.iter() {
+                seq.serialize_element(row)?;
+            }
+            seq.end()
+        }
+    }
+
+    struct NoteSer<'b, 'a>(&'b NostrNoteView<'a>);
+    impl serde::Serialize for NoteSer<'_, '_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            // Field order and `skip_serializing_if = Option::is_none` mirror
+            // the owned `NostrNote` derive, so downstream clients see the
+            // same shape on the wire.
+            let n = &self.0;
+            let len = 5 + usize::from(n.id.is_some()) + usize::from(n.sig.is_some());
+            let mut map = s.serialize_map(Some(len))?;
+            map.serialize_entry("pubkey", n.pubkey.as_ref())?;
+            map.serialize_entry("created_at", &n.created_at)?;
+            map.serialize_entry("kind", &n.kind)?;
+            map.serialize_entry("tags", &TagsSer(&n.tags))?;
+            map.serialize_entry("content", n.content.as_ref())?;
+            if let Some(id) = n.id.as_deref() {
+                map.serialize_entry("id", id)?;
+            }
+            if let Some(sig) = n.sig.as_deref() {
+                map.serialize_entry("sig", sig)?;
+            }
+            map.end()
+        }
+    }
+
+    serde_json::to_string(&NoteSer(note)).expect("note serialization cannot fail")
 }
 
 /// Encode `["EVENT", sub_id, <note_json>]` where `note_json` is the already-
@@ -301,5 +437,60 @@ mod tests {
             closed("s1", "rate-limited: fifo"),
             r#"["CLOSED","s1","rate-limited: fifo"]"#
         );
+    }
+
+    #[test]
+    fn parse_view_event() {
+        let note_json = r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[["t","x"]],"content":"hi","id":"b","sig":"c"}"#;
+        let msg = format!(r#"["EVENT",{note_json}]"#);
+        match parse_view(&msg).unwrap() {
+            ClientMessageView::Event(note) => {
+                assert_eq!(note.content.as_ref(), "hi");
+                assert_eq!(note.id.as_deref(), Some("b"));
+                assert_eq!(note.tags.len(), 1);
+            }
+            other => panic!("expected Event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_view_req_close_unknown() {
+        match parse_view(r#"["REQ","s1",{"kinds":[1]}]"#).unwrap() {
+            ClientMessageView::Req { sub_id, filters } => {
+                assert_eq!(sub_id, "s1");
+                assert_eq!(filters.len(), 1);
+            }
+            other => panic!("expected Req, got {other:?}"),
+        }
+        match parse_view(r#"["CLOSE","s2"]"#).unwrap() {
+            ClientMessageView::Close { sub_id } => assert_eq!(sub_id, "s2"),
+            _ => panic!("expected Close"),
+        }
+        match parse_view(r#"["AUTH","c"]"#).unwrap() {
+            ClientMessageView::Unknown(v) => assert_eq!(v, "AUTH"),
+            _ => panic!("expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn serialize_note_view_matches_owned() {
+        use nostro2::NostrNote;
+        let mut note = NostrNote {
+            pubkey: "a".repeat(64),
+            created_at: 1_700_000_000,
+            kind: 1,
+            content: "hello \"world\"".into(),
+            id: Some("b".repeat(64)),
+            sig: Some("c".repeat(128)),
+            ..Default::default()
+        };
+        note.tags.add_custom_tag("t", "nostr");
+        note.tags.add_pubkey_tag(&"d".repeat(64), Some("wss://example"));
+
+        let owned_json = serialize_note(&note);
+        let view: nostro2::NostrNoteView<'_> = serde_json::from_str(&owned_json).unwrap();
+        let view_json = serialize_note_view(&view);
+
+        assert_eq!(owned_json, view_json);
     }
 }
