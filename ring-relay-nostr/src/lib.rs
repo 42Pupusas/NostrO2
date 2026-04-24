@@ -30,8 +30,8 @@ use ring_relay_server::{ServerComponents, ServerConfig, ShardConfig};
 pub use filter::{matches, matches_view};
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
-    ClientMessage, ClientMessageView, ParseError, parse, parse_view, serialize_note,
-    serialize_note_view,
+    ClientMessage, ClientMessageView, ParseError, event_from_serialized, parse, parse_view,
+    serialize_note, serialize_note_view,
 };
 pub use shard::ShardDispatcher;
 

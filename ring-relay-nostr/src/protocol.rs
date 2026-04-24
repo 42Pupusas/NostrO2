@@ -7,6 +7,7 @@
 use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use serde_json::value::RawValue;
 use std::fmt;
 
 /// A parsed client → relay message.
@@ -26,16 +27,24 @@ pub enum ClientMessage {
 
 /// Parsed client → relay message with borrowed payloads.
 ///
-/// The `EVENT` variant carries a [`NostrNoteView`] that borrows from the
-/// input frame buffer. The `Req` sub_id and unknown-verb strings borrow
-/// too — those are short strings already present in the wire frame, no
-/// reason to allocate. Subscription filters are parsed to owned
-/// [`NostrSubscription`]s for now because they outlive the parse call
-/// (the shard dispatcher stores them). Revisit when we have a
-/// subscription view type.
-#[derive(Debug, Clone)]
+/// The `EVENT` variant carries both a [`NostrNoteView`] and the original
+/// raw JSON substring of the note object. The view is used for verify +
+/// filter matching; the raw JSON is spliced directly into outbound
+/// `["EVENT", sub_id, <note>]` fan-out frames, skipping the reserialize
+/// pass entirely. Both borrow from the input frame buffer, which must
+/// outlive every read.
+///
+/// The `Req` sub_id and unknown-verb strings borrow too — those are short
+/// strings already present in the wire frame, no reason to allocate.
+/// Subscription filters are parsed to owned [`NostrSubscription`]s for now
+/// because they outlive the parse call (the shard dispatcher stores them).
+/// Revisit when we have a subscription view type.
+#[derive(Debug)]
 pub enum ClientMessageView<'a> {
-    Event(NostrNoteView<'a>),
+    Event {
+        note: NostrNoteView<'a>,
+        raw: &'a RawValue,
+    },
     Req {
         sub_id: &'a str,
         filters: Vec<NostrSubscription>,
@@ -220,11 +229,17 @@ impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
 
         match tag {
             "EVENT" => {
-                let note: NostrNoteView<'a> = seq
+                // Capture the raw JSON slice of the note first — that's
+                // the contiguous byte range we'll splice into fan-out
+                // frames. Then parse a view *from that same slice*, so
+                // verify + filter work against the structured form.
+                let raw: &'a RawValue = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::custom("BadPayload: EVENT missing note"))?;
+                let note: NostrNoteView<'a> = serde_json::from_str(raw.get())
+                    .map_err(|_| de::Error::custom("BadPayload: EVENT note"))?;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-                Ok(ClientMessageView::Event(note))
+                Ok(ClientMessageView::Event { note, raw })
             }
             "REQ" => {
                 let sub_id: &'a str = seq
@@ -444,10 +459,12 @@ mod tests {
         let note_json = r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[["t","x"]],"content":"hi","id":"b","sig":"c"}"#;
         let msg = format!(r#"["EVENT",{note_json}]"#);
         match parse_view(&msg).unwrap() {
-            ClientMessageView::Event(note) => {
+            ClientMessageView::Event { note, raw } => {
                 assert_eq!(note.content.as_ref(), "hi");
                 assert_eq!(note.id.as_deref(), Some("b"));
                 assert_eq!(note.tags.len(), 1);
+                // raw must preserve the original note JSON byte-for-byte.
+                assert_eq!(raw.get(), note_json);
             }
             other => panic!("expected Event, got {other:?}"),
         }

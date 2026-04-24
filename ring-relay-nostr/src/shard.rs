@@ -283,7 +283,7 @@ impl ShardDispatcher {
         };
 
         match parsed {
-            ClientMessageView::Event(note) => self.on_event(client_id, &note),
+            ClientMessageView::Event { note, raw } => self.on_event(client_id, &note, raw.get()),
             ClientMessageView::Req { sub_id, filters } => self.on_req(client_id, sub_id, filters),
             ClientMessageView::Close { sub_id } => self.on_close_sub(client_id, sub_id),
             ClientMessageView::Unknown(verb) => {
@@ -295,7 +295,7 @@ impl ShardDispatcher {
         }
     }
 
-    fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>) {
+    fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>, note_json: &str) {
         let id = note.id.as_deref().unwrap_or("");
 
         if !self.validate_event(note) {
@@ -306,16 +306,17 @@ impl ShardDispatcher {
 
         self.sender.send_text(client_id, protocol::ok(id, true, ""));
 
-        // Serialize the note once and reuse its JSON across every matching
-        // subscriber. Per-sub work is just prefixing ["EVENT","<sub_id>",
-        // and wrapping in brackets — cheap string concat.
-        let note_json = protocol::serialize_note_view(note);
+        // `note_json` is the exact substring of the inbound frame, handed
+        // to us by serde_json's `RawValue` capture during parse. Splicing
+        // it straight into fan-out frames skips any reserialize pass —
+        // the outbound bytes for a given note are produced once (by the
+        // sending client) and reused verbatim for every matching sub.
 
         // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
                 if filters.iter().any(|f| filter::matches_view(note, f)) {
-                    let frame = protocol::event_from_serialized(sub_id, &note_json);
+                    let frame = protocol::event_from_serialized(sub_id, note_json);
                     self.sender.send_text(other_id, frame);
                     break;
                 }
@@ -328,7 +329,7 @@ impl ShardDispatcher {
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
                 if filters.iter().any(|f| filter::matches_view(note, f)) {
-                    let frame = protocol::event_from_serialized(sub_id, &note_json);
+                    let frame = protocol::event_from_serialized(sub_id, note_json);
                     self.sender.send_text(client_id, frame);
                     break;
                 }
