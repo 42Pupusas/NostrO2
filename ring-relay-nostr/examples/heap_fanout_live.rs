@@ -22,12 +22,21 @@ use tokio_tungstenite::tungstenite::Message;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-const NUM_SUBS: usize = 50;
-const NUM_EVENTS: usize = 200;
+/// Defaults; override with env vars HEAP_SUBS / HEAP_EVENTS.
+const DEFAULT_SUBS: usize = 50;
+const DEFAULT_EVENTS: usize = 200;
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
 
 fn main() {
+    let num_subs = env_usize("HEAP_SUBS", DEFAULT_SUBS);
+    let num_events = env_usize("HEAP_EVENTS", DEFAULT_EVENTS);
+    let worker_threads = env_usize("HEAP_WORKERS", 4);
+
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(worker_threads)
         .enable_all()
         .build()
         .unwrap();
@@ -35,9 +44,11 @@ fn main() {
     let profiler = dhat::Profiler::new_heap();
 
     rt.block_on(async {
-        // Relay bound on an OS-assigned port.
+        // Relay bound on an OS-assigned port. `max_clients` includes the
+        // publisher plus a few slack slots so we don't hit the per-shard
+        // FIFO eviction on the last subscriber.
         let cfg = RelayConfig {
-            max_clients: NUM_SUBS + 4,
+            max_clients: num_subs + 16,
             max_subs_per_conn: 4,
             max_filters_per_sub: 4,
             ..Default::default()
@@ -46,26 +57,39 @@ fn main() {
         let port = relay.port();
         let url = format!("ws://127.0.0.1:{port}");
 
-        // Connect N subscribers, each with an open filter (kind:1).
-        let mut sub_sockets = Vec::with_capacity(NUM_SUBS);
-        for i in 0..NUM_SUBS {
-            let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-            let sub_id = format!("s{i:03}");
-            let req = format!(r#"["REQ","{sub_id}",{{"kinds":[1]}}]"#);
-            ws.send(Message::Text(req.into())).await.unwrap();
-            // Drain the immediate EOSE.
-            while let Some(Ok(msg)) = ws.next().await {
-                if let Message::Text(t) = msg
-                    && t.starts_with("[\"EOSE\"")
-                {
-                    break;
-                }
+        // Connect N subscribers in parallel batches — serial connect at
+        // 5k would dominate wall time and exercise mostly handshake code.
+        // Batch size keeps the handshake pressure bounded so the server
+        // doesn't dip into eviction during bring-up.
+        const CONNECT_BATCH: usize = 128;
+        let mut sub_sockets = Vec::with_capacity(num_subs);
+        for chunk_start in (0..num_subs).step_by(CONNECT_BATCH) {
+            let chunk_end = (chunk_start + CONNECT_BATCH).min(num_subs);
+            let mut futs = Vec::with_capacity(chunk_end - chunk_start);
+            for i in chunk_start..chunk_end {
+                let url = url.clone();
+                futs.push(tokio::spawn(async move {
+                    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+                    let sub_id = format!("s{i:05}");
+                    let req = format!(r#"["REQ","{sub_id}",{{"kinds":[1]}}]"#);
+                    ws.send(Message::Text(req.into())).await.unwrap();
+                    while let Some(Ok(msg)) = ws.next().await {
+                        if let Message::Text(t) = msg
+                            && t.starts_with("[\"EOSE\"")
+                        {
+                            break;
+                        }
+                    }
+                    ws
+                }));
             }
-            sub_sockets.push(ws);
+            for fut in futs {
+                sub_sockets.push(fut.await.unwrap());
+            }
         }
 
-        // Each subscriber drains incoming EVENT frames on its own task
-        // so the writer doesn't backpressure while we publish.
+        // Each subscriber drains incoming EVENT frames on its own task so
+        // the writer doesn't backpressure while we publish.
         let sub_handles: Vec<_> = sub_sockets
             .into_iter()
             .map(|mut ws| {
@@ -74,7 +98,7 @@ fn main() {
                     while let Some(Ok(msg)) = ws.next().await {
                         if let Message::Text(_) = msg {
                             count += 1;
-                            if count >= NUM_EVENTS {
+                            if count >= num_events {
                                 break;
                             }
                         }
@@ -83,11 +107,11 @@ fn main() {
             })
             .collect();
 
-        // Publisher: signs and sends NUM_EVENTS kind:1 notes.
+        // Publisher: signs and sends `num_events` kind:1 notes.
         let kp = K256Keypair::generate();
         let (mut pubws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        for i in 0..NUM_EVENTS {
+        for i in 0..num_events {
             let mut note = NostrNote {
                 content: format!("heap-live event {i}"),
                 kind: 1,
@@ -108,9 +132,10 @@ fn main() {
             }
         }
 
-        // Give subscribers a moment to catch up, then wait.
+        // Wait for subscribers to drain, bounded so a stalled writer can't
+        // hang the bin indefinitely.
         let _ = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(60),
             futures_util::future::join_all(sub_handles),
         )
         .await;
@@ -118,6 +143,6 @@ fn main() {
 
     drop(profiler);
     eprintln!(
-        "heap_fanout_live: {NUM_EVENTS} events × {NUM_SUBS} subs — wrote dhat-heap.json"
+        "heap_fanout_live: {num_events} events × {num_subs} subs — wrote dhat-heap.json"
     );
 }
