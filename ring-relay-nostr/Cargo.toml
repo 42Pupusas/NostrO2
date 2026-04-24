@@ -84,6 +84,21 @@ name = "heap_fanout_view_reserialize"
 [[example]]
 name = "heap_fanout_live"
 
+# Same fan-out heap profile, parameterized to swap between ring-relay-nostr
+# and nostr-relay 0.4.8 (RELAY=ring|nostr). Apples-to-apples memory diff.
+[[example]]
+name = "heap_fanout_live_compare"
+
+# Relay-only heap profile. `heap_fanout_relay_server` runs one relay under
+# dhat; `heap_fanout_driver` runs the client workload in a separate process
+# against it. dhat's output then reflects relay-side heap only, with no
+# tokio/tungstenite/signer noise.
+[[example]]
+name = "heap_fanout_relay_server"
+
+[[example]]
+name = "heap_fanout_driver"
+
 [[bench]]
 name = "filter_match"
 harness = false
