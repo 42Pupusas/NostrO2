@@ -78,6 +78,15 @@ impl RelayInfo {
             ..Self::default()
         }
     }
+
+    /// Replace this info's `limitation` block with values reflecting what the
+    /// relay actually enforces. Pass `None` for a field to leave it
+    /// unadvertised (relay has no limit on that axis).
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limitation) -> Self {
+        self.limitation = Some(limits);
+        self
+    }
 }
 
 /// Render `info` as a complete HTTP/1.1 200 response (status line + headers + body).

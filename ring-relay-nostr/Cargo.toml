@@ -109,6 +109,14 @@ name = "fanout_relay_server"
 [[example]]
 name = "fanout_throughput_driver"
 
+# Split-process large-event ingest harness. Spawns `fanout_relay_server` as
+# a subprocess (RELAY=ring|nostr) and drives many publishers sending large
+# EVENTs; reports MiB/s and events/s. Complements `compare_ingest_large`
+# criterion bench by running the relay in its own process with a larger
+# workload amortized over the full run.
+[[example]]
+name = "large_ingest_driver"
+
 [[bench]]
 name = "filter_match"
 harness = false
@@ -139,6 +147,10 @@ harness = false
 
 [[bench]]
 name = "compare_ingest"
+harness = false
+
+[[bench]]
+name = "compare_ingest_large"
 harness = false
 
 [[bench]]

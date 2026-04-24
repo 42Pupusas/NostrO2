@@ -273,6 +273,18 @@ impl ShardDispatcher {
     }
 
     fn on_text(&mut self, client_id: i32, text: &str) {
+        if let Some(max) = self.config.max_message_length
+            && text.len() > max
+        {
+            self.sender.send_text(
+                client_id,
+                protocol::notice(&format!(
+                    "invalid: message exceeds max_message_length ({max} bytes)"
+                )),
+            );
+            return;
+        }
+
         let parsed = match protocol::parse_view(text) {
             Ok(msg) => msg,
             Err(e) => {
@@ -298,9 +310,9 @@ impl ShardDispatcher {
     fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>, note_json: &str) {
         let id = note.id.as_deref().unwrap_or("");
 
-        if !self.validate_event(note) {
+        if let Err(reason) = self.validate_event(note) {
             self.sender
-                .send_text(client_id, protocol::ok(id, false, "invalid: bad event"));
+                .send_text(client_id, protocol::ok(id, false, reason));
             return;
         }
 
@@ -344,26 +356,49 @@ impl ShardDispatcher {
         }
     }
 
-    fn validate_event(&self, note: &NostrNoteView<'_>) -> bool {
+    fn validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
+        if let Some(max) = self.config.max_content_length
+            && note.content.len() > max
+        {
+            return Err("invalid: content exceeds max_content_length");
+        }
+        if let Some(max) = self.config.max_event_tags
+            && note.tags.len() > max
+        {
+            return Err("invalid: too many tags");
+        }
+
+        // `verify()` covers id = sha256(canonical note) AND Schnorr sig.
+        // Tampering with any field (id, pubkey, content, tags, created_at,
+        // kind) flips this to false.
         if !note.verify() {
-            return false;
+            return Err("invalid: bad signature or id");
         }
 
         let now = NostrNote::now();
         if let Some(past) = self.config.max_past_drift
             && note.created_at < now.saturating_sub(past as i64)
         {
-            return false;
+            return Err("invalid: created_at too far in the past");
         }
         if let Some(fut) = self.config.max_future_drift
             && note.created_at > now.saturating_add(fut as i64)
         {
-            return false;
+            return Err("invalid: created_at too far in the future");
         }
-        true
+        Ok(())
     }
 
     fn on_req(&mut self, client_id: i32, sub_id: &str, filters: Vec<NostrSubscription>) {
+        if let Some(max) = self.config.max_subid_length
+            && sub_id.len() > max
+        {
+            self.sender.send_text(
+                client_id,
+                protocol::closed(sub_id, "invalid: sub_id exceeds max_subid_length"),
+            );
+            return;
+        }
         if filters.len() > self.config.max_filters_per_sub {
             self.sender.send_text(
                 client_id,
@@ -410,6 +445,15 @@ impl ShardDispatcher {
     }
 
     fn on_close_sub(&mut self, client_id: i32, sub_id: &str) {
+        if let Some(max) = self.config.max_subid_length
+            && sub_id.len() > max
+        {
+            self.sender.send_text(
+                client_id,
+                protocol::notice("invalid: CLOSE sub_id exceeds max_subid_length"),
+            );
+            return;
+        }
         let removed = if let Some(state) = self.clients.get_mut(&client_id) {
             state.remove_sub(sub_id)
         } else {

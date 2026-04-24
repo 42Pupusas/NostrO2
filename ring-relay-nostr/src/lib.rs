@@ -44,6 +44,19 @@ pub struct RelayConfig {
     pub max_subs_per_conn: usize,
     /// Max filters per REQ. Over-limit REQs are rejected with CLOSED.
     pub max_filters_per_sub: usize,
+    /// Max size of an inbound client frame, in bytes. Over-limit frames are
+    /// rejected with NOTICE before parsing. `None` disables the check.
+    pub max_message_length: Option<usize>,
+    /// Max length of an EVENT's `content` field, in bytes. Over-limit events
+    /// are rejected with OK=false. `None` disables the check.
+    pub max_content_length: Option<usize>,
+    /// Max number of tags on an EVENT. Over-limit events are rejected with
+    /// OK=false. `None` disables the check.
+    pub max_event_tags: Option<usize>,
+    /// Max length of a subscription id on REQ / CLOSE, in bytes. Over-limit
+    /// REQs are rejected with CLOSED; over-limit CLOSEs with NOTICE. `None`
+    /// disables the check.
+    pub max_subid_length: Option<usize>,
     /// Reader/writer sharding for the underlying WS transport.
     pub shards: ShardConfig,
     /// Reject EVENTs with `created_at` further in the past than this, in seconds.
@@ -64,14 +77,36 @@ pub struct RelayConfig {
 
 impl Default for RelayConfig {
     fn default() -> Self {
+        let max_clients = 1024;
+        let max_subs_per_conn = 32;
+        let max_filters_per_sub = 16;
+        let max_message_length = Some(2 * 1024 * 1024);
+        let max_content_length = Some(512 * 1024);
+        let max_event_tags = Some(500);
+        let max_subid_length = Some(64);
+
+        let info = RelayInfo::minimal().with_limits(Limitation {
+            max_message_length: max_message_length.map(|n| n as u32),
+            max_subscriptions: Some(max_subs_per_conn as u32),
+            max_filters: Some(max_filters_per_sub as u32),
+            max_subid_length: max_subid_length.map(|n| n as u32),
+            max_event_tags: max_event_tags.map(|n| n as u32),
+            max_content_length: max_content_length.map(|n| n as u32),
+            ..Limitation::default()
+        });
+
         Self {
-            max_clients: 1024,
-            max_subs_per_conn: 32,
-            max_filters_per_sub: 16,
+            max_clients,
+            max_subs_per_conn,
+            max_filters_per_sub,
+            max_message_length,
+            max_content_length,
+            max_event_tags,
+            max_subid_length,
             shards: ShardConfig::default(),
             max_past_drift: None,
             max_future_drift: Some(900), // 15 minutes
-            info: Some(RelayInfo::minimal()),
+            info: Some(info),
             #[cfg(feature = "ktls")]
             tls: None,
         }

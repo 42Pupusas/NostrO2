@@ -303,3 +303,148 @@ async fn cross_shard_fanout() {
 
     shutdown.shutdown();
 }
+
+// --- validation / NIP-11 limit enforcement -------------------------------
+
+/// Tampered `id` (valid hex, same length) must fail verification. Guards the
+/// sha256(id) check against regressing to a length-only validator.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tampered_id_is_rejected() {
+    let (port, shutdown) = spawn_relay(RelayConfig::default());
+    let mut ws = connect(port).await;
+
+    let mut note = signed_note("hi");
+    // Flip one hex character of the id. Still 64 hex chars, so it passes the
+    // length check but not the sha256 recomputation.
+    let mut id = note.id.clone().unwrap();
+    let c = id.remove(0);
+    let flipped = if c == '0' { '1' } else { '0' };
+    id.insert(0, flipped);
+    note.id = Some(id.clone());
+
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], id);
+    assert_eq!(resp[2], false);
+    assert!(
+        resp[3].as_str().unwrap_or("").contains("invalid"),
+        "expected reason to start with 'invalid:', got {:?}",
+        resp[3]
+    );
+
+    shutdown.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_frame_is_noticed() {
+    let cfg = RelayConfig {
+        max_message_length: Some(256),
+        ..RelayConfig::default()
+    };
+    let (port, shutdown) = spawn_relay(cfg);
+    let mut ws = connect(port).await;
+
+    // 1 KiB of garbage well over the 256-byte cap — relay must NOTICE and not
+    // attempt to parse.
+    let big = "x".repeat(1024);
+    let frame = format!(r#"["EVENT",{{"content":"{big}"}}]"#);
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "NOTICE");
+    assert!(
+        resp[1].as_str().unwrap_or("").contains("max_message_length"),
+        "got {:?}",
+        resp[1]
+    );
+
+    shutdown.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_content_is_rejected() {
+    let cfg = RelayConfig {
+        max_content_length: Some(16),
+        max_message_length: Some(8 * 1024), // big enough to reach validator
+        ..RelayConfig::default()
+    };
+    let (port, shutdown) = spawn_relay(cfg);
+    let mut ws = connect(port).await;
+
+    let note = signed_note(&"a".repeat(128));
+    let id = note.id.clone().unwrap();
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], id);
+    assert_eq!(resp[2], false);
+    assert!(
+        resp[3].as_str().unwrap_or("").contains("max_content_length"),
+        "got {:?}",
+        resp[3]
+    );
+
+    shutdown.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn too_many_tags_is_rejected() {
+    let cfg = RelayConfig {
+        max_event_tags: Some(2),
+        ..RelayConfig::default()
+    };
+    let (port, shutdown) = spawn_relay(cfg);
+    let mut ws = connect(port).await;
+
+    let kp = K256Keypair::generate();
+    let mut note = NostrNote::text_note("tagged");
+    note.pubkey = kp.public_key();
+    note.tags.add_custom_tag("t", "one");
+    note.tags.add_custom_tag("t", "two");
+    note.tags.add_custom_tag("t", "three");
+    kp.sign_nostr_note(&mut note).expect("sign");
+    let id = note.id.clone().unwrap();
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], id);
+    assert_eq!(resp[2], false);
+    assert!(
+        resp[3].as_str().unwrap_or("").contains("too many tags"),
+        "got {:?}",
+        resp[3]
+    );
+
+    shutdown.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_subid_req_is_closed() {
+    let cfg = RelayConfig {
+        max_subid_length: Some(4),
+        ..RelayConfig::default()
+    };
+    let (port, shutdown) = spawn_relay(cfg);
+    let mut ws = connect(port).await;
+
+    let sub_id = "s".repeat(32);
+    send(&mut ws, &format!(r#"["REQ","{sub_id}",{{"kinds":[1]}}]"#)).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "CLOSED");
+    assert_eq!(resp[1], sub_id);
+    assert!(
+        resp[2].as_str().unwrap_or("").contains("max_subid_length"),
+        "got {:?}",
+        resp[2]
+    );
+
+    shutdown.shutdown();
+}
