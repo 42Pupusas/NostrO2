@@ -99,6 +99,16 @@ name = "heap_fanout_relay_server"
 [[example]]
 name = "heap_fanout_driver"
 
+# Throughput twin of the heap harness: `fanout_relay_server` is the same
+# relay-spawning shape without the dhat global allocator (so it measures
+# real fan-out rate, not allocator-wrapper overhead), and
+# `fanout_throughput_driver` runs the client workload + timing.
+[[example]]
+name = "fanout_relay_server"
+
+[[example]]
+name = "fanout_throughput_driver"
+
 [[bench]]
 name = "filter_match"
 harness = false

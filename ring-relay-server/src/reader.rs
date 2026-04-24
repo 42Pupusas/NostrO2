@@ -343,6 +343,96 @@ impl ReaderCore {
             }
             drop(iter);
 
+            // If `parse()` couldn't fast-path (mid-payload carryover or
+            // mid-fragment reassembly), it stashed bytes into `decoder.buf`
+            // and the iterator yielded nothing. Drain whatever is now
+            // decodable via the slower push/next_frame path so frames
+            // don't accumulate in the decoder buffer across polls.
+            if !*dead {
+                loop {
+                    match decoder.next_frame() {
+                        Ok(Some(frame)) => {
+                            match frame {
+                                Frame::Text(text) => {
+                                    cb(ReaderEvent::Text { fd, text });
+                                    carry_rsv1 = false;
+                                    carry_opcode = Some(Opcode::Text);
+                                }
+                                Frame::Binary(data) if carry_rsv1 && has_deflate => {
+                                    decompress_buf.clear();
+                                    if deflate_decoder
+                                        .as_mut()
+                                        .unwrap()
+                                        .decompress(data, decompress_buf)
+                                        .is_err()
+                                    {
+                                        *dead = true;
+                                        cb(ReaderEvent::Disconnected {
+                                            fd,
+                                            reason: Some(
+                                                "deflate decompression failed".into(),
+                                            ),
+                                            close_code: None,
+                                        });
+                                        break;
+                                    }
+                                    if carry_opcode == Some(Opcode::Text) {
+                                        match std::str::from_utf8(decompress_buf) {
+                                            Ok(text) => cb(ReaderEvent::Text { fd, text }),
+                                            Err(_) => {
+                                                *dead = true;
+                                                cb(ReaderEvent::Disconnected {
+                                                    fd,
+                                                    reason: Some(
+                                                        "invalid UTF-8 in decompressed text"
+                                                            .into(),
+                                                    ),
+                                                    close_code: None,
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        cb(ReaderEvent::Binary {
+                                            fd,
+                                            data: decompress_buf,
+                                        });
+                                    }
+                                    carry_rsv1 = true;
+                                }
+                                Frame::Binary(data) => {
+                                    cb(ReaderEvent::Binary { fd, data });
+                                    carry_rsv1 = has_deflate;
+                                    carry_opcode = Some(Opcode::Binary);
+                                }
+                                Frame::Ping(_) => cb(ReaderEvent::Ping { fd }),
+                                Frame::Close(close_info) => {
+                                    let close_code = close_info.map(|(code, _)| code);
+                                    *dead = true;
+                                    cb(ReaderEvent::Disconnected {
+                                        fd,
+                                        reason: None,
+                                        close_code,
+                                    });
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            *dead = true;
+                            cb(ReaderEvent::Disconnected {
+                                fd,
+                                reason: Some("WebSocket frame decode error".into()),
+                                close_code: None,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+
             self.pbuf.recycle(buf_id);
         }
 
