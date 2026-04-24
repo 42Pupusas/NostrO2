@@ -135,8 +135,8 @@ mod tests {
 
     #[test]
     fn nip46_request() {
-        let nip_tester = NipTester::generate(false);
-        let remote_key = NipTester::generate(false);
+        let nip_tester = NipTester::generate();
+        let remote_key = NipTester::generate();
         let request = nip_tester.nip46_request(
             Nip46Method::Connect,
             vec!["test".to_string()],
@@ -158,8 +158,8 @@ mod tests {
     }
     #[test]
     fn nip46_response() {
-        let nip_tester = NipTester::generate(false);
-        let remote_key = NipTester::generate(false);
+        let nip_tester = NipTester::generate();
+        let remote_key = NipTester::generate();
         let request = nip_tester.nip46_request(
             Nip46Method::Connect,
             vec!["test".to_string()],

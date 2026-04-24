@@ -11,7 +11,7 @@ pub enum Nip82Error {
     #[error("Failed to sign message")]
     SigningError,
 }
-pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str::FromStr {
+pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrKeypair + Sized + std::str::FromStr {
     /// Creates a NIP-82 request note.
     ///
     /// # Errors
@@ -23,7 +23,7 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
         peer_pubkey: &str,
         wrap_id: &str,
     ) -> Result<nostro2::NostrNote, Nip82Error> {
-        let signing_key = Self::generate(true);
+        let signing_key = Self::generate();
         self.sign_nostr_note(fhir_note)?;
         let serialized = fhir_note.serialize()?;
         let pubkey = signing_key.public_key();
@@ -37,18 +37,21 @@ pub trait Nip82: crate::nip_44::Nip44 + nostro2::NostrSigner + Sized + std::str:
         wrapped.tags.add_parameter_tag(wrap_id);
         wrapped.tags.add_pubkey_tag(&self.public_key(), None);
         wrapped.tags.add_pubkey_tag(peer_pubkey, None);
+        let sk = signing_key
+            .secret_key()
+            .ok_or_else(|| Nip82Error::ParseError("signing key not extractable".to_string()))?;
         wrapped.tags.0.push(vec![
             "key".to_string(),
             self.public_key(),
             signing_key
-                .nip_44_encrypt(&signing_key.secret_key(), &self.public_key())?
+                .nip_44_encrypt(&sk, &self.public_key())?
                 .to_string(),
         ]);
         wrapped.tags.0.push(vec![
             "key".to_string(),
             peer_pubkey.to_string(),
             signing_key
-                .nip_44_encrypt(&signing_key.secret_key(), peer_pubkey)?
+                .nip_44_encrypt(&sk, peer_pubkey)?
                 .to_string(),
         ]);
         signing_key.sign_nostr_note(&mut wrapped)?;

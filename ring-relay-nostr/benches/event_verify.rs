@@ -7,11 +7,11 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::hint::black_box;
 
 fn signed_note() -> NostrNote {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note("bench payload, typical short note");
     note.pubkey = kp.public_key();
     kp.sign_nostr_note(&mut note).expect("sign");

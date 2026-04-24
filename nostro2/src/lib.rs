@@ -110,17 +110,55 @@ pub use tags::{NostrTag, NostrTags};
 /// Convenience type alias for Results with `NostrErrors`
 pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
 
+/// Core signing interface for Nostr keypairs.
+///
+/// Implement this to plug any keypair type into the nostro2 ecosystem.
 pub trait NostrSigner {
-    /// Sign a Nostr note
+    /// Sign a Nostr note, setting `pubkey`, `id`, and `sig`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the note cannot be signed
-    /// or if the keypair is invalid
+    /// Returns an error if signing fails.
     fn sign_nostr_note(&self, note: &mut crate::note::NostrNote) -> Result<()>;
-    fn generate(extractable: bool) -> Self;
+
+    /// Generate a new random keypair.
+    fn generate() -> Self;
+
+    /// Return the public key as a 64-character lowercase hex string.
     fn public_key(&self) -> String;
-    fn secret_key(&self) -> String;
+}
+
+/// Extended keypair interface with key-export and ECDH.
+///
+/// Implement this on top of [`NostrSigner`] to expose the full keypair API
+/// (secret key export, ECDH shared point, bech32 encoding).
+pub trait NostrKeypair: NostrSigner {
+    /// Return the raw 32-byte secret key, or `None` if this keypair was
+    /// created without export permission.
+    fn secret_key(&self) -> Option<String>;
+
+    /// Derive the ECDH shared point with a peer's x-only public key
+    /// (32-byte hex string).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer public key is invalid.
+    fn shared_point(&self, peer_pubkey: &str) -> Result<[u8; 32]>;
+
+    /// Return the public key in bech32 `npub1…` encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if bech32 encoding fails.
+    fn npub(&self) -> Result<String>;
+
+    /// Return the secret key in bech32 `nsec1…` encoding, or an error if the
+    /// keypair was created without export permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the keypair is not extractable or bech32 fails.
+    fn nsec(&self) -> Result<String>;
 }
 
 #[cfg(test)]

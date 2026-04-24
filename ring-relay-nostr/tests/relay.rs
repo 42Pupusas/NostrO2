@@ -6,7 +6,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use ring_relay_nostr::{NostrRelay, RelayConfig};
 use serde_json::Value;
 use std::time::Duration;
@@ -66,7 +66,7 @@ async fn recv_text(ws: &mut WsClient) -> Value {
 }
 
 fn signed_note(content: &str) -> NostrNote {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note(content);
     note.pubkey = kp.public_key();
     kp.sign_nostr_note(&mut note).expect("sign");
@@ -221,7 +221,7 @@ async fn invalid_event_rejected() {
     let mut ws = connect(port).await;
 
     // Signed by one key, pubkey swapped to a different one → signature fails.
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note("tampered");
     note.pubkey = kp.public_key();
     kp.sign_nostr_note(&mut note).unwrap();

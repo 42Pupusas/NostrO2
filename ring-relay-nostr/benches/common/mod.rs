@@ -3,14 +3,13 @@
 //! and returns the port to connect to.
 //!
 //! Kept minimal — benches import individual helpers.
-
 #![allow(dead_code)] // Each bench uses only part of this file.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 
 use ring_relay_nostr::{NostrRelay, RelayConfig};
 use ring_relay_server::ShardConfig;
@@ -26,7 +25,7 @@ pub fn presign(count: usize) -> Arc<Vec<String>> {
 /// events by id) doesn't discard the second publisher's copy of the same
 /// content.
 pub fn presign_for(count: usize, tag: &str) -> Arc<Vec<String>> {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     Arc::new(
         (0..count)
             .map(|i| {

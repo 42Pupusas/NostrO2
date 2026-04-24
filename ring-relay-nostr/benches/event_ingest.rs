@@ -9,7 +9,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use ring_relay_nostr::{NostrRelay, RelayConfig};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -32,7 +32,7 @@ fn spawn_relay() -> (u16, ring_relay_nostr::ShutdownHandle) {
 /// Pre-sign a batch of notes up front. Signing is expensive and we want
 /// the bench to measure the relay, not the client's signer.
 fn presign(count: usize) -> Vec<String> {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     (0..count)
         .map(|i| {
             let mut note = NostrNote::text_note(&format!("bench {i}"));

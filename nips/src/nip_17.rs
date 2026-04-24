@@ -82,8 +82,8 @@ mod tests {
     use crate::{nip_59::Nip59, tests::NipTester};
     #[test]
     fn test_nip_17() {
-        let keys = NipTester::generate(false);
-        let recipient = NipTester::generate(false);
+        let keys = NipTester::generate();
+        let recipient = NipTester::generate();
         let dm = "Hello, world!";
         let sealed_dm = keys.private_dm(dm, &recipient.public_key()).unwrap();
         assert_eq!(sealed_dm.kind, 1059);
@@ -95,7 +95,7 @@ mod tests {
     }
     #[test]
     fn test_nip_17_preffered_relays() {
-        let keys = NipTester::generate(false);
+        let keys = NipTester::generate();
         let relays = vec!["wss://relay1.com", "wss://relay2.com"];
         let note = keys.preffered_relays(&relays).unwrap();
         assert!(note.verify());

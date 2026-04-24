@@ -3,9 +3,9 @@
 //! Prereq: `cargo run --release --example relay -p ring-relay-nostr` in another terminal.
 //! Run:    `cargo run -p nostro2-relay --example local_relay`
 
-use nostro2::{NostrRelayEvent, NostrSubscription};
+use nostro2::{NostrRelayEvent, NostrSigner, NostrSubscription};
 use nostro2_relay::NostrRelay;
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::time::Duration;
 
 #[tokio::main]
@@ -25,13 +25,13 @@ async fn main() {
     relay.send(sub).expect("send REQ");
 
     // Sign and send a test note.
-    let keypair = NostrKeypair::new();
+    let keypair = K256Keypair::generate();
     let mut note = nostro2::NostrNote {
         content: "hello from nostro2-relay".to_string(),
         kind: 1,
         ..Default::default()
     };
-    keypair.sign_note(&mut note).expect("sign");
+    keypair.sign_nostr_note(&mut note).expect("sign");
     println!("Publishing note id={:?}", note.id);
     relay.send(note).expect("send EVENT");
 

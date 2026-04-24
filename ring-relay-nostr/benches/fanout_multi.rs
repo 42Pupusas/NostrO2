@@ -13,7 +13,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use ring_relay_nostr::{NostrRelay, RelayConfig};
 use ring_relay_server::ShardConfig;
 use std::sync::Arc;
@@ -45,7 +45,7 @@ fn spawn_relay(reader_shards: usize) -> (u16, ring_relay_nostr::ShutdownHandle) 
 }
 
 fn presign(count: usize) -> Arc<Vec<String>> {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     Arc::new(
         (0..count)
             .map(|i| {

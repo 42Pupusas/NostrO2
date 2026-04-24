@@ -11,12 +11,18 @@ homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 
+[features]
+default = ["k256"]
+k256 = ["dep:k256", "nostro2/k256"]
+secp256k1 = ["dep:secp256k1", "nostro2/secp256k1"]
+
 [dependencies]
 base64.workspace = true
 bech32.workspace = true
 bip39.workspace = true
 hex.workspace = true
-k256.workspace = true
+k256 = { workspace = true, optional = true }
+secp256k1 = { workspace = true, optional = true }
 nostro2.workspace = true
 nostro2-nips.workspace = true
 rand_core.workspace = true

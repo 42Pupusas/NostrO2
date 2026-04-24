@@ -1,6 +1,7 @@
+use nostro2::NostrSigner;
 use nostro2::NostrRelayEvent;
 use ring_relay_client::{PoolMessage, RelayPool};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::time::{Duration, Instant};
 
 const TEST_RELAYS: &[&str] = &[
@@ -114,7 +115,7 @@ fn test_async_relay() -> TestResult {
                     total_received += 1;
                     interval_received += 1;
 
-                    let throwaway = NostrKeypair::new();
+                    let throwaway = K256Keypair::generate();
                     let mut echo = nostro2::NostrNote {
                         content: format!(
                             "echo:{}:{}",
@@ -125,7 +126,7 @@ fn test_async_relay() -> TestResult {
                         ..Default::default()
                     };
 
-                    if throwaway.sign_note(&mut echo).is_ok() {
+                    if throwaway.sign_nostr_note(&mut echo).is_ok() {
                         match pool.send(echo) {
                             Ok(_) => {
                                 total_sent += 1;
@@ -202,13 +203,13 @@ fn run_test(
     mut try_recv: impl FnMut() -> Option<PoolMessage>,
 ) -> TestResult {
     run_test_raw(label, &mut try_recv, |note| {
-        let throwaway = NostrKeypair::new();
+        let throwaway = K256Keypair::generate();
         let mut echo = nostro2::NostrNote {
             content: format!("echo:{}:{}", note.id.as_deref().unwrap_or("?"), 0),
             kind: 21000,
             ..Default::default()
         };
-        if throwaway.sign_note(&mut echo).is_ok() {
+        if throwaway.sign_nostr_note(&mut echo).is_ok() {
             return sender.send(echo).is_ok();
         }
         false

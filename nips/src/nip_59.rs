@@ -106,7 +106,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     where
         Self: Sized,
     {
-        let throwaway_key = Self::generate(false);
+        let throwaway_key = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
@@ -167,7 +167,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     where
         Self: Sized,
     {
-        let throwaway_key = Self::generate(false);
+        let throwaway_key = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
@@ -234,8 +234,8 @@ mod tests {
 
     #[test]
     fn test_seal_and_rumor_roundtrip() {
-        let sender = NipTester::generate(false);
-        let receiver = NipTester::generate(false);
+        let sender = NipTester::generate();
+        let receiver = NipTester::generate();
         let mut original_note = make_test_note("This is a secret rumor");
 
         let gift = sender
@@ -251,8 +251,8 @@ mod tests {
     }
     #[test]
     fn test_parameterized_rumor() {
-        let sender = NipTester::generate(false);
-        let receiver = NipTester::generate(false);
+        let sender = NipTester::generate();
+        let receiver = NipTester::generate();
         let mut original_note = make_test_note("This is a secret rumor");
 
         let gift = sender
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_replaceable_giftwrap_kind() {
-        let sender = NipTester::generate(false);
-        let receiver = NipTester::generate(false);
+        let sender = NipTester::generate();
+        let receiver = NipTester::generate();
         let mut seal = sender
             .seal(&mut make_test_note("replaceable"), &receiver.public_key())
             .unwrap();
@@ -283,8 +283,8 @@ mod tests {
 
     #[test]
     fn test_ephemeral_giftwrap_kind() {
-        let sender = NipTester::generate(false);
-        let receiver = NipTester::generate(false);
+        let sender = NipTester::generate();
+        let receiver = NipTester::generate();
         let mut seal = sender
             .seal(&mut make_test_note("ephemeral"), &receiver.public_key())
             .unwrap();
@@ -297,8 +297,8 @@ mod tests {
 
     #[test]
     fn test_parameterized_giftwrap_tag_and_kind() {
-        let sender = NipTester::generate(false);
-        let receiver = NipTester::generate(false);
+        let sender = NipTester::generate();
+        let receiver = NipTester::generate();
         let mut seal = sender
             .seal(&mut make_test_note("param"), &receiver.public_key())
             .unwrap();

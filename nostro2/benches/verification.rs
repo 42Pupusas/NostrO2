@@ -1,12 +1,13 @@
+use nostro2::NostrSigner;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nostro2::NostrNote;
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 
 /// Create a properly signed note for benchmarking verification
 fn create_signed_note() -> NostrNote {
-    let keypair = NostrKeypair::new();
+    let keypair = K256Keypair::generate();
     let mut note = NostrNote::text_note("Hello Nostr! Benchmarking signature verification.");
-    keypair.sign_note(&mut note).expect("signing failed");
+    keypair.sign_nostr_note(&mut note).expect("signing failed");
     note
 }
 

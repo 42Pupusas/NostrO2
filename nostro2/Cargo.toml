@@ -10,9 +10,15 @@ readme = "../README.md"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
+[features]
+default = ["k256"]
+k256 = ["dep:k256"]
+secp256k1 = ["dep:secp256k1"]
+
 [dependencies]
 hex.workspace = true
-k256.workspace = true
+k256 = { workspace = true, optional = true }
+secp256k1 = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

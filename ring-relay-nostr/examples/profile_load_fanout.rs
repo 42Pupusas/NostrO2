@@ -8,7 +8,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -96,7 +96,7 @@ async fn main() {
         let url = url.clone();
         let sent = Arc::clone(&sent);
         pub_tasks.push(tokio::spawn(async move {
-            let kp = NostrKeypair::new_extractable();
+            let kp = K256Keypair::generate();
             let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("pub connect");
             let (mut write, mut read) = ws.split();
             let drainer = tokio::spawn(async move {

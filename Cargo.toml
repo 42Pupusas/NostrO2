@@ -23,6 +23,7 @@ nostro2 = { path = "nostro2", version = "0.5.0" }
 nostro2-nips = { path = "nips", version = "0.2.0" }
 
 # nostro2-signer = { path = "nostro2-signer" }
+# Default uses k256; opt in to secp256k1 with features = ["secp256k1"]
 nostro2-signer = { path = "nostro2-signer", version = "0.3.0" }
 
 # nostro2-cache = { path = "nostro2-cache" }
@@ -42,10 +43,11 @@ hmac = "0.12"
 libaes = "0.7"
 # k256 = { version = "0.13.4", features = ["schnorr", "ecdh"] }
 k256 = { path = "../../forfun/elliptic-curves/k256", features = ["schnorr", "ecdh"] }
+secp256k1 = { version = "0.29", features = ["rand", "global-context", "hashes"] }
 rand = "0.8"
-rand_core = "0.10"
-sha2 = "0.10.8"
-zeroize = "1.8.1"
+rand_core = "0.6"
+sha2 = "0.10"
+zeroize = "1.8"
 
 # Key helpers
 bech32 = "0.11"

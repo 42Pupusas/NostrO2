@@ -1,3 +1,4 @@
+use nostro2::NostrSigner;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nostr::JsonUtil;
 
@@ -5,10 +6,10 @@ use nostr::JsonUtil;
 
 /// Create a signed nostro2 note for benchmarking
 fn nostro2_signed_note() -> (nostro2_signer::K256Keypair, nostro2::NostrNote) {
-    let kp = nostro2_signer::K256Keypair::new();
+    let kp = nostro2_signer::K256Keypair::generate();
     let mut note =
         nostro2::NostrNote::text_note("Hello Nostr! Benchmarking against the nostr crate.");
-    kp.sign_note(&mut note).expect("nostro2 signing failed");
+    kp.sign_nostr_note(&mut note).expect("nostro2 signing failed");
     (kp, note)
 }
 
@@ -28,7 +29,7 @@ fn bench_keygen(c: &mut Criterion) {
     let mut group = c.benchmark_group("keygen");
 
     group.bench_function("nostro2", |b| {
-        b.iter(|| black_box(nostro2_signer::K256Keypair::new()));
+        b.iter(|| black_box(nostro2_signer::K256Keypair::generate()));
     });
 
     group.bench_function("nostr", |b| {
@@ -41,7 +42,7 @@ fn bench_keygen(c: &mut Criterion) {
 // ── Signing ────────────────────────────────────────────────────────
 
 fn bench_signing(c: &mut Criterion) {
-    let nostro2_kp = nostro2_signer::K256Keypair::new();
+    let nostro2_kp = nostro2_signer::K256Keypair::generate();
     let nostr_keys = nostr::Keys::generate();
 
     let mut group = c.benchmark_group("signing");
@@ -49,7 +50,7 @@ fn bench_signing(c: &mut Criterion) {
     group.bench_function("nostro2", |b| {
         b.iter(|| {
             let mut note = nostro2::NostrNote::text_note("Benchmark signing");
-            nostro2_kp.sign_note(black_box(&mut note)).unwrap();
+            nostro2_kp.sign_nostr_note(black_box(&mut note)).unwrap();
         });
     });
 
@@ -225,7 +226,7 @@ fn bench_filter_construction(c: &mut Criterion) {
 // ── Varying Content Sizes ──────────────────────────────────────────
 
 fn bench_serialization_varying_sizes(c: &mut Criterion) {
-    let nostro2_kp = nostro2_signer::K256Keypair::new();
+    let nostro2_kp = nostro2_signer::K256Keypair::generate();
     let nostr_keys = nostr::Keys::generate();
 
     let mut group = c.benchmark_group("serialize_by_content_size");
@@ -235,7 +236,7 @@ fn bench_serialization_varying_sizes(c: &mut Criterion) {
 
         // Prepare signed nostro2 note
         let mut nostro2_note = nostro2::NostrNote::text_note(&content);
-        nostro2_kp.sign_note(&mut nostro2_note).unwrap();
+        nostro2_kp.sign_nostr_note(&mut nostro2_note).unwrap();
 
         // Prepare signed nostr event
         let nostr_event = nostr::EventBuilder::text_note(&content)
@@ -257,7 +258,7 @@ fn bench_serialization_varying_sizes(c: &mut Criterion) {
 // ── Full Roundtrip (create → sign → serialize → deserialize → verify) ──
 
 fn bench_full_roundtrip(c: &mut Criterion) {
-    let nostro2_kp = nostro2_signer::K256Keypair::new();
+    let nostro2_kp = nostro2_signer::K256Keypair::generate();
     let nostr_keys = nostr::Keys::generate();
 
     let mut group = c.benchmark_group("full_roundtrip");
@@ -265,7 +266,7 @@ fn bench_full_roundtrip(c: &mut Criterion) {
     group.bench_function("nostro2", |b| {
         b.iter(|| {
             let mut note = nostro2::NostrNote::text_note("Roundtrip benchmark");
-            nostro2_kp.sign_note(&mut note).unwrap();
+            nostro2_kp.sign_nostr_note(&mut note).unwrap();
             let json = serde_json::to_string(&note).unwrap();
             let deserialized: nostro2::NostrNote = serde_json::from_str(&json).unwrap();
             assert!(deserialized.verify());

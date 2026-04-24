@@ -8,12 +8,12 @@ mod common;
 use common::Relay;
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 fn signed_frame() -> (String, String) {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note("compare-smoke");
     note.pubkey = kp.public_key();
     kp.sign_nostr_note(&mut note).expect("sign");
@@ -98,7 +98,7 @@ async fn nostr_relay_tiny_fanout() {
     // Distinct keypair per pub so ids differ and nostr-relay doesn't dedupe.
     let frame_sets: Vec<Arc<Vec<String>>> = (0..PUBS)
         .map(|pi| {
-            let kp = nostro2_signer::NostrKeypair::new_extractable();
+            let kp = nostro2_signer::K256Keypair::generate();
             Arc::new(
                 (0..EVENTS)
                     .map(|i| {

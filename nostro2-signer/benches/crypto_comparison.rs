@@ -1,3 +1,4 @@
+use nostro2::{NostrKeypair, NostrSigner};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nostro2::NostrNote;
 use nostro2_signer::K256Keypair;
@@ -25,19 +26,19 @@ use nostro2_signer::K256Keypair;
 
 fn bench_keygen(c: &mut Criterion) {
     c.bench_function("keygen_k256", |b| {
-        b.iter(|| black_box(K256Keypair::new()));
+        b.iter(|| black_box(K256Keypair::generate()));
     });
 }
 
 // ── Signing ─────────────────────────────────────────────────────────
 
 fn bench_signing(c: &mut Criterion) {
-    let kp = K256Keypair::new();
+    let kp = K256Keypair::generate();
 
     c.bench_function("signing_k256", |b| {
         b.iter(|| {
             let mut note = NostrNote::text_note("Benchmark signing");
-            kp.sign_note(black_box(&mut note)).unwrap();
+            kp.sign_nostr_note(black_box(&mut note)).unwrap();
         });
     });
 }
@@ -45,9 +46,9 @@ fn bench_signing(c: &mut Criterion) {
 // ── Verification ────────────────────────────────────────────────────
 
 fn bench_verification(c: &mut Criterion) {
-    let kp = K256Keypair::new();
+    let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note("Benchmark verification");
-    kp.sign_note(&mut note).unwrap();
+    kp.sign_nostr_note(&mut note).unwrap();
 
     c.bench_function("verification_k256", |b| {
         b.iter(|| black_box(&note).verify());
@@ -57,9 +58,9 @@ fn bench_verification(c: &mut Criterion) {
 // ── ECDH Shared Secret ─────────────────────────────────────────────
 
 fn bench_ecdh(c: &mut Criterion) {
-    let alice = K256Keypair::new_extractable();
-    let bob = K256Keypair::new_extractable();
-    let bob_pubkey = bob.pubkey();
+    let alice = K256Keypair::generate();
+    let bob = K256Keypair::generate();
+    let bob_pubkey = bob.public_key();
 
     c.bench_function("ecdh_k256", |b| {
         b.iter(|| alice.shared_point(black_box(&bob_pubkey)).unwrap());

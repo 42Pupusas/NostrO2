@@ -258,9 +258,7 @@ impl NostrNote {
         self.id = Some(hex::encode(hash));
         Ok(hash)
     }
-    /// Used to verify the signature of the note
-    ///
-    /// Verifies the signature of the note using the k256 library (pure Rust)
+    #[cfg(all(feature = "k256", not(feature = "secp256k1")))]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
         let id = self
@@ -274,6 +272,24 @@ impl NostrNote {
         let signature = Signature::try_from(sig.as_slice())
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
         Ok(verifying_key.verify_prehash(&id, &signature).is_ok())
+    }
+
+    #[cfg(feature = "secp256k1")]
+    fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
+        use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey, SECP256K1};
+        let id = self
+            .id_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingId)?;
+        let sig_bytes = self
+            .sig_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingSignature)?;
+        let pubkey_bytes = self.pubkey_bytes();
+        let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
+            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
+        let sig = Signature::from_slice(sig_bytes.as_slice())
+            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let msg = Message::from_digest(id);
+        Ok(SECP256K1.verify_schnorr(&sig, &msg, &xonly).is_ok())
     }
     /// Used to verify the content of the note
     ///

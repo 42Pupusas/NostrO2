@@ -4,8 +4,9 @@
 //! events as fast as possible using buffered writes, then sends EOSE.
 //!
 //! Usage: cargo run -p ring-relay-client --example local_server --release
+use nostro2::NostrSigner;
 
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 
@@ -14,7 +15,7 @@ const NUM_RELAYS: usize = 24;
 const NUM_EVENTS: usize = 500_000;
 
 fn main() {
-    let keypair = NostrKeypair::new();
+    let keypair = K256Keypair::generate();
     println!("Generating {NUM_EVENTS} unique signed events per relay ({NUM_RELAYS} relays)...");
 
     let mut handles = Vec::new();
@@ -34,7 +35,7 @@ fn main() {
                     kind: 1,
                     ..Default::default()
                 };
-                keypair.sign_note(&mut note).unwrap();
+                keypair.sign_nostr_note(&mut note).unwrap();
                 let note_json = serde_json::to_string(&note).unwrap();
                 format!("[\"EVENT\",\"bench\",{note_json}]")
             })

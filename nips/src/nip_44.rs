@@ -300,8 +300,8 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_success() {
         // Use the NipTester from lib.rs which uses k256
-        let sender = crate::tests::NipTester::generate(false);
-        let receiver = crate::tests::NipTester::generate(false);
+        let sender = crate::tests::NipTester::generate();
+        let receiver = crate::tests::NipTester::generate();
 
         let plaintext = "Hello NIP-44 encryption!";
         let receiver_pk = receiver.public_key();
@@ -314,9 +314,9 @@ mod tests {
 
     #[test]
     fn test_invalid_decryption_key() {
-        let sender = crate::tests::NipTester::generate(false);
-        let receiver = crate::tests::NipTester::generate(false);
-        let wrong_receiver = crate::tests::NipTester::generate(false);
+        let sender = crate::tests::NipTester::generate();
+        let receiver = crate::tests::NipTester::generate();
+        let wrong_receiver = crate::tests::NipTester::generate();
 
         let plaintext = "Hello NIP-44 encryption!";
         let receiver_pk = receiver.public_key();
@@ -330,8 +330,8 @@ mod tests {
     use std::fmt::Write as _;
     #[test]
     fn encrypt_very_large_note() {
-        let sender = crate::tests::NipTester::generate(false);
-        let receiver = crate::tests::NipTester::generate(false);
+        let sender = crate::tests::NipTester::generate();
+        let receiver = crate::tests::NipTester::generate();
 
         let mut plaintext = String::new();
         for i in 0..15329 {

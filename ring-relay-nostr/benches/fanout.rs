@@ -9,7 +9,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
-use nostro2_signer::NostrKeypair;
+use nostro2_signer::K256Keypair;
 use ring_relay_nostr::{NostrRelay, RelayConfig};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,7 +34,7 @@ fn spawn_relay(max_clients: usize) -> (u16, ring_relay_nostr::ShutdownHandle) {
 }
 
 fn presign(count: usize) -> Vec<String> {
-    let kp = NostrKeypair::new_extractable();
+    let kp = K256Keypair::generate();
     (0..count)
         .map(|i| {
             let mut note = NostrNote::text_note(&format!("bench {i}"));
