@@ -233,6 +233,8 @@ fn main() {
         let kp = K256Keypair::generate();
         let (mut pubws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
+        use std::io::Write as _;
+        let progress = std::time::Instant::now();
         for i in 0..num_events {
             let mut note = NostrNote {
                 content: format!("heap-persistent event {i}"),
@@ -242,16 +244,40 @@ fn main() {
             };
             kp.sign_nostr_note(&mut note).unwrap();
             let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
-            pubws.send(Message::Text(frame.into())).await.unwrap();
 
-            // Wait for OK before next send so the relay actually
-            // processes (and persists) each event before we move on.
-            while let Some(Ok(msg)) = pubws.next().await {
-                if let Message::Text(t) = msg
-                    && t.starts_with("[\"OK\"")
-                {
-                    break;
+            // Wrap send + recv together in a per-event deadline so any
+            // stall (websocket backpressure, dropped connection, missing
+            // OK) surfaces as a single diagnostic line.
+            let send_recv = async {
+                pubws.send(Message::Text(frame.into())).await.ok()?;
+                while let Some(Ok(msg)) = pubws.next().await {
+                    if let Message::Text(t) = msg
+                        && t.starts_with("[\"OK\"")
+                    {
+                        return Some(());
+                    }
                 }
+                None
+            };
+            match tokio::time::timeout(Duration::from_secs(5), send_recv).await {
+                Ok(Some(())) => {}
+                Ok(None) => {
+                    eprintln!("ws closed at event {i} after {:?}", progress.elapsed());
+                    let _ = std::io::stderr().flush();
+                    return;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "stall at event {i} after {:?} (no OK in 5s)",
+                        progress.elapsed()
+                    );
+                    let _ = std::io::stderr().flush();
+                    return;
+                }
+            }
+            if i % 50 == 0 {
+                eprintln!("{i}/{num_events} t={:?}", progress.elapsed());
+                let _ = std::io::stderr().flush();
             }
         }
 
