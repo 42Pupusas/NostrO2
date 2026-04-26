@@ -19,6 +19,7 @@ fn main() {
     let mut duration_secs: u64 = 30;
     let mut shards: usize = 1;
     let mut max_clients: usize = 4096;
+    let mut verify_threads: usize = 1;
 
     let args: Vec<String> = env::args().collect();
     let mut i = 1;
@@ -40,6 +41,10 @@ fn main() {
                 max_clients = args[i + 1].parse().unwrap();
                 i += 2;
             }
+            "--verify-threads" => {
+                verify_threads = args[i + 1].parse().unwrap();
+                i += 2;
+            }
             _ => {
                 eprintln!("unknown arg: {}", args[i]);
                 std::process::exit(2);
@@ -53,11 +58,12 @@ fn main() {
         reader_shards: shards,
         writer_shards: shards,
     };
+    cfg.verify_threads_per_shard = verify_threads;
 
     let relay = NostrRelay::bind([127, 0, 0, 1], port, cfg).expect("bind");
     let shutdown = relay.shutdown_handle();
     eprintln!(
-        "profile_server: listening on 127.0.0.1:{port} for {duration_secs}s (shards={shards})"
+        "profile_server: listening on 127.0.0.1:{port} for {duration_secs}s (shards={shards} verify_threads={verify_threads})"
     );
 
     let deadline = Instant::now() + Duration::from_secs(duration_secs);

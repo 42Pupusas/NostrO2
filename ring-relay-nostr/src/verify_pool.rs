@@ -6,25 +6,28 @@
 //! module moves verify to dedicated worker threads so the shard becomes
 //! pure I/O + match + dispatch.
 //!
-//! ## Topology
+//! ## Topology (M workers per shard)
 //!
-//! One worker thread per shard, paired 1:1 via two `quetzalcoatl::spsc`
-//! rings:
+//! Per shard, with `verify_threads_per_shard = M`:
 //!
-//! - shard → worker: `VerifyJob` (raw_json bytes + client/event metadata).
-//! - worker → shard: `VerifyResult` (the same payload plus `verified: bool`).
+//! - **M jobs SPSCs** (one per worker). Shard owns all M producers and
+//!   round-robins pushes across them. Each worker owns its consumer.
+//! - **One results MPSC** (M producers cloned to workers, single
+//!   consumer on the shard). Workers push verdicts back; the shard
+//!   drains the ring at the top of every loop iteration.
 //!
-//! The shard pushes a job and continues reading frames; the worker
-//! re-parses the JSON into a borrowed `NostrNoteView`, runs `verify()`,
-//! and sends the answer back. The shard drains results at the top of its
-//! loop and runs the post-verify path (OK, fan-out, storage push).
+//! Why this shape? `quetzalcoatl` ships SPSC, MPSC, SPMC, and broadcast
+//! — but no MPMC, so we can't have a single shared jobs queue served by
+//! many workers. The per-worker SPSC + shared MPSC results combo is the
+//! cleanest fit and lets each shard scale its verify rate up to M cores
+//! independent of the I/O shard count.
 //!
-//! Why 1:1 instead of N:M? `quetzalcoatl` only ships SPSC, MPSC, SPMC,
-//! and broadcast — there is no MPMC ring to support N workers stealing
-//! jobs from M shards without an additional dependency. 1:1 keeps every
-//! ring SPSC and gives each shard its own dedicated verify core, which
-//! is sufficient to lift the per-shard verify ceiling that the inline
-//! design imposed.
+//! ## Round-robin distribution
+//!
+//! The shard increments a `next_worker` cursor mod M for each push. If
+//! a particular worker's ring is full it backs off briefly before
+//! retrying — but in practice all workers drain at the same rate so
+//! the rings stay nearly empty.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +35,12 @@ use std::time::Duration;
 
 use nostro2::NostrNoteView;
 use quetzalcoatl::capacity::Capacity;
-use quetzalcoatl::spsc::{Consumer, Producer, RingBuffer};
+use quetzalcoatl::mpsc::{
+    Consumer as MpscConsumer, Producer as MpscProducer, RingBuffer as MpscRingBuffer,
+};
+use quetzalcoatl::spsc::{
+    Consumer as SpscConsumer, Producer as SpscProducer, RingBuffer as SpscRingBuffer,
+};
 
 /// Default capacity for both the jobs and results rings, per shard.
 /// Sized large enough to absorb a burst from a single publisher's
@@ -76,13 +84,15 @@ pub struct VerifyResult {
     pub verified: bool,
 }
 
-/// Per-shard handle. The shard owns the job producer (push) and the
-/// result consumer (drain). It also keeps the worker thread's `Thread`
-/// handle so it can `unpark` after pushing a job.
+/// Per-shard handle. The shard owns M job producers (round-robined),
+/// one result consumer, and the worker thread handles for `unpark`.
 pub struct VerifyHandle {
-    pub jobs_tx: Producer<VerifyJob>,
-    pub results_rx: Consumer<VerifyResult>,
-    pub worker_thread: std::thread::Thread,
+    pub jobs_txs: Vec<SpscProducer<VerifyJob>>,
+    pub results_rx: MpscConsumer<VerifyResult>,
+    pub worker_threads: Vec<std::thread::Thread>,
+    /// Round-robin cursor across `jobs_txs`. Bumped on every push so
+    /// successive events go to different workers.
+    pub next_worker: usize,
 }
 
 /// Owned by the relay; joins worker threads on drop.
@@ -103,34 +113,63 @@ impl VerifyPoolShutdown {
     }
 }
 
-/// Spin up one verify worker per shard. Returns one [`VerifyHandle`]
-/// per shard plus a shutdown handle the relay holds for the lifetime
-/// of the pool.
-pub fn spawn(num_shards: usize) -> (Vec<VerifyHandle>, VerifyPoolShutdown) {
+/// Spin up `num_shards * verify_threads_per_shard` worker threads.
+/// Returns one [`VerifyHandle`] per shard plus a shutdown handle.
+///
+/// `verify_threads_per_shard` is clamped to ≥ 1 so callers that pass 0
+/// don't end up with shards that have no workers.
+pub fn spawn(
+    num_shards: usize,
+    verify_threads_per_shard: usize,
+) -> (Vec<VerifyHandle>, VerifyPoolShutdown) {
+    let workers_per = verify_threads_per_shard.max(1);
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::with_capacity(num_shards);
-    let mut threads = Vec::with_capacity(num_shards);
+    let mut threads = Vec::with_capacity(num_shards * workers_per);
 
     for shard_idx in 0..num_shards {
-        let (jobs_tx, jobs_rx) =
-            RingBuffer::<VerifyJob>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
-        let (results_tx, results_rx) =
-            RingBuffer::<VerifyResult>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
+        // One results ring per shard, MPSC: every worker for this shard
+        // gets a clone of the producer; the shard owns the consumer.
+        let (results_seed_tx, results_rx) =
+            MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
 
-        let shutdown_for_thread = Arc::clone(&shutdown);
-        let thread = std::thread::Builder::new()
-            .name(format!("nostr-verify-{shard_idx}"))
-            .spawn(move || {
-                worker_loop(shutdown_for_thread, jobs_rx, results_tx);
-            })
-            .expect("spawn verify worker");
-        let worker_thread = thread.thread().clone();
-        threads.push(thread);
+        let mut jobs_txs = Vec::with_capacity(workers_per);
+        let mut worker_threads = Vec::with_capacity(workers_per);
+
+        for worker_idx in 0..workers_per {
+            // Each worker has its own SPSC jobs ring fed only by the
+            // shard. SPSC is the lightest-weight option and matches the
+            // single-producer reality (shard) ↔ single-consumer reality
+            // (worker).
+            let (jobs_tx, jobs_rx) =
+                SpscRingBuffer::<VerifyJob>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
+            jobs_txs.push(jobs_tx);
+
+            // Clone the MPSC producer for this worker. The seed
+            // producer stays unused; we drop it after the loop.
+            let results_tx = results_seed_tx.clone();
+
+            let shutdown_for_thread = Arc::clone(&shutdown);
+            let thread = std::thread::Builder::new()
+                .name(format!("nostr-verify-{shard_idx}-{worker_idx}"))
+                .spawn(move || {
+                    worker_loop(shutdown_for_thread, jobs_rx, results_tx);
+                })
+                .expect("spawn verify worker");
+            worker_threads.push(thread.thread().clone());
+            threads.push(thread);
+        }
+
+        // Drop the seed producer so total producer count == workers_per.
+        // (The mpsc Producer is reference-counted internally; dropping
+        // here just frees one reference.)
+        drop(results_seed_tx);
 
         handles.push(VerifyHandle {
-            jobs_tx,
+            jobs_txs,
             results_rx,
-            worker_thread,
+            worker_threads,
+            next_worker: 0,
         });
     }
 
@@ -145,13 +184,13 @@ pub fn spawn(num_shards: usize) -> (Vec<VerifyHandle>, VerifyPoolShutdown) {
 
 /// Verify worker. Drains the jobs ring; for each job, re-parses the
 /// JSON, runs the full id+schnorr `verify()`, and pushes the verdict
-/// onto the results ring. Re-parsing the JSON each pass costs a few
-/// microseconds — dwarfed by the ~50µs schnorr verify it enables to
-/// run off the I/O thread.
+/// onto the shard's shared MPSC results ring. Re-parsing the JSON each
+/// pass costs a few microseconds — dwarfed by the ~50µs schnorr verify
+/// it enables to run off the I/O thread.
 fn worker_loop(
     shutdown: Arc<AtomicBool>,
-    mut jobs_rx: Consumer<VerifyJob>,
-    mut results_tx: Producer<VerifyResult>,
+    mut jobs_rx: SpscConsumer<VerifyJob>,
+    results_tx: MpscProducer<VerifyResult>,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let Some(job) = jobs_rx.pop() else {
@@ -180,11 +219,11 @@ fn worker_loop(
         // Backpressure: if the shard hasn't drained results yet, spin
         // briefly. Results-ring overflow means the shard can't keep up
         // with our verify rate, which is *good* news on a perf bench.
-        push_result(&mut results_tx, result);
+        push_result(&results_tx, result);
     }
 }
 
-fn push_result(tx: &mut Producer<VerifyResult>, mut msg: VerifyResult) {
+fn push_result(tx: &MpscProducer<VerifyResult>, mut msg: VerifyResult) {
     let mut spins = 0u32;
     loop {
         match tx.push(msg) {

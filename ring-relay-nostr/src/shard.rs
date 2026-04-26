@@ -397,29 +397,47 @@ impl ShardDispatcher {
         }
     }
 
-    /// Push a verify job to this shard's worker, with backpressure if
-    /// the job ring is momentarily full.
+    /// Push a verify job to one of this shard's workers, round-robined.
+    /// Backs off briefly if the chosen worker's ring is full; in steady
+    /// state all workers drain at the same rate so the rings stay near
+    /// empty and the fast path is a single push + unpark.
     fn push_verify_job(&mut self, mut job: VerifyJob) {
         let Some(handle) = self.verify.as_mut() else {
             return;
         };
+        let n = handle.jobs_txs.len();
+        if n == 0 {
+            return;
+        }
+        let start = handle.next_worker % n;
+        handle.next_worker = (start + 1) % n;
+
         let mut spins = 0u32;
+        let mut attempt = 0usize;
         loop {
-            match handle.jobs_tx.push(job) {
+            // Walk the worker list starting at the round-robin slot so
+            // we naturally spread under partial fullness too.
+            let idx = (start + attempt) % n;
+            match handle.jobs_txs[idx].push(job) {
                 Ok(()) => {
-                    handle.worker_thread.unpark();
+                    handle.worker_threads[idx].unpark();
                     return;
                 }
                 Err(returned) => {
                     job = returned;
-                    if spins < 64 {
-                        std::hint::spin_loop();
-                    } else if spins < 256 {
-                        std::thread::yield_now();
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_micros(10));
+                    attempt = attempt.saturating_add(1);
+                    // After one full sweep over all workers, back off.
+                    if attempt >= n {
+                        attempt = 0;
+                        if spins < 64 {
+                            std::hint::spin_loop();
+                        } else if spins < 256 {
+                            std::thread::yield_now();
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_micros(10));
+                        }
+                        spins = spins.saturating_add(1);
                     }
-                    spins = spins.saturating_add(1);
                 }
             }
         }

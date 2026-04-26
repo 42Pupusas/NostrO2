@@ -76,6 +76,13 @@ pub struct RelayConfig {
     /// stored. When `Some`, events are persisted to the bounded buckets
     /// and REQs stream historical matches before EOSE.
     pub storage: Option<StorageConfig>,
+    /// Number of schnorr-verify worker threads spawned per shard. The
+    /// shard pushes EVENTs onto its workers round-robin so a single
+    /// reader shard can saturate up to `verify_threads_per_shard`
+    /// cores' worth of crypto. Default of 1 keeps total verify
+    /// parallelism equal to shard count; bump it on hosts with more
+    /// cores than shards. Must be ≥ 1.
+    pub verify_threads_per_shard: usize,
     /// kTLS config. When set, the kernel terminates TLS on every connection
     /// and the io_uring data path sees plaintext. The rustls `ServerConfig`
     /// must have `enable_secret_extraction = true`.
@@ -116,6 +123,7 @@ impl Default for RelayConfig {
             max_future_drift: Some(900), // 15 minutes
             info: Some(info),
             storage: None,
+            verify_threads_per_shard: 1,
             #[cfg(feature = "ktls")]
             tls: None,
         }
@@ -284,7 +292,8 @@ impl NostrRelay {
         // 1:1 via two SPSCs. Profiling showed verify pinned the shard's
         // I/O thread at >80% CPU, so we hand each event to the worker
         // and continue reading frames immediately.
-        let (mut verify_handles, verify_pool_shutdown) = verify_pool::spawn(n);
+        let (mut verify_handles, verify_pool_shutdown) =
+            verify_pool::spawn(n, config.verify_threads_per_shard);
         verify_handles.reverse(); // pop yields shard 0 first
 
         // Spawn one reader thread per shard, each running a ShardDispatcher
