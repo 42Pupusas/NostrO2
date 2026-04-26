@@ -16,20 +16,55 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Spawn a relay on an ephemeral port. Returns the port and a shutdown handle
-/// that ends the run loop.
-fn spawn_relay(config: RelayConfig) -> (u16, ring_relay_nostr::ShutdownHandle) {
-    // `NostrRelay::bind` needs to be called on the thread that will run the
-    // dispatch loop, so create in the worker.
+/// RAII handle: signals the relay to shut down on drop and waits for the
+/// worker thread to actually exit. Tests must hold this for the full duration
+/// of the test — letting it drop early (or never) leaves shard threads
+/// running, which produces flaky timeouts under parallel cargo-test load
+/// because dozens of leaked threads compete for the runtime's CPU.
+struct RelayGuard {
+    shutdown: Option<ring_relay_nostr::ShutdownHandle>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RelayGuard {
+    fn shutdown(self) {
+        // Explicit shutdown that joins; preferred over relying on Drop so
+        // tests fail loudly if the relay thread hangs.
+        drop(self);
+    }
+}
+
+impl Drop for RelayGuard {
+    fn drop(&mut self) {
+        if let Some(s) = self.shutdown.take() {
+            s.shutdown();
+        }
+        if let Some(h) = self.handle.take() {
+            // If a test panicked we still want to clean up; ignore the result.
+            let _ = h.join();
+        }
+    }
+}
+
+/// Spawn a relay on an ephemeral port. Returns the port and a guard that
+/// shuts the relay down (and joins its worker thread) when dropped.
+fn spawn_relay(config: RelayConfig) -> (u16, RelayGuard) {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let mut relay = NostrRelay::bind([127, 0, 0, 1], 0, config).expect("bind relay");
         let port = relay.port();
         let shutdown = relay.shutdown_handle();
         tx.send((port, shutdown)).unwrap();
         relay.run();
     });
-    rx.recv().unwrap()
+    let (port, shutdown) = rx.recv().unwrap();
+    (
+        port,
+        RelayGuard {
+            shutdown: Some(shutdown),
+            handle: Some(handle),
+        },
+    )
 }
 
 async fn connect(port: u16) -> WsClient {
@@ -54,15 +89,26 @@ async fn send(ws: &mut WsClient, json: &str) {
 }
 
 /// Read the next text frame with a timeout so tests fail fast on regressions.
+///
+/// Pings/Pongs slip through silently; everything else is a real signal that
+/// belongs to the test. The 5s timeout is intentionally generous because
+/// `cargo test` defaults to running all tests in parallel — under heavy
+/// load (14 tests × 2-4 tokio worker threads each on a modest box) any
+/// individual frame can take noticeably longer than wall-clock 50ms.
 async fn recv_text(ws: &mut WsClient) -> Value {
-    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
-        .await
-        .expect("timeout waiting for frame")
-        .expect("stream ended")
-        .expect("ws error");
-    match msg {
-        Message::Text(t) => serde_json::from_str(&t).expect("relay response not JSON"),
-        other => panic!("expected text, got {other:?}"),
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout waiting for frame")
+            .expect("stream ended")
+            .expect("ws error");
+        match msg {
+            Message::Text(t) => return serde_json::from_str(&t).expect("relay response not JSON"),
+            // Drop control frames; tungstenite may surface server-initiated
+            // pings or our own queued pongs depending on timing.
+            Message::Ping(_) | Message::Pong(_) => continue,
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 }
 
@@ -90,7 +136,7 @@ async fn event_is_ok_acked() {
     assert_eq!(resp[1], id);
     assert_eq!(resp[2], true);
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -104,7 +150,7 @@ async fn req_yields_immediate_eose() {
     assert_eq!(resp[0], "EOSE");
     assert_eq!(resp[1], "s1");
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -136,7 +182,7 @@ async fn live_fanout_to_matching_subscriber() {
     assert_eq!(evt[1], "s1");
     assert_eq!(evt[2]["id"].as_str().unwrap(), id);
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -163,7 +209,7 @@ async fn non_matching_filter_does_not_receive() {
         "subscriber unexpectedly received: {result:?}"
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -188,7 +234,7 @@ async fn close_stops_fanout() {
     let result = tokio::time::timeout(Duration::from_millis(200), sub_ws.next()).await;
     assert!(result.is_err(), "closed sub received: {result:?}");
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -216,7 +262,7 @@ async fn sub_fifo_eviction() {
     assert_eq!(eose[0], "EOSE");
     assert_eq!(eose[1], "c");
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -238,7 +284,7 @@ async fn invalid_event_rejected() {
     assert_eq!(resp[0], "OK");
     assert_eq!(resp[2], false);
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -251,7 +297,7 @@ async fn unknown_verb_gets_notice() {
     let resp = recv_text(&mut ws).await;
     assert_eq!(resp[0], "NOTICE");
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 /// Exercises cross-shard sub replication: with reader_shards=2, open several
@@ -305,7 +351,7 @@ async fn cross_shard_fanout() {
         assert_eq!(evt[2]["id"].as_str().unwrap(), id);
     }
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 // --- validation / NIP-11 limit enforcement -------------------------------
@@ -339,7 +385,7 @@ async fn tampered_id_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -368,7 +414,7 @@ async fn oversized_frame_is_noticed() {
         resp[1]
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -399,7 +445,7 @@ async fn oversized_content_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -432,7 +478,7 @@ async fn too_many_tags_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -456,5 +502,5 @@ async fn oversized_subid_req_is_closed() {
         resp[2]
     );
 
-    shutdown.shutdown();
+    shutdown.shutdown();  // joins relay thread
 }
