@@ -89,6 +89,12 @@ name = "heap_fanout_live"
 [[example]]
 name = "heap_fanout_live_compare"
 
+# Persistent-mode heap comparison: ring-relay-nostr (storage layer enabled)
+# vs nostr-relay 0.4.8 (LMDB). Ingest-only workload so the storage layer's
+# memory cost is what dominates the dhat output. RELAY=ring|nostr.
+[[example]]
+name = "heap_ingest_persistent_compare"
+
 # Relay-only heap profile. `heap_fanout_relay_server` runs one relay under
 # dhat; `heap_fanout_driver` runs the client workload in a separate process
 # against it. dhat's output then reflects relay-side heap only, with no

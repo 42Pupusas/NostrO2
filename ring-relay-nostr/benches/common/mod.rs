@@ -87,14 +87,23 @@ impl Relay {
     /// tmpfs (/dev/shm when available) so ingest isn't disk-bound — same
     /// policy as `spawn_nostr_relay`, so the comparison is apples-to-apples.
     pub fn spawn_ring_persistent(shards: usize, max_clients: usize) -> Self {
+        // The thread handle is in an Option so Drop can join it before
+        // _tempdir's own Drop deletes the data directory. Without the
+        // join, the relay's reader-pool threads can still be iterating
+        // over the bucket logs when the directory disappears, surfacing
+        // as `bootstrap failed: No such file or directory` on any new
+        // reader spawned in the same process during teardown.
         struct Guard {
             shutdown: ring_relay_nostr::ShutdownHandle,
-            _thread: std::thread::JoinHandle<()>,
+            thread: Option<std::thread::JoinHandle<()>>,
             _tempdir: tempfile::TempDir,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
                 self.shutdown.shutdown();
+                if let Some(h) = self.thread.take() {
+                    let _ = h.join();
+                }
             }
         }
 
@@ -142,7 +151,7 @@ impl Relay {
             port,
             _guard: Box::new(Guard {
                 shutdown,
-                _thread: handle,
+                thread: Some(handle),
                 _tempdir: tempdir,
             }),
         }

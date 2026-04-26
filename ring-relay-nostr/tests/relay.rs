@@ -136,7 +136,7 @@ async fn event_is_ok_acked() {
     assert_eq!(resp[1], id);
     assert_eq!(resp[2], true);
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -150,7 +150,7 @@ async fn req_yields_immediate_eose() {
     assert_eq!(resp[0], "EOSE");
     assert_eq!(resp[1], "s1");
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -182,7 +182,7 @@ async fn live_fanout_to_matching_subscriber() {
     assert_eq!(evt[1], "s1");
     assert_eq!(evt[2]["id"].as_str().unwrap(), id);
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -209,7 +209,7 @@ async fn non_matching_filter_does_not_receive() {
         "subscriber unexpectedly received: {result:?}"
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,7 +234,7 @@ async fn close_stops_fanout() {
     let result = tokio::time::timeout(Duration::from_millis(200), sub_ws.next()).await;
     assert!(result.is_err(), "closed sub received: {result:?}");
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -262,7 +262,7 @@ async fn sub_fifo_eviction() {
     assert_eq!(eose[0], "EOSE");
     assert_eq!(eose[1], "c");
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -284,7 +284,7 @@ async fn invalid_event_rejected() {
     assert_eq!(resp[0], "OK");
     assert_eq!(resp[2], false);
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -297,7 +297,7 @@ async fn unknown_verb_gets_notice() {
     let resp = recv_text(&mut ws).await;
     assert_eq!(resp[0], "NOTICE");
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 /// Exercises cross-shard sub replication: with reader_shards=2, open several
@@ -351,7 +351,7 @@ async fn cross_shard_fanout() {
         assert_eq!(evt[2]["id"].as_str().unwrap(), id);
     }
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 // --- validation / NIP-11 limit enforcement -------------------------------
@@ -385,7 +385,7 @@ async fn tampered_id_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -414,7 +414,7 @@ async fn oversized_frame_is_noticed() {
         resp[1]
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -445,7 +445,7 @@ async fn oversized_content_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -478,7 +478,7 @@ async fn too_many_tags_is_rejected() {
         resp[3]
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -502,5 +502,5 @@ async fn oversized_subid_req_is_closed() {
         resp[2]
     );
 
-    shutdown.shutdown();  // joins relay thread
+    shutdown.shutdown(); // joins relay thread
 }
