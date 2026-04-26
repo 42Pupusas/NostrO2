@@ -79,9 +79,12 @@ pub struct RelayConfig {
     /// Number of schnorr-verify worker threads spawned per shard. The
     /// shard pushes EVENTs onto its workers round-robin so a single
     /// reader shard can saturate up to `verify_threads_per_shard`
-    /// cores' worth of crypto. Default of 1 keeps total verify
-    /// parallelism equal to shard count; bump it on hosts with more
-    /// cores than shards. Must be ≥ 1.
+    /// cores' worth of crypto.
+    ///
+    /// `0` (the default) means "auto": divide the available host
+    /// parallelism across the configured shards so total verify
+    /// threads ≈ CPU count regardless of `shards.reader_shards`. Set
+    /// explicitly to override.
     pub verify_threads_per_shard: usize,
     /// kTLS config. When set, the kernel terminates TLS on every connection
     /// and the io_uring data path sees plaintext. The rustls `ServerConfig`
@@ -123,7 +126,7 @@ impl Default for RelayConfig {
             max_future_drift: Some(900), // 15 minutes
             info: Some(info),
             storage: None,
-            verify_threads_per_shard: 1,
+            verify_threads_per_shard: 0,
             #[cfg(feature = "ktls")]
             tls: None,
         }
@@ -288,12 +291,27 @@ impl NostrRelay {
             (None, None)
         };
 
-        // Schnorr-verify offload: one worker thread per shard, paired
-        // 1:1 via two SPSCs. Profiling showed verify pinned the shard's
-        // I/O thread at >80% CPU, so we hand each event to the worker
-        // and continue reading frames immediately.
+        // Schnorr-verify offload: M workers per shard, paired via SPSC
+        // jobs / shared MPSC results. Profiling showed verify pinned
+        // the shard's I/O thread at >80% CPU, so we hand each event
+        // to a worker and continue reading frames immediately.
+        //
+        // verify_threads_per_shard == 0 means "auto": divide the host
+        // parallelism across shards so total verify capacity ≈ cpu
+        // count regardless of `shards` config. Without this the user
+        // sees shards>1 as a slowdown on verify-bound workloads
+        // because adding shards alone adds cross-shard SubRepl /
+        // replica-fanout cost without adding verify capacity.
+        let verify_threads_per_shard = if config.verify_threads_per_shard == 0 {
+            let cpus = std::thread::available_parallelism()
+                .map(std::num::NonZero::get)
+                .unwrap_or(1);
+            (cpus / n.max(1)).max(1)
+        } else {
+            config.verify_threads_per_shard
+        };
         let (mut verify_handles, verify_pool_shutdown) =
-            verify_pool::spawn(n, config.verify_threads_per_shard);
+            verify_pool::spawn(n, verify_threads_per_shard);
         verify_handles.reverse(); // pop yields shard 0 first
 
         // Spawn one reader thread per shard, each running a ShardDispatcher

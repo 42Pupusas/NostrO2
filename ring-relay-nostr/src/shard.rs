@@ -691,6 +691,14 @@ pub(crate) fn run_shard(
             return;
         }
     };
+    // Hand the verify workers our thread so they can unpark us
+    // when a result lands. Without this we'd only notice verdicts
+    // when an inbound TCP frame happened to wake the epoll wait —
+    // a 10ms+ tail under low publisher rates.
+    if let Some(handle) = verify.as_ref() {
+        let _ = handle.shard_waker.set(std::thread::current());
+    }
+
     let mut dispatcher = ShardDispatcher::new(
         config,
         sender.clone(),

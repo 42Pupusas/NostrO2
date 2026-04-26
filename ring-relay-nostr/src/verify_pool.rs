@@ -29,7 +29,7 @@
 //! retrying — but in practice all workers drain at the same rate so
 //! the rings stay nearly empty.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -93,6 +93,14 @@ pub struct VerifyHandle {
     /// Round-robin cursor across `jobs_txs`. Bumped on every push so
     /// successive events go to different workers.
     pub next_worker: usize,
+    /// Shared handle workers use to wake the shard thread when a
+    /// verify result lands. Filled in by the shard's `run_shard`
+    /// before its main loop starts. Without this, a shard parked on
+    /// its `ReaderCore` epoll wait would not see verify results
+    /// until the next inbound I/O event arrived — the verdict could
+    /// sit on the ring for tens of ms in low-traffic conditions,
+    /// dragging end-to-end latency.
+    pub shard_waker: Arc<OnceLock<std::thread::Thread>>,
 }
 
 /// Owned by the relay; joins worker threads on drop.
@@ -133,6 +141,12 @@ pub fn spawn(
         let (results_seed_tx, results_rx) =
             MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
 
+        // Shared handle the shard fills in once it starts running.
+        // Workers read from it to unpark the shard after pushing a
+        // result, so a shard that's epoll-parked between TCP frames
+        // still wakes promptly when a verdict lands.
+        let shard_waker: Arc<OnceLock<std::thread::Thread>> = Arc::new(OnceLock::new());
+
         let mut jobs_txs = Vec::with_capacity(workers_per);
         let mut worker_threads = Vec::with_capacity(workers_per);
 
@@ -148,12 +162,13 @@ pub fn spawn(
             // Clone the MPSC producer for this worker. The seed
             // producer stays unused; we drop it after the loop.
             let results_tx = results_seed_tx.clone();
+            let waker_for_worker = Arc::clone(&shard_waker);
 
             let shutdown_for_thread = Arc::clone(&shutdown);
             let thread = std::thread::Builder::new()
                 .name(format!("nostr-verify-{shard_idx}-{worker_idx}"))
                 .spawn(move || {
-                    worker_loop(shutdown_for_thread, jobs_rx, results_tx);
+                    worker_loop(shutdown_for_thread, jobs_rx, results_tx, waker_for_worker);
                 })
                 .expect("spawn verify worker");
             worker_threads.push(thread.thread().clone());
@@ -170,6 +185,7 @@ pub fn spawn(
             results_rx,
             worker_threads,
             next_worker: 0,
+            shard_waker,
         });
     }
 
@@ -191,6 +207,7 @@ fn worker_loop(
     shutdown: Arc<AtomicBool>,
     mut jobs_rx: SpscConsumer<VerifyJob>,
     results_tx: MpscProducer<VerifyResult>,
+    shard_waker: Arc<OnceLock<std::thread::Thread>>,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let Some(job) = jobs_rx.pop() else {
@@ -220,6 +237,13 @@ fn worker_loop(
         // briefly. Results-ring overflow means the shard can't keep up
         // with our verify rate, which is *good* news on a perf bench.
         push_result(&results_tx, result);
+
+        // Wake the shard so it drains the result promptly. Without
+        // this an epoll-parked shard would only see the verdict on
+        // the next inbound TCP frame, dragging end-to-end latency.
+        if let Some(t) = shard_waker.get() {
+            t.unpark();
+        }
     }
 }
 
