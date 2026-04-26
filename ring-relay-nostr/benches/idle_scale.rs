@@ -32,8 +32,8 @@ use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use common::{Relay, presign_for};
 
@@ -267,51 +267,43 @@ fn bench(c: &mut Criterion) {
         // ring-relay-nostr's max_clients has to fit everyone + slack.
         let max_clients = total_clients + 64;
 
-        group.bench_with_input(
-            BenchmarkId::new("ring", idle),
-            &idle,
-            |b, &n| {
-                b.iter_custom(|iters| {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(6)
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let relay = Relay::spawn_ring(WORKERS, max_clients);
-                    let mut h = IdleHarness::new(rt, relay, iters, n);
-                    let start = Instant::now();
-                    for _ in 0..iters {
-                        h.iterate();
-                    }
-                    let elapsed = start.elapsed();
-                    drop(h);
-                    elapsed
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ring", idle), &idle, |b, &n| {
+            b.iter_custom(|iters| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(6)
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let relay = Relay::spawn_ring(WORKERS, max_clients);
+                let mut h = IdleHarness::new(rt, relay, iters, n);
+                let start = Instant::now();
+                for _ in 0..iters {
+                    h.iterate();
+                }
+                let elapsed = start.elapsed();
+                drop(h);
+                elapsed
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("nostr_relay", idle),
-            &idle,
-            |b, &n| {
-                b.iter_custom(|iters| {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(6)
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let relay = Relay::spawn_nostr_relay(WORKERS);
-                    let mut h = IdleHarness::new(rt, relay, iters, n);
-                    let start = Instant::now();
-                    for _ in 0..iters {
-                        h.iterate();
-                    }
-                    let elapsed = start.elapsed();
-                    drop(h);
-                    elapsed
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("nostr_relay", idle), &idle, |b, &n| {
+            b.iter_custom(|iters| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(6)
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let relay = Relay::spawn_nostr_relay(WORKERS);
+                let mut h = IdleHarness::new(rt, relay, iters, n);
+                let start = Instant::now();
+                for _ in 0..iters {
+                    h.iterate();
+                }
+                let elapsed = start.elapsed();
+                drop(h);
+                elapsed
+            });
+        });
     }
 
     group.finish();

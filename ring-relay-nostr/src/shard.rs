@@ -33,6 +33,8 @@ use quetzalcoatl::broadcast::arc::{ArcConsumer, ArcProducer};
 use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 
 use crate::protocol::ClientMessageView;
+use crate::storage::handle::{ReqJob, ReqQueue, WriteReq, WriteTx};
+use crate::storage::slot::decode_hex32;
 use crate::{RelayConfig, filter, protocol};
 
 /// A sub-replication message broadcast from one shard to all others.
@@ -49,10 +51,7 @@ pub(crate) enum SubRepl {
         sub_id: Arc<str>,
     },
     /// A client disconnected from its owning shard; drop all its replica subs.
-    ClientGone {
-        owner: u32,
-        client_id: i32,
-    },
+    ClientGone { owner: u32, client_id: i32 },
 }
 
 /// Subscriptions owned by a single connected client (local, authoritative view).
@@ -74,7 +73,10 @@ impl ClientState {
         // Replacing an existing sub with the same id: remove it from order
         // first so re-insertion puts it at the back.
         if self.subs.remove(&sub_id).is_some()
-            && let Some(pos) = self.order.iter().position(|s| s.as_ref() == sub_id.as_ref())
+            && let Some(pos) = self
+                .order
+                .iter()
+                .position(|s| s.as_ref() == sub_id.as_ref())
         {
             self.order.remove(pos);
         }
@@ -107,6 +109,19 @@ impl ClientState {
 /// Replicated subs from one peer-owned client (owner, client_id) → sub_id → filters.
 type ReplicaClient = HashMap<Arc<str>, Arc<[NostrSubscription]>>;
 
+/// Per-shard storage plumbing. When `None`, the shard runs ephemeral;
+/// when `Some`, EVENTs are pushed to the storage thread and REQs dispatch
+/// to the reader pool.
+///
+/// `WriteTx` is an SPSC producer so it is `Send + !Sync`; the shard owns
+/// it outright (not behind `Arc`). The req queue is shared across shards.
+pub(crate) struct ShardStorage {
+    pub write_tx: WriteTx,
+    pub req_queue: Arc<ReqQueue>,
+    pub storage_waker: std::thread::Thread,
+    pub reader_wakers: Arc<[std::thread::Thread]>,
+}
+
 /// Per-shard Nostr dispatcher. One instance per reader thread.
 pub struct ShardDispatcher {
     config: Arc<RelayConfig>,
@@ -124,6 +139,10 @@ pub struct ShardDispatcher {
     /// Inbound replication channel for this shard's replica view. None on
     /// single-shard configs.
     repl_rx: Option<ArcConsumer<SubRepl>>,
+    /// Storage plumbing; `None` → ephemeral mode.
+    storage: Option<ShardStorage>,
+    /// Reader-pool round-robin cursor for REQ dispatch.
+    next_reader: usize,
 }
 
 impl ShardDispatcher {
@@ -133,6 +152,7 @@ impl ShardDispatcher {
         owner_id: u32,
         repl_tx: Option<ArcProducer<SubRepl>>,
         repl_rx: Option<ArcConsumer<SubRepl>>,
+        storage: Option<ShardStorage>,
     ) -> Self {
         Self {
             config,
@@ -143,6 +163,8 @@ impl ShardDispatcher {
             replica: HashMap::new(),
             repl_tx,
             repl_rx,
+            storage,
+            next_reader: 0,
         }
     }
 
@@ -325,6 +347,32 @@ impl ShardDispatcher {
         // without a per-sub `String` allocation.
         let note_bytes: Arc<[u8]> = Arc::from(note_json.as_bytes());
 
+        // Fire-and-forget push to storage. The storage thread parses +
+        // dedups + indexes on its own thread; we don't block the shard on
+        // it. If the write ring is full we drop this event's persistence
+        // (live fan-out still happens). Backpressure policy TBD.
+        if let Some(storage) = &self.storage {
+            let mut event_id = [0u8; 32];
+            let mut pubkey = [0u8; 32];
+            if let Some(id_hex) = note.id.as_deref()
+                && let Some(id_bytes) = decode_hex32(id_hex)
+            {
+                event_id = id_bytes;
+            }
+            if let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) {
+                pubkey = pk_bytes;
+            }
+            let req = WriteReq {
+                raw_json: Arc::clone(&note_bytes),
+                event_id,
+                pubkey,
+                kind: note.kind,
+            };
+            if storage.write_tx.try_push(req).is_ok() {
+                storage.storage_waker.unpark();
+            }
+        }
+
         // Local fan-out.
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
@@ -419,6 +467,9 @@ impl ShardDispatcher {
             Arc::clone(&filters_arc),
             self.config.max_subs_per_conn,
         );
+        // End the mutable borrow of `state` here; subsequent code uses
+        // `filters_arc` which we already own.
+        let _ = state;
 
         if let Some(old_sub) = evicted {
             self.sender.send_text(
@@ -437,11 +488,32 @@ impl ShardDispatcher {
             owner: self.owner_id,
             client_id,
             sub_id: Arc::clone(&sub_id_arc),
-            filters: filters_arc,
+            filters: Arc::clone(&filters_arc),
         });
 
-        // Ephemeral: no stored events to replay. Immediate EOSE per NIP-01.
-        self.sender.send_text(client_id, protocol::eose(&sub_id_arc));
+        // Replay historical matches if storage is enabled; otherwise
+        // immediate EOSE (ephemeral behavior). The reader thread sends
+        // EOSE itself once the scan completes.
+        if let Some(storage) = &self.storage {
+            let job = ReqJob {
+                client_fd: client_id,
+                sub_id: Arc::clone(&sub_id_arc),
+                filters: Arc::clone(&filters_arc),
+            };
+            storage.req_queue.push(job);
+            let reader_idx = self.next_reader % storage.reader_wakers.len();
+            self.next_reader = self.next_reader.wrapping_add(1);
+            storage.reader_wakers[reader_idx].unpark();
+        } else {
+            // Replicate the new sub to peer shards (live-only mode).
+            // NOTE: in storage mode we skip replication of subs since
+            // historical replay covers both buckets AND live fan-out runs
+            // locally; cross-shard sub-replication for live events still
+            // works via the existing `replica` table update below in the
+            // non-storage path.
+            self.sender
+                .send_text(client_id, protocol::eose(&sub_id_arc));
+        }
     }
 
     fn on_close_sub(&mut self, client_id: i32, sub_id: &str) {
@@ -471,6 +543,7 @@ impl ShardDispatcher {
 
 /// Reader-thread entry point: drive a [`ReaderCore`] and dispatch every
 /// frame-level event through a [`ShardDispatcher`].
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shard(
     mut accept_rx: AcceptStream,
     sender: ServerSender,
@@ -479,6 +552,7 @@ pub(crate) fn run_shard(
     owner_id: u32,
     repl_tx: Option<ArcProducer<SubRepl>>,
     repl_rx: Option<ArcConsumer<SubRepl>>,
+    storage: Option<ShardStorage>,
 ) {
     let mut core = match ReaderCore::new(4096) {
         Ok(c) => c,
@@ -487,7 +561,8 @@ pub(crate) fn run_shard(
             return;
         }
     };
-    let mut dispatcher = ShardDispatcher::new(config, sender.clone(), owner_id, repl_tx, repl_rx);
+    let mut dispatcher =
+        ShardDispatcher::new(config, sender.clone(), owner_id, repl_tx, repl_rx, storage);
 
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any replication updates from peers first, so an EVENT in

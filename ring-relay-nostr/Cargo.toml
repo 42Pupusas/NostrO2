@@ -150,6 +150,10 @@ name = "compare_ingest"
 harness = false
 
 [[bench]]
+name = "compare_ingest_persistent"
+harness = false
+
+[[bench]]
 name = "compare_ingest_large"
 harness = false
 

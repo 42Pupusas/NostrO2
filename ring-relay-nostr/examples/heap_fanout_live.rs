@@ -27,7 +27,10 @@ const DEFAULT_SUBS: usize = 50;
 const DEFAULT_EVENTS: usize = 200;
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn main() {
@@ -142,7 +145,5 @@ fn main() {
     });
 
     drop(profiler);
-    eprintln!(
-        "heap_fanout_live: {num_events} events × {num_subs} subs — wrote dhat-heap.json"
-    );
+    eprintln!("heap_fanout_live: {num_events} events × {num_subs} subs — wrote dhat-heap.json");
 }

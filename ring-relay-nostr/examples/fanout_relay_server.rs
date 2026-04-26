@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let kind = args.next().expect("usage: fanout_relay_server ring|nostr ...");
+    let kind = args
+        .next()
+        .expect("usage: fanout_relay_server ring|nostr ...");
 
     let _guard: Box<dyn std::any::Any> = match kind.as_str() {
         "ring" => {
@@ -145,13 +147,12 @@ fn spawn_nostr_relay(http_workers: usize) -> NostrGuard {
                 .expect("create App");
                 let data = actix_web::web::Data::new(app);
 
-                let server = actix_web::HttpServer::new(move || {
-                    nostr_relay::create_web_app(data.clone())
-                })
-                .workers(http_workers)
-                .listen(listener)
-                .expect("actix listen")
-                .run();
+                let server =
+                    actix_web::HttpServer::new(move || nostr_relay::create_web_app(data.clone()))
+                        .workers(http_workers)
+                        .listen(listener)
+                        .expect("actix listen")
+                        .run();
 
                 let handle = server.handle();
                 tx.send(handle).unwrap();

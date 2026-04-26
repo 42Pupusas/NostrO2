@@ -66,7 +66,10 @@ fn get_without_nostr_accept_gets_404() {
     let req = "GET / HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n";
     let resp = send_and_read(port, req);
 
-    assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"), "got:\n{resp}");
+    assert!(
+        resp.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        "got:\n{resp}"
+    );
 
     shutdown.shutdown();
 }
@@ -78,7 +81,10 @@ fn get_other_path_gets_404() {
     let req = "GET /not-here HTTP/1.1\r\nHost: localhost\r\nAccept: application/nostr+json\r\n\r\n";
     let resp = send_and_read(port, req);
 
-    assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"), "got:\n{resp}");
+    assert!(
+        resp.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        "got:\n{resp}"
+    );
 
     shutdown.shutdown();
 }

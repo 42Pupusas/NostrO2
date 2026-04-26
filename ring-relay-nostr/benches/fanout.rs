@@ -58,11 +58,16 @@ async fn run_fanout(port: u16, frames: &[String], num_subs: usize) {
         let delivered = delivered.clone();
         let expected = frames.len();
         sub_tasks.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("sub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("sub connect");
             let (mut write, mut read) = ws.split();
             let sub_id = format!("s{i}");
             let req = format!(r#"["REQ","{sub_id}",{{}}]"#);
-            write.send(Message::Text(req.into())).await.expect("send REQ");
+            write
+                .send(Message::Text(req.into()))
+                .await
+                .expect("send REQ");
 
             // Drain: first frame will be EOSE, then expected EVENT frames.
             let mut events = 0;
@@ -83,7 +88,9 @@ async fn run_fanout(port: u16, frames: &[String], num_subs: usize) {
     }
 
     // Publisher: separate connection, blasts all events.
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("pub connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("pub connect");
     let (mut pub_write, mut pub_read) = ws.split();
 
     // Drain OKs from the publisher so its socket doesn't back-pressure.

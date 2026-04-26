@@ -45,7 +45,9 @@ fn presign(count: usize) -> Vec<String> {
 
 async fn run_ingest(port: u16, frames: &[String]) {
     let url = format!("ws://127.0.0.1:{port}");
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
     let (mut write, mut read) = ws.split();
 
     let expected = frames.len();

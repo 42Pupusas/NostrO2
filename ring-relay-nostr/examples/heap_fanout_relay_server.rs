@@ -21,7 +21,9 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let kind = args.next().expect("usage: heap_fanout_relay_server ring|nostr ...");
+    let kind = args
+        .next()
+        .expect("usage: heap_fanout_relay_server ring|nostr ...");
 
     let profiler = dhat::Profiler::new_heap();
 
@@ -32,7 +34,11 @@ fn main() {
                 .expect("max_clients")
                 .parse()
                 .expect("max_clients int");
-            let _workers: usize = args.next().unwrap_or_else(|| "4".into()).parse().unwrap_or(4);
+            let _workers: usize = args
+                .next()
+                .unwrap_or_else(|| "4".into())
+                .parse()
+                .unwrap_or(4);
             Box::new(spawn_ring(max_clients))
         }
         "nostr" => {
@@ -148,13 +154,12 @@ fn spawn_nostr_relay(http_workers: usize) -> NostrGuard {
                 .expect("create App");
                 let data = actix_web::web::Data::new(app);
 
-                let server = actix_web::HttpServer::new(move || {
-                    nostr_relay::create_web_app(data.clone())
-                })
-                .workers(http_workers)
-                .listen(listener)
-                .expect("actix listen")
-                .run();
+                let server =
+                    actix_web::HttpServer::new(move || nostr_relay::create_web_app(data.clone()))
+                        .workers(http_workers)
+                        .listen(listener)
+                        .expect("actix listen")
+                        .run();
 
                 let handle = server.handle();
                 tx.send(handle).unwrap();

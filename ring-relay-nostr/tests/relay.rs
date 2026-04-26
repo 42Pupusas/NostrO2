@@ -11,8 +11,8 @@ use ring_relay_nostr::{NostrRelay, RelayConfig};
 use serde_json::Value;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -23,8 +23,7 @@ fn spawn_relay(config: RelayConfig) -> (u16, ring_relay_nostr::ShutdownHandle) {
     // dispatch loop, so create in the worker.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut relay =
-            NostrRelay::bind([127, 0, 0, 1], 0, config).expect("bind relay");
+        let mut relay = NostrRelay::bind([127, 0, 0, 1], 0, config).expect("bind relay");
         let port = relay.port();
         let shutdown = relay.shutdown_handle();
         tx.send((port, shutdown)).unwrap();
@@ -49,7 +48,9 @@ async fn connect(port: u16) -> WsClient {
 }
 
 async fn send(ws: &mut WsClient, json: &str) {
-    ws.send(Message::Text(json.to_string().into())).await.unwrap();
+    ws.send(Message::Text(json.to_string().into()))
+        .await
+        .unwrap();
 }
 
 /// Read the next text frame with a timeout so tests fail fast on regressions.
@@ -157,7 +158,10 @@ async fn non_matching_filter_does_not_receive() {
 
     // Subscriber should not receive; use a short timeout.
     let result = tokio::time::timeout(Duration::from_millis(200), sub_ws.next()).await;
-    assert!(result.is_err(), "subscriber unexpectedly received: {result:?}");
+    assert!(
+        result.is_err(),
+        "subscriber unexpectedly received: {result:?}"
+    );
 
     shutdown.shutdown();
 }
@@ -356,7 +360,10 @@ async fn oversized_frame_is_noticed() {
     let resp = recv_text(&mut ws).await;
     assert_eq!(resp[0], "NOTICE");
     assert!(
-        resp[1].as_str().unwrap_or("").contains("max_message_length"),
+        resp[1]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_message_length"),
         "got {:?}",
         resp[1]
     );
@@ -384,7 +391,10 @@ async fn oversized_content_is_rejected() {
     assert_eq!(resp[1], id);
     assert_eq!(resp[2], false);
     assert!(
-        resp[3].as_str().unwrap_or("").contains("max_content_length"),
+        resp[3]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_content_length"),
         "got {:?}",
         resp[3]
     );

@@ -133,21 +133,20 @@ fn main() {
                 Arc::new(
                     (0..total_per_pub)
                         .map(|i| {
-                            let mut note = NostrNote::text_note(&format!(
-                                "pub{pub_idx:02}-{i:08} {filler}"
-                            ));
+                            let mut note =
+                                NostrNote::text_note(&format!("pub{pub_idx:02}-{i:08} {filler}"));
                             note.pubkey = kp.public_key();
                             kp.sign_nostr_note(&mut note).expect("sign");
-                            format!(
-                                r#"["EVENT",{}]"#,
-                                serde_json::to_string(&note).unwrap()
-                            )
+                            format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap())
                         })
                         .collect(),
                 )
             })
             .collect();
-        eprintln!("pre-sign done in {:.2}s", presign_start.elapsed().as_secs_f64());
+        eprintln!(
+            "pre-sign done in {:.2}s",
+            presign_start.elapsed().as_secs_f64()
+        );
 
         // Wire byte size per event (after JSON encoding). Use the first
         // pool's first frame as the representative — sizes are effectively
@@ -182,10 +181,7 @@ fn main() {
             let sinks = std::mem::take(&mut pub_sinks);
             pub_sinks = send_batch(sinks, pools.clone(), 0, warmup_per_pub).await;
             wait_for_acks(&ok_count, target, Duration::from_secs(120)).await;
-            eprintln!(
-                "warmup: {} acks received",
-                ok_count.load(Ordering::Relaxed)
-            );
+            eprintln!("warmup: {} acks received", ok_count.load(Ordering::Relaxed));
         }
 
         // --------------- timed ---------------
@@ -217,7 +213,10 @@ fn main() {
         println!("  frame size:    {} bytes", bytes_per_event);
         println!("  total bytes:   {} MiB", timed_bytes / (1024 * 1024));
         println!("  elapsed:       {:.3} s", secs);
-        println!("  throughput:    {:.1} MiB/s  ({:.0} events/s)", mib_per_sec, events_per_sec);
+        println!(
+            "  throughput:    {:.1} MiB/s  ({:.0} events/s)",
+            mib_per_sec, events_per_sec
+        );
         println!("=========================================================");
 
         for t in reader_tasks {

@@ -64,7 +64,9 @@ async fn run_multi_pub(port: u16, frames: Arc<Vec<String>>, num_pubs: usize) {
         let url = url.clone();
         let frames = Arc::clone(&frames);
         pubs.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("connect");
             let (mut write, mut read) = ws.split();
 
             let reader = tokio::spawn(async move {
@@ -79,7 +81,10 @@ async fn run_multi_pub(port: u16, frames: Arc<Vec<String>>, num_pubs: usize) {
             });
 
             for frame in frames.iter() {
-                write.send(Message::Text(frame.clone().into())).await.expect("send");
+                write
+                    .send(Message::Text(frame.clone().into()))
+                    .await
+                    .expect("send");
             }
 
             reader.await.unwrap();
@@ -101,33 +106,29 @@ fn bench_multi_pub_ingest(c: &mut Criterion) {
     for &shards in &[1usize, 2, 4] {
         let total_events = NUM_PUBS * EVENTS_PER_PUB;
         group.throughput(Throughput::Elements(total_events as u64));
-        group.bench_with_input(
-            BenchmarkId::new("pubs8", shards),
-            &shards,
-            |b, &shards| {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(NUM_PUBS.min(8))
-                    .enable_all()
-                    .build()
-                    .unwrap();
+        group.bench_with_input(BenchmarkId::new("pubs8", shards), &shards, |b, &shards| {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(NUM_PUBS.min(8))
+                .enable_all()
+                .build()
+                .unwrap();
 
-                b.iter_custom(|iters| {
-                    let mut total = Duration::ZERO;
-                    for _ in 0..iters {
-                        let (port, shutdown) = spawn_relay(shards);
-                        let frames = Arc::clone(&frames);
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    let (port, shutdown) = spawn_relay(shards);
+                    let frames = Arc::clone(&frames);
 
-                        let start = Instant::now();
-                        rt.block_on(run_multi_pub(port, frames, NUM_PUBS));
-                        total += start.elapsed();
+                    let start = Instant::now();
+                    rt.block_on(run_multi_pub(port, frames, NUM_PUBS));
+                    total += start.elapsed();
 
-                        shutdown.shutdown();
-                        std::thread::sleep(Duration::from_millis(30));
-                    }
-                    total
-                });
-            },
-        );
+                    shutdown.shutdown();
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                total
+            });
+        });
     }
 
     group.finish();

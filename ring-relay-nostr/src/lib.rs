@@ -21,6 +21,7 @@ mod filter;
 mod info;
 mod protocol;
 mod shard;
+mod storage;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +35,7 @@ pub use protocol::{
     serialize_note, serialize_note_view,
 };
 pub use shard::ShardDispatcher;
+pub use storage::StorageConfig;
 
 /// Configuration for the Nostr relay layer.
 #[derive(Debug, Clone)]
@@ -68,6 +70,11 @@ pub struct RelayConfig {
     /// NIP-11 relay information document served on `GET /`. When `None`,
     /// plain HTTP requests get a 400.
     pub info: Option<RelayInfo>,
+    /// Persistence configuration. When `None`, the relay is ephemeral
+    /// (original behavior): REQs return immediate EOSE, events aren't
+    /// stored. When `Some`, events are persisted to the bounded buckets
+    /// and REQs stream historical matches before EOSE.
+    pub storage: Option<StorageConfig>,
     /// kTLS config. When set, the kernel terminates TLS on every connection
     /// and the io_uring data path sees plaintext. The rustls `ServerConfig`
     /// must have `enable_secret_extraction = true`.
@@ -107,6 +114,7 @@ impl Default for RelayConfig {
             max_past_drift: None,
             max_future_drift: Some(900), // 15 minutes
             info: Some(info),
+            storage: None,
             #[cfg(feature = "ktls")]
             tls: None,
         }
@@ -124,6 +132,8 @@ pub struct NostrRelay {
     reader_threads: Vec<std::thread::JoinHandle<()>>,
     port: u16,
     shutdown: Arc<AtomicBool>,
+    storage_shutdown: Option<storage::engine::StorageShutdown>,
+    reader_pool_shutdown: Option<storage::reader::ReaderPoolShutdown>,
 }
 
 impl NostrRelay {
@@ -160,7 +170,54 @@ impl NostrRelay {
         let port = builder.port();
         let shutdown = builder.shutdown_flag();
         let n = accept_rxs.len();
+        let storage_config = config.storage.clone();
         let config = Arc::new(config);
+
+        // Storage + reader pool setup (if persistence is enabled).
+        //
+        // One per-shard SPSC write ring feeds the single storage thread.
+        // Reader pool shares one MPSC job queue + per-thread wakers.
+        let mut per_shard_write_tx: Vec<Option<storage::handle::WriteTx>> = Vec::with_capacity(n);
+        let mut per_shard_write_rx: Vec<storage::handle::WriteRx> = Vec::with_capacity(n);
+        let (
+            storage_engine,
+            storage_shutdown_opt,
+            storage_thread_handle,
+            reader_pool_shutdown_opt,
+            reader_thread_handles,
+        ) = if let Some(sc) = storage_config.as_ref() {
+            for _ in 0..n {
+                let (tx, rx) = quetzalcoatl::spsc::RingBuffer::new(
+                    quetzalcoatl::capacity::Capacity::at_least(sc.write_ring_capacity),
+                )
+                .split();
+                per_shard_write_tx.push(Some(storage::handle::WriteTx(tx)));
+                per_shard_write_rx.push(storage::handle::WriteRx(rx));
+            }
+            let (engine, sd, thread_handle) = storage::engine::StorageEngine::spawn(
+                sc,
+                sc.reader_threads,
+                std::mem::take(&mut per_shard_write_rx),
+            )?;
+            let req_queue = Arc::new(storage::handle::ReqQueue::new());
+            let (pool_sd, reader_threads) = storage::reader::ReaderPool::spawn(
+                engine.shared(),
+                Arc::clone(&req_queue),
+                builder.sender(),
+                sc.data_dir.clone(),
+                sc.reader_threads,
+            )?;
+            (
+                Some((engine, req_queue)),
+                Some(sd),
+                Some(thread_handle),
+                Some(pool_sd),
+                reader_threads,
+            )
+        } else {
+            (None, None, None, None, Vec::new())
+        };
+        let _ = &storage_engine;
 
         // Cross-shard sub replication via one broadcast ring. Only allocate
         // when there's more than one shard — a single-shard relay has no
@@ -174,10 +231,8 @@ impl NostrRelay {
             let cap = quetzalcoatl::capacity::Capacity::at_least(
                 (config.max_clients * config.max_subs_per_conn).max(4096),
             );
-            let (p, c) = quetzalcoatl::broadcast::arc::ArcRingBuffer::<shard::SubRepl>::new(
-                cap, n,
-            )
-            .split();
+            let (p, c) =
+                quetzalcoatl::broadcast::arc::ArcRingBuffer::<shard::SubRepl>::new(cap, n).split();
             (Some(p), Some(c))
         } else {
             (None, None)
@@ -186,6 +241,7 @@ impl NostrRelay {
         // Spawn one reader thread per shard, each running a ShardDispatcher
         // inline on the I/O thread.
         let mut reader_threads = Vec::with_capacity(n);
+        let reader_wakers_arc: Arc<[std::thread::Thread]> = Arc::from(reader_thread_handles);
         for (i, accept_rx) in accept_rxs.into_iter().enumerate() {
             let sender = builder.sender();
             let cfg = Arc::clone(&config);
@@ -203,6 +259,22 @@ impl NostrRelay {
                 repl_consumer_opt.take()
             };
 
+            let shard_storage = match (
+                storage_engine.as_ref(),
+                storage_thread_handle.as_ref(),
+                per_shard_write_tx.get_mut(i).and_then(Option::take),
+            ) {
+                (Some((_engine, req_queue)), Some(storage_thread), Some(write_tx)) => {
+                    Some(shard::ShardStorage {
+                        write_tx,
+                        req_queue: Arc::clone(req_queue),
+                        storage_waker: storage_thread.clone(),
+                        reader_wakers: Arc::clone(&reader_wakers_arc),
+                    })
+                }
+                _ => None,
+            };
+
             let handle = std::thread::Builder::new()
                 .name(format!("nostr-shard-{i}"))
                 .spawn(move || {
@@ -214,6 +286,7 @@ impl NostrRelay {
                         owner_id,
                         repl_tx,
                         repl_rx,
+                        shard_storage,
                     );
                 })?;
             reader_threads.push(handle);
@@ -231,6 +304,8 @@ impl NostrRelay {
             reader_threads,
             port,
             shutdown,
+            storage_shutdown: storage_shutdown_opt,
+            reader_pool_shutdown: reader_pool_shutdown_opt,
         })
     }
 
@@ -273,6 +348,16 @@ impl Drop for NostrRelay {
         }
         for h in self.reader_threads.drain(..) {
             let _ = h.join();
+        }
+        // Reader-pool threads push writes; stop them before the writer
+        // rings tear down.
+        if let Some(mut rp) = self.reader_pool_shutdown.take() {
+            rp.stop();
+        }
+        // Storage thread has no outbound writes to the WS layer; stop it
+        // after the shard readers so no late writes arrive.
+        if let Some(mut sd) = self.storage_shutdown.take() {
+            sd.stop();
         }
         // Readers are gone — safe to tear down listener + writers.
         drop(self.components.take());

@@ -22,8 +22,8 @@ use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use common::{Relay, presign_for};
 
@@ -239,29 +239,25 @@ fn bench(c: &mut Criterion) {
     for &workers in &[1usize, 2, 4] {
         let max_clients = NUM_SUBS + NUM_PUBS + 8;
 
-        group.bench_with_input(
-            BenchmarkId::new("ring", workers),
-            &workers,
-            |b, &w| {
-                b.iter_custom(|iters| {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(6)
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let relay = Relay::spawn_ring(w, max_clients);
-                    let mut h = FanoutHarness::new(rt, relay, iters);
-                    // Timed region: iters × fan-out cycles.
-                    let start = Instant::now();
-                    for _ in 0..iters {
-                        h.iterate();
-                    }
-                    let elapsed = start.elapsed();
-                    drop(h);
-                    elapsed
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ring", workers), &workers, |b, &w| {
+            b.iter_custom(|iters| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(6)
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let relay = Relay::spawn_ring(w, max_clients);
+                let mut h = FanoutHarness::new(rt, relay, iters);
+                // Timed region: iters × fan-out cycles.
+                let start = Instant::now();
+                for _ in 0..iters {
+                    h.iterate();
+                }
+                let elapsed = start.elapsed();
+                drop(h);
+                elapsed
+            });
+        });
 
         group.bench_with_input(
             BenchmarkId::new("nostr_relay", workers),

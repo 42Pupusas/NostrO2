@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use common::Relay;
 
@@ -155,10 +155,7 @@ impl Drop for IngestHarness {
     }
 }
 
-async fn connect_pubs(
-    url: &str,
-    ok_count: Arc<AtomicUsize>,
-) -> (Vec<WsSink>, Vec<JoinHandle<()>>) {
+async fn connect_pubs(url: &str, ok_count: Arc<AtomicUsize>) -> (Vec<WsSink>, Vec<JoinHandle<()>>) {
     let mut sinks = Vec::with_capacity(NUM_PUBS);
     let mut readers = Vec::with_capacity(NUM_PUBS);
     for _ in 0..NUM_PUBS {
@@ -186,9 +183,7 @@ fn bench(c: &mut Criterion) {
     let events_per_iter = NUM_PUBS * EVENTS_PER_ITER;
     // Report throughput in bytes so results express real wire bandwidth, not
     // just OK/s — large-payload runs are bandwidth-bound.
-    group.throughput(Throughput::Bytes(
-        (events_per_iter * CONTENT_BYTES) as u64,
-    ));
+    group.throughput(Throughput::Bytes((events_per_iter * CONTENT_BYTES) as u64));
 
     for &workers in &[1usize, 2, 4] {
         let max_clients = NUM_PUBS + 8;

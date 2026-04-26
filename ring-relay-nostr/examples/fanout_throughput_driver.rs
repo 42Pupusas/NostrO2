@@ -31,7 +31,10 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn main() {
@@ -276,26 +279,32 @@ fn main() {
 }
 
 async fn send_batch(
-    sinks: Vec<futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        Message,
-    >>,
+    sinks: Vec<
+        futures_util::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
+    >,
     pools: Vec<Arc<Vec<String>>>,
     start_idx: usize,
     count: usize,
-) -> Vec<futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
->> {
+) -> Vec<
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+> {
     let mut handles = Vec::with_capacity(sinks.len());
     for (pub_idx, (mut sink, pool)) in sinks.into_iter().zip(pools.into_iter()).enumerate() {
         handles.push(tokio::spawn(async move {
             for (i, frame) in pool[start_idx..start_idx + count].iter().enumerate() {
                 sink.send(Message::Text(frame.clone().into()))
                     .await
-                    .unwrap_or_else(|e| {
-                        panic!("pub {pub_idx} send failed at event {i}: {e}")
-                    });
+                    .unwrap_or_else(|e| panic!("pub {pub_idx} send failed at event {i}: {e}"));
             }
             eprintln!("  pub {pub_idx}: sent {count} frames");
             sink

@@ -97,11 +97,11 @@ async fn main() {
         let sent = Arc::clone(&sent);
         pub_tasks.push(tokio::spawn(async move {
             let kp = K256Keypair::generate();
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("pub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("pub connect");
             let (mut write, mut read) = ws.split();
-            let drainer = tokio::spawn(async move {
-                while let Some(Ok(_)) = read.next().await {}
-            });
+            let drainer = tokio::spawn(async move { while let Some(Ok(_)) = read.next().await {} });
 
             let mut counter: usize = 0;
             while Instant::now() < deadline {

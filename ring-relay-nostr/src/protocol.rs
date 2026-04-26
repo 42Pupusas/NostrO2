@@ -285,8 +285,7 @@ pub fn eose(sub_id: &str) -> String {
 /// Encode `["CLOSED", sub_id, message]`.
 #[must_use]
 pub fn closed(sub_id: &str, message: &str) -> String {
-    serde_json::to_string(&("CLOSED", sub_id, message))
-        .expect("CLOSED serialization cannot fail")
+    serde_json::to_string(&("CLOSED", sub_id, message)).expect("CLOSED serialization cannot fail")
 }
 
 /// Encode `["NOTICE", message]`.
@@ -373,7 +372,8 @@ mod tests {
     #[test]
     fn parse_event() {
         // Use a syntactically well-formed note — parse only, no signature check here.
-        let note_json = r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi","id":"b","sig":"c"}"#;
+        let note_json =
+            r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi","id":"b","sig":"c"}"#;
         let msg = format!(r#"["EVENT",{note_json}]"#);
         match parse(&msg).unwrap() {
             ClientMessage::Event(note) => assert_eq!(note.content, "hi"),
@@ -502,7 +502,8 @@ mod tests {
             ..Default::default()
         };
         note.tags.add_custom_tag("t", "nostr");
-        note.tags.add_pubkey_tag(&"d".repeat(64), Some("wss://example"));
+        note.tags
+            .add_pubkey_tag(&"d".repeat(64), Some("wss://example"));
 
         let owned_json = serialize_note(&note);
         let view: nostro2::NostrNoteView<'_> = serde_json::from_str(&owned_json).unwrap();

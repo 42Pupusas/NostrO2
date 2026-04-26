@@ -11,7 +11,7 @@ use std::sync::Arc;
 use nostro2::{NostrNote, NostrSigner};
 use nostro2_signer::K256Keypair;
 
-use ring_relay_nostr::{NostrRelay, RelayConfig};
+use ring_relay_nostr::{NostrRelay, RelayConfig, StorageConfig};
 use ring_relay_server::ShardConfig;
 
 /// Pre-sign `count` distinct kind-1 events, ready to wire-send.
@@ -79,6 +79,71 @@ impl Relay {
             _guard: Box::new(Guard {
                 shutdown,
                 _thread: handle,
+            }),
+        }
+    }
+
+    /// Spin up ring-relay-nostr **with persistence enabled**, data dir on
+    /// tmpfs (/dev/shm when available) so ingest isn't disk-bound — same
+    /// policy as `spawn_nostr_relay`, so the comparison is apples-to-apples.
+    pub fn spawn_ring_persistent(shards: usize, max_clients: usize) -> Self {
+        struct Guard {
+            shutdown: ring_relay_nostr::ShutdownHandle,
+            _thread: std::thread::JoinHandle<()>,
+            _tempdir: tempfile::TempDir,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.shutdown.shutdown();
+            }
+        }
+
+        let tmp_root = if PathBuf::from("/dev/shm").is_dir() {
+            Some(PathBuf::from("/dev/shm"))
+        } else {
+            None
+        };
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("ring-relay-bench-");
+        let tempdir = if let Some(root) = tmp_root {
+            builder.tempdir_in(root).expect("tempdir on tmpfs")
+        } else {
+            builder.tempdir().expect("tempdir")
+        };
+
+        let data_path = tempdir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let mut cfg = RelayConfig::default();
+            cfg.shards = ShardConfig {
+                reader_shards: shards,
+                writer_shards: shards,
+            };
+            cfg.max_clients = max_clients;
+            cfg.storage = Some(StorageConfig {
+                data_dir: data_path,
+                ephemeral_slots: 200_000,
+                replaceable_slots: 10_000,
+                parameterized_slots: 10_000,
+                max_payload: 64 * 1024,
+                reader_threads: 2,
+                write_ring_capacity: 8192,
+                req_ring_capacity: 1024,
+                fsync_interval_ms: Some(10),
+            });
+            let mut relay = NostrRelay::bind([127, 0, 0, 1], 0, cfg).expect("ring bind");
+            let port = relay.port();
+            let shutdown = relay.shutdown_handle();
+            tx.send((port, shutdown)).unwrap();
+            relay.run();
+        });
+        let (port, shutdown) = rx.recv().unwrap();
+        Relay {
+            port,
+            _guard: Box::new(Guard {
+                shutdown,
+                _thread: handle,
+                _tempdir: tempdir,
             }),
         }
     }

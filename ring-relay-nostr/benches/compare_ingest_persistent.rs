@@ -1,16 +1,12 @@
-//! Head-to-head ingest bench: ring-relay-nostr (ephemeral, io_uring) vs
+//! Head-to-head ingest bench **with persistence on both sides**:
+//! ring-relay-nostr (bounded buckets + storage thread, data on tmpfs) vs
 //! nostr-relay 0.4.8 (actix + LMDB on tmpfs).
 //!
-//! 8 publishers, each publishing a batch of distinct EVENTs per iteration.
-//! No subscribers. Measures pure ingest throughput: parse + verify + OK
-//! encode + write. Setup (relay spawn, 8 TCP connects) and teardown happen
-//! once per configuration, outside the timed region.
-//!
-//! Caveat: nostr-relay's LMDB is pointed at /dev/shm so disk I/O is not a
-//! variable, but the full DB code path (serialization, LMDB bookkeeping,
-//! batched writer actor) still runs. ring-relay-nostr has no persistence
-//! by design. The comparison is "what's the throughput ceiling of the two
-//! designs when storage is not the bottleneck," not "relay logic only."
+//! Same shape as `compare_ingest` (8 publishers, N events/iter, no subs).
+//! The difference: ring-relay-nostr is configured with `StorageConfig`, so
+//! every EVENT is parsed, verified, OK'd, fanned-out to (zero) subs, *and*
+//! handed to the storage thread which writes + indexes + group-commit
+//! fsyncs. This is the apples-to-apples comparison for a persistent relay.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -29,19 +25,15 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use common::{Relay, presign_for};
 
 const NUM_PUBS: usize = 8;
-const EVENTS_PER_ITER: usize = 200; // per pub, per iteration
+const EVENTS_PER_ITER: usize = 200;
 
 type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
-/// Harness holding an already-running relay and pre-opened publisher
-/// connections. Each iteration publishes the next `EVENTS_PER_ITER` events
-/// per publisher and waits for their OK acks.
 struct IngestHarness {
     relay: Option<Relay>,
     rt: Runtime,
     pub_sinks: Vec<WsSink>,
     ok_count: Arc<AtomicUsize>,
-    /// Pre-signed events per publisher; each iter consumes EVENTS_PER_ITER.
     pub_pools: Vec<Arc<Vec<String>>>,
     pub_cursor: usize,
     reader_tasks: Vec<JoinHandle<()>>,
@@ -77,8 +69,6 @@ impl IngestHarness {
         let before = self.ok_count.load(Ordering::Relaxed);
         let target = before + NUM_PUBS * EVENTS_PER_ITER;
 
-        // Publish all 8 pubs in parallel so the client side isn't a serial
-        // bottleneck. Each sink gets its own task; join_all at the end.
         let pools = self.pub_pools.clone();
         let sinks = std::mem::take(&mut self.pub_sinks);
         let returned: Vec<WsSink> = self.rt.block_on(async {
@@ -101,10 +91,6 @@ impl IngestHarness {
         });
         self.pub_sinks = returned;
 
-        // Tight spin with periodic yield to the scheduler. A blocking sleep
-        // here would add poll-grain latency per iter; since the reader tasks
-        // run on tokio workers (not this thread), we don't starve anything
-        // by spinning.
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut spins: u32 = 0;
         loop {
@@ -162,7 +148,7 @@ async fn connect_pubs(url: &str, ok_count: Arc<AtomicUsize>) -> (Vec<WsSink>, Ve
 }
 
 fn bench(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compare_ingest");
+    let mut group = c.benchmark_group("compare_ingest_persistent");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(15));
     let events_per_iter = NUM_PUBS * EVENTS_PER_ITER;
@@ -171,24 +157,28 @@ fn bench(c: &mut Criterion) {
     for &workers in &[1usize, 2, 4] {
         let max_clients = NUM_PUBS + 8;
 
-        group.bench_with_input(BenchmarkId::new("ring", workers), &workers, |b, &w| {
-            b.iter_custom(|iters| {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(NUM_PUBS.min(8))
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                let relay = Relay::spawn_ring(w, max_clients);
-                let mut h = IngestHarness::new(rt, relay, iters);
-                let start = Instant::now();
-                for _ in 0..iters {
-                    h.iterate();
-                }
-                let elapsed = start.elapsed();
-                drop(h);
-                elapsed
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("ring_persistent", workers),
+            &workers,
+            |b, &w| {
+                b.iter_custom(|iters| {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(NUM_PUBS.min(8))
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let relay = Relay::spawn_ring_persistent(w, max_clients);
+                    let mut h = IngestHarness::new(rt, relay, iters);
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        h.iterate();
+                    }
+                    let elapsed = start.elapsed();
+                    drop(h);
+                    elapsed
+                });
+            },
+        );
 
         group.bench_with_input(
             BenchmarkId::new("nostr_relay", workers),

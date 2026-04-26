@@ -29,7 +29,9 @@ async fn nostr_relay_harness_round_trips_event() {
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     let url = format!("ws://127.0.0.1:{}", relay.port);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
     let (mut write, mut read) = ws.split();
 
     let (id, frame) = signed_frame();
@@ -55,7 +57,9 @@ async fn ring_relay_harness_round_trips_event() {
     let relay = Relay::spawn_ring(1, 64);
 
     let url = format!("ws://127.0.0.1:{}", relay.port);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
     let (mut write, mut read) = ws.split();
 
     let (id, frame) = signed_frame();
@@ -121,7 +125,9 @@ async fn nostr_relay_tiny_fanout() {
         let url = url.clone();
         let delivered = delivered.clone();
         sub_tasks.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("sub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("sub connect");
             let (mut write, mut read) = ws.split();
             let req = format!(r#"["REQ","s{i}",{{"kinds":[1]}}]"#);
             write.send(Message::Text(req.into())).await.expect("REQ");
@@ -144,7 +150,9 @@ async fn nostr_relay_tiny_fanout() {
     for frames in frame_sets.iter().cloned() {
         let url = url.clone();
         pub_tasks.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("pub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("pub connect");
             let (mut write, mut read) = ws.split();
             let reader = tokio::spawn(async move {
                 let mut oks = 0;
@@ -157,7 +165,10 @@ async fn nostr_relay_tiny_fanout() {
                 oks
             });
             for frame in frames.iter() {
-                write.send(Message::Text(frame.clone().into())).await.expect("send");
+                write
+                    .send(Message::Text(frame.clone().into()))
+                    .await
+                    .expect("send");
             }
             tokio::time::timeout(Duration::from_secs(10), reader)
                 .await

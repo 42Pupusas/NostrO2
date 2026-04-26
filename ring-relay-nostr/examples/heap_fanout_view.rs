@@ -71,5 +71,7 @@ fn main() {
 
     drop(profiler);
 
-    eprintln!("heap_fanout_view: {FRAMES} frames × {SUBSCRIBERS_PER_FRAME} subs = {produced} out frames — wrote dhat-heap.json");
+    eprintln!(
+        "heap_fanout_view: {FRAMES} frames × {SUBSCRIBERS_PER_FRAME} subs = {produced} out frames — wrote dhat-heap.json"
+    );
 }

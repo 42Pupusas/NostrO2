@@ -50,8 +50,7 @@ fn main() {
 
     let mut accepted = 0usize;
     for _ in 0..ITERATIONS {
-        let note: NostrNote =
-            serde_json::from_str(black_box(&note_json)).expect("parse note");
+        let note: NostrNote = serde_json::from_str(black_box(&note_json)).expect("parse note");
         accepted += 1;
         black_box(note.pubkey.len());
         black_box(note.tags.len());
@@ -59,7 +58,5 @@ fn main() {
 
     drop(profiler);
 
-    eprintln!(
-        "heap_parse_ingest: {ITERATIONS} iters, {accepted} accepted — wrote dhat-heap.json"
-    );
+    eprintln!("heap_parse_ingest: {ITERATIONS} iters, {accepted} accepted — wrote dhat-heap.json");
 }

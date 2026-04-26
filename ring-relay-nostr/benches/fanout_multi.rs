@@ -58,12 +58,7 @@ fn presign(count: usize) -> Arc<Vec<String>> {
     )
 }
 
-async fn run_fanout(
-    port: u16,
-    frames: Arc<Vec<String>>,
-    num_subs: usize,
-    num_pubs: usize,
-) {
+async fn run_fanout(port: u16, frames: Arc<Vec<String>>, num_subs: usize, num_pubs: usize) {
     let url = format!("ws://127.0.0.1:{port}");
     let delivered = Arc::new(AtomicUsize::new(0));
     let total_events = num_pubs * frames.len();
@@ -74,10 +69,15 @@ async fn run_fanout(
         let url = url.clone();
         let delivered = delivered.clone();
         sub_tasks.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("sub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("sub connect");
             let (mut write, mut read) = ws.split();
             let req = format!(r#"["REQ","s{i}",{{}}]"#);
-            write.send(Message::Text(req.into())).await.expect("send REQ");
+            write
+                .send(Message::Text(req.into()))
+                .await
+                .expect("send REQ");
 
             let mut events = 0;
             while events < total_events {
@@ -105,7 +105,9 @@ async fn run_fanout(
         let frames = Arc::clone(&frames);
         let expected = frames.len();
         pub_tasks.push(tokio::spawn(async move {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("pub connect");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("pub connect");
             let (mut write, mut read) = ws.split();
             let reader = tokio::spawn(async move {
                 let mut oks = 0;

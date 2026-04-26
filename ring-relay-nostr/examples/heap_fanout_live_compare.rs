@@ -30,7 +30,10 @@ const DEFAULT_SUBS: usize = 50;
 const DEFAULT_EVENTS: usize = 200;
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 enum RelayHandle {
@@ -138,13 +141,12 @@ fn spawn_nostr_relay(http_workers: usize) -> RelayHandle {
                 .expect("create App");
                 let data = actix_web::web::Data::new(app);
 
-                let server = actix_web::HttpServer::new(move || {
-                    nostr_relay::create_web_app(data.clone())
-                })
-                .workers(http_workers)
-                .listen(listener)
-                .expect("actix listen")
-                .run();
+                let server =
+                    actix_web::HttpServer::new(move || nostr_relay::create_web_app(data.clone()))
+                        .workers(http_workers)
+                        .listen(listener)
+                        .expect("actix listen")
+                        .run();
 
                 let handle = server.handle();
                 tx.send(handle).unwrap();

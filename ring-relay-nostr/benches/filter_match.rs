@@ -45,7 +45,10 @@ fn bench_authors_filter(c: &mut Criterion) {
     let note = note_for_match();
 
     // Small authors list — typical follow list stub.
-    let small: Vec<String> = (0..10).map(|i| format!("{i:064}")).chain(std::iter::once(note.pubkey.clone())).collect();
+    let small: Vec<String> = (0..10)
+        .map(|i| format!("{i:064}"))
+        .chain(std::iter::once(note.pubkey.clone()))
+        .collect();
     let filter_small = NostrSubscription::new().authors(small);
     c.bench_function("filter/authors_10_hit_last", |b| {
         b.iter(|| matches(black_box(&note), black_box(&filter_small)));
