@@ -202,15 +202,20 @@ fn reader_loop(
     let gen_slot: &AtomicU64 = &shared.reader_active_gens[reader_idx];
 
     while !shutdown.load(Ordering::Acquire) {
+        // Drain the broadcast ring every iteration, not only when a REQ
+        // arrives. The storage thread blocks (push_with_backoff) once the
+        // ring fills, so an idle reader that hasn't drained becomes a hard
+        // throughput cap on ingest. Draining on every tick keeps the ring
+        // a streaming buffer instead of a wall.
+        state.drain_updates();
+
         let Some(job) = req_queue.pop() else {
-            std::thread::park_timeout(Duration::from_millis(50));
+            // Short park so we keep draining promptly under heavy ingest.
+            // 50ms was fine when the ring was only relevant to REQs; with
+            // idle-drain it would let the ring back up between ticks.
+            std::thread::park_timeout(Duration::from_millis(1));
             continue;
         };
-
-        // Drain any pending index updates before we snapshot the gen so
-        // our private indexes are as fresh as the broadcast ring lets us
-        // be at this instant.
-        state.drain_updates();
 
         let g_req = shared.current_gen.load(Ordering::Acquire);
         gen_slot.store(g_req, Ordering::Release);
