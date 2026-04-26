@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use nostro2::{NostrNoteView, NostrSubscription};
 
@@ -111,10 +111,20 @@ pub fn hex_encode32(bytes: &[u8; 32]) -> String {
     out
 }
 
+/// Shared empty-tags Arc. Most kind-1 events have no indexable tags;
+/// returning a clone of this avoids two allocations (Vec + Arc) per write.
+fn empty_tags() -> Arc<[(u8, Box<str>)]> {
+    static EMPTY: OnceLock<Arc<[(u8, Box<str>)]>> = OnceLock::new();
+    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new().into_boxed_slice())))
+}
+
 /// Extract the indexable single-letter tags from a parsed note view. Used
 /// when the storage thread accepts an EVENT; result goes into `SlotMeta`.
 #[must_use]
 pub fn extract_tags(note: &NostrNoteView<'_>) -> Arc<[(u8, Box<str>)]> {
+    if note.tags.is_empty() {
+        return empty_tags();
+    }
     let mut out: Vec<(u8, Box<str>)> = Vec::new();
     for row in note.tags.iter() {
         let Some(name) = row.first() else { continue };
@@ -132,6 +142,9 @@ pub fn extract_tags(note: &NostrNoteView<'_>) -> Arc<[(u8, Box<str>)]> {
         if out.len() >= 64 {
             break;
         }
+    }
+    if out.is_empty() {
+        return empty_tags();
     }
     Arc::from(out.into_boxed_slice())
 }

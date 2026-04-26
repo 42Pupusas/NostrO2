@@ -106,12 +106,13 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
-/// CRC-64 (ECMA-182) incremental, table-free. Not the fastest in the world
-/// but adequate for torn-write detection at our ingest rates.
+/// Streaming CRC-64 (ECMA-182) step. `state` starts as `!0` for the first
+/// chunk; final
+/// digest is `!state` after the last chunk. Lets the encode path fold the
+/// header and payload together without allocating a combined buffer.
 #[must_use]
-pub fn crc64(bytes: &[u8]) -> u64 {
+pub fn crc64_update(mut crc: u64, bytes: &[u8]) -> u64 {
     const POLY: u64 = 0xC96C_5795_D787_0F42;
-    let mut crc: u64 = !0;
     for &b in bytes {
         crc ^= u64::from(b);
         for _ in 0..8 {
@@ -122,7 +123,7 @@ pub fn crc64(bytes: &[u8]) -> u64 {
             }
         }
     }
-    !crc
+    crc
 }
 
 /// Encode a slot header into its on-disk byte form. `payload` is the raw
@@ -141,19 +142,10 @@ pub fn encode_header(slot: &Slot, payload: &[u8]) -> [u8; SLOT_HEADER_SIZE] {
     buf[104..108].copy_from_slice(&d_off.to_le_bytes());
     buf[108..112].copy_from_slice(&d_len.to_le_bytes());
     // bytes 112..120 reserved, left zero.
-    // Compute CRC over [0..120] with payload appended conceptually.
-    let mut hasher_input = [0u8; 120];
-    hasher_input.copy_from_slice(&buf[..120]);
-    // Fold payload bytes into crc by sequential pass.
-    let crc = {
-        let prefix = crc64(&hasher_input);
-        // Continue the CRC over the payload bytes. Easiest: recompute combined.
-        let mut combined = Vec::with_capacity(120 + payload.len());
-        combined.extend_from_slice(&hasher_input);
-        combined.extend_from_slice(payload);
-        let _ = prefix;
-        crc64(&combined)
-    };
+    // Stream the CRC over header bytes [0..120] then payload, no temp buffer.
+    let mut state = crc64_update(!0, &buf[..120]);
+    state = crc64_update(state, payload);
+    let crc = !state;
     buf[120..128].copy_from_slice(&crc.to_le_bytes());
     buf
 }
@@ -187,10 +179,9 @@ pub fn decode_header(header: &[u8; SLOT_HEADER_SIZE], payload: &[u8]) -> Option<
     };
     let stored_crc = u64::from_le_bytes(header[120..128].try_into().ok()?);
 
-    let mut combined = Vec::with_capacity(120 + payload_len as usize);
-    combined.extend_from_slice(&header[..120]);
-    combined.extend_from_slice(&payload[..payload_len as usize]);
-    if crc64(&combined) != stored_crc {
+    let mut state = crc64_update(!0, &header[..120]);
+    state = crc64_update(state, &payload[..payload_len as usize]);
+    if !state != stored_crc {
         return None;
     }
     Some(Slot {
