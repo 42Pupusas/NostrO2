@@ -35,6 +35,7 @@ use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 use crate::protocol::ClientMessageView;
 use crate::storage::handle::{ReqJob, ReqQueue, WriteReq, WriteTx};
 use crate::storage::slot::decode_hex32;
+use crate::verify_pool::{VerifyHandle, VerifyJob, VerifyResult};
 use crate::{RelayConfig, filter, protocol};
 
 /// A sub-replication message broadcast from one shard to all others.
@@ -143,6 +144,11 @@ pub struct ShardDispatcher {
     storage: Option<ShardStorage>,
     /// Reader-pool round-robin cursor for REQ dispatch.
     next_reader: usize,
+    /// Schnorr-verify offload. `None` → verify inline on the I/O thread
+    /// (legacy path, only used in tests). `Some` → push the parsed event
+    /// to a dedicated worker and continue reading frames; the post-verify
+    /// path runs from `drain_verify_results` on the next loop iteration.
+    verify: Option<VerifyHandle>,
 }
 
 impl ShardDispatcher {
@@ -153,6 +159,7 @@ impl ShardDispatcher {
         repl_tx: Option<ArcProducer<SubRepl>>,
         repl_rx: Option<ArcConsumer<SubRepl>>,
         storage: Option<ShardStorage>,
+        verify: Option<VerifyHandle>,
     ) -> Self {
         Self {
             config,
@@ -165,6 +172,7 @@ impl ShardDispatcher {
             repl_rx,
             storage,
             next_reader: 0,
+            verify,
         }
     }
 
@@ -332,51 +340,150 @@ impl ShardDispatcher {
     fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>, note_json: &str) {
         let id = note.id.as_deref().unwrap_or("");
 
-        if let Err(reason) = self.validate_event(note) {
+        // Cheap pre-checks (length, tag count, drift). The expensive
+        // schnorr verify is *not* done here; it gets offloaded if we have
+        // a verify pool, or done inline as a fallback in the legacy path.
+        if let Err(reason) = self.pre_validate_event(note) {
             self.sender
                 .send_text(client_id, protocol::ok(id, false, reason));
             return;
         }
 
-        self.sender.send_text(client_id, protocol::ok(id, true, ""));
+        // Decode hex once; both the verify-pool path and the storage
+        // path want these as raw bytes, and the verify worker shouldn't
+        // have to redo it.
+        let mut event_id = [0u8; 32];
+        let mut pubkey = [0u8; 32];
+        if let Some(id_hex) = note.id.as_deref()
+            && let Some(id_bytes) = decode_hex32(id_hex)
+        {
+            event_id = id_bytes;
+        }
+        if let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) {
+            pubkey = pk_bytes;
+        }
 
-        // `note_json` is the exact substring of the inbound frame captured
-        // via serde_json's `RawValue`. Promote it to an `Arc<[u8]>` once,
-        // then clone that Arc per matching sub — writer-side composition
-        // splices it straight into each subscriber's WS send-buffer
-        // without a per-sub `String` allocation.
-        let note_bytes: Arc<[u8]> = Arc::from(note_json.as_bytes());
+        let raw_json: Arc<[u8]> = Arc::from(note_json.as_bytes());
+        let event_id_hex: Arc<str> = Arc::from(id);
+        let kind = note.kind;
 
-        // Fire-and-forget push to storage. The storage thread parses +
-        // dedups + indexes on its own thread; we don't block the shard on
-        // it. If the write ring is full we drop this event's persistence
-        // (live fan-out still happens). Backpressure policy TBD.
-        if let Some(storage) = &self.storage {
-            let mut event_id = [0u8; 32];
-            let mut pubkey = [0u8; 32];
-            if let Some(id_hex) = note.id.as_deref()
-                && let Some(id_bytes) = decode_hex32(id_hex)
-            {
-                event_id = id_bytes;
-            }
-            if let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) {
-                pubkey = pk_bytes;
-            }
-            let req = WriteReq {
-                raw_json: Arc::clone(&note_bytes),
+        if self.verify.is_some() {
+            // Offload: hand the parsed event to the verify worker and
+            // return. The post-verify path (OK + fan-out + storage) runs
+            // from `drain_verify_results` once the verdict comes back.
+            let job = VerifyJob {
+                raw_json,
+                client_id,
+                event_id_hex,
                 event_id,
                 pubkey,
-                kind: note.kind,
+                kind,
+            };
+            self.push_verify_job(job);
+        } else {
+            // Legacy inline path: verify on the I/O thread. Used by
+            // tests and any caller that constructs a ShardDispatcher
+            // without spawning a verify pool.
+            let verified = note.verify();
+            self.complete_event(VerifyResult {
+                raw_json,
+                client_id,
+                event_id_hex,
+                event_id,
+                pubkey,
+                kind,
+                verified,
+            });
+        }
+    }
+
+    /// Push a verify job to this shard's worker, with backpressure if
+    /// the job ring is momentarily full.
+    fn push_verify_job(&mut self, mut job: VerifyJob) {
+        let Some(handle) = self.verify.as_mut() else {
+            return;
+        };
+        let mut spins = 0u32;
+        loop {
+            match handle.jobs_tx.push(job) {
+                Ok(()) => {
+                    handle.worker_thread.unpark();
+                    return;
+                }
+                Err(returned) => {
+                    job = returned;
+                    if spins < 64 {
+                        std::hint::spin_loop();
+                    } else if spins < 256 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_micros(10));
+                    }
+                    spins = spins.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// Drain any verify verdicts that came back from our worker thread
+    /// since the last loop iteration; run the post-verify path on each.
+    pub fn drain_verify_results(&mut self) {
+        // Take the consumer out so the borrow checker lets us call
+        // self.complete_event in the loop body.
+        let Some(mut handle) = self.verify.take() else {
+            return;
+        };
+        while let Some(result) = handle.results_rx.pop() {
+            self.complete_event(result);
+        }
+        self.verify = Some(handle);
+    }
+
+    /// Post-verify path: emit OK to the publisher, fan out to local /
+    /// replicated subs, and queue persistence. Called either from
+    /// `drain_verify_results` (offload path) or directly from `on_event`
+    /// (legacy inline path).
+    fn complete_event(&mut self, result: VerifyResult) {
+        let id = result.event_id_hex.as_ref();
+        if !result.verified {
+            self.sender.send_text(
+                result.client_id,
+                protocol::ok(id, false, "invalid: bad signature or id"),
+            );
+            return;
+        }
+
+        self.sender
+            .send_text(result.client_id, protocol::ok(id, true, ""));
+
+        let note_bytes = result.raw_json;
+
+        // Storage: fire-and-forget; parsing + indexing happens on the
+        // storage thread. Drop persistence on ring overflow.
+        if let Some(storage) = &self.storage {
+            let req = WriteReq {
+                raw_json: Arc::clone(&note_bytes),
+                event_id: result.event_id,
+                pubkey: result.pubkey,
+                kind: result.kind,
             };
             if storage.write_tx.try_push(req).is_ok() {
                 storage.storage_waker.unpark();
             }
         }
 
-        // Local fan-out.
+        // Re-parse the JSON for filter matching. This is cheaper than
+        // shipping the parsed view across the verify-pool boundary
+        // (which would force allocations to satisfy the borrow), and
+        // serde_json::from_slice on a small EVENT body is microseconds.
+        let view: NostrNoteView<'_> = match serde_json::from_slice(&note_bytes) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
-                if filters.iter().any(|f| filter::matches_view(note, f)) {
+                if filters.iter().any(|f| filter::matches_view(&view, f)) {
                     self.sender.send_event_frame(
                         other_id,
                         Arc::clone(sub_id),
@@ -387,12 +494,9 @@ impl ShardDispatcher {
             }
         }
 
-        // Cross-shard fan-out via replicated subs. `writer_shard` routing
-        // (fd % writer_shards) inside ServerSender handles delivery to the
-        // correct writer thread; we just push.
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
-                if filters.iter().any(|f| filter::matches_view(note, f)) {
+                if filters.iter().any(|f| filter::matches_view(&view, f)) {
                     self.sender.send_event_frame(
                         client_id,
                         Arc::clone(sub_id),
@@ -404,7 +508,11 @@ impl ShardDispatcher {
         }
     }
 
-    fn validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
+    /// Cheap, allocation-free validation of an EVENT before the
+    /// expensive schnorr verify. Splits out so the verify-pool path can
+    /// run this on the I/O thread (rejecting obvious junk early without
+    /// burdening the worker), then defer the schnorr math.
+    fn pre_validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
         if let Some(max) = self.config.max_content_length
             && note.content.len() > max
         {
@@ -414,13 +522,6 @@ impl ShardDispatcher {
             && note.tags.len() > max
         {
             return Err("invalid: too many tags");
-        }
-
-        // `verify()` covers id = sha256(canonical note) AND Schnorr sig.
-        // Tampering with any field (id, pubkey, content, tags, created_at,
-        // kind) flips this to false.
-        if !note.verify() {
-            return Err("invalid: bad signature or id");
         }
 
         let now = NostrNote::now();
@@ -433,6 +534,16 @@ impl ShardDispatcher {
             && note.created_at > now.saturating_add(fut as i64)
         {
             return Err("invalid: created_at too far in the future");
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
+        self.pre_validate_event(note)?;
+        if !note.verify() {
+            return Err("invalid: bad signature or id");
         }
         Ok(())
     }
@@ -553,6 +664,7 @@ pub(crate) fn run_shard(
     repl_tx: Option<ArcProducer<SubRepl>>,
     repl_rx: Option<ArcConsumer<SubRepl>>,
     storage: Option<ShardStorage>,
+    verify: Option<VerifyHandle>,
 ) {
     let mut core = match ReaderCore::new(4096) {
         Ok(c) => c,
@@ -561,13 +673,23 @@ pub(crate) fn run_shard(
             return;
         }
     };
-    let mut dispatcher =
-        ShardDispatcher::new(config, sender.clone(), owner_id, repl_tx, repl_rx, storage);
+    let mut dispatcher = ShardDispatcher::new(
+        config,
+        sender.clone(),
+        owner_id,
+        repl_tx,
+        repl_rx,
+        storage,
+        verify,
+    );
 
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any replication updates from peers first, so an EVENT in
         //    step 3 sees the latest sub view.
         dispatcher.drain_replication();
+        // 1a. Drain verify-pool results so an EVENT verified on the
+        //     previous loop turn fans out before we read more frames.
+        dispatcher.drain_verify_results();
 
         // 2. Accept any new clients on our SPSC ring.
         while let Some(client) = accept_rx.pop() {

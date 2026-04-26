@@ -22,6 +22,7 @@ mod info;
 mod protocol;
 mod shard;
 mod storage;
+mod verify_pool;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -134,6 +135,9 @@ pub struct NostrRelay {
     shutdown: Arc<AtomicBool>,
     storage_shutdown: Option<storage::engine::StorageShutdown>,
     reader_pool_shutdown: Option<storage::reader::ReaderPoolShutdown>,
+    /// One schnorr-verify worker per shard. Held so its threads are
+    /// joined on relay shutdown.
+    verify_pool_shutdown: Option<verify_pool::VerifyPoolShutdown>,
 }
 
 impl NostrRelay {
@@ -276,6 +280,13 @@ impl NostrRelay {
             (None, None)
         };
 
+        // Schnorr-verify offload: one worker thread per shard, paired
+        // 1:1 via two SPSCs. Profiling showed verify pinned the shard's
+        // I/O thread at >80% CPU, so we hand each event to the worker
+        // and continue reading frames immediately.
+        let (mut verify_handles, verify_pool_shutdown) = verify_pool::spawn(n);
+        verify_handles.reverse(); // pop yields shard 0 first
+
         // Spawn one reader thread per shard, each running a ShardDispatcher
         // inline on the I/O thread.
         let mut reader_threads = Vec::with_capacity(n);
@@ -313,6 +324,8 @@ impl NostrRelay {
                 _ => None,
             };
 
+            let verify_handle = verify_handles.pop();
+
             let handle = std::thread::Builder::new()
                 .name(format!("nostr-shard-{i}"))
                 .spawn(move || {
@@ -325,6 +338,7 @@ impl NostrRelay {
                         repl_tx,
                         repl_rx,
                         shard_storage,
+                        verify_handle,
                     );
                 })?;
             reader_threads.push(handle);
@@ -344,6 +358,7 @@ impl NostrRelay {
             shutdown,
             storage_shutdown: storage_shutdown_opt,
             reader_pool_shutdown: reader_pool_shutdown_opt,
+            verify_pool_shutdown: Some(verify_pool_shutdown),
         })
     }
 
@@ -386,6 +401,12 @@ impl Drop for NostrRelay {
         }
         for h in self.reader_threads.drain(..) {
             let _ = h.join();
+        }
+        // Verify workers held shard-owned producer/consumer rings, but
+        // those handles dropped with the reader threads. Tear the pool
+        // down now so its threads join before the rest of the relay.
+        if let Some(mut vp) = self.verify_pool_shutdown.take() {
+            vp.stop();
         }
         // Reader-pool threads push writes; stop them before the writer
         // rings tear down.
