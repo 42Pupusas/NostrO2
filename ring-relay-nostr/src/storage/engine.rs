@@ -1,42 +1,46 @@
-//! Storage thread: owns all three buckets and their log files.
+//! Storage thread: sole owner of all three buckets and their log files.
 //!
-//! Responsibilities:
+//! ## Lock-free architecture
+//!
+//! The storage thread owns the buckets *outright* — they are not behind a
+//! lock. Reader threads do not share access to them. Instead, after each
+//! committed write the storage thread pushes an [`IndexUpdate`] message
+//! onto a `quetzalcoatl` broadcast ring. Reader threads each maintain
+//! their own thread-local `BucketIndex` snapshots and apply updates from
+//! the ring on demand.
+//!
+//! This is the classic disruptor / event-sourcing pattern: there is no
+//! shared mutable state on the read path. Readers may lag the writer by a
+//! handful of updates (whatever they haven't drained yet) but are never
+//! blocked by the writer or by each other.
+//!
+//! Responsibilities of the storage thread:
 //! - Drain all per-shard write rings round-robin.
 //! - Parse each `WriteReq` into a payload the bucket can ingest.
 //! - Dispatch to the correct bucket (by `BucketKind`).
 //! - Stage writes refused due to g_floor, retry them on subsequent passes.
 //! - Bump `current_gen` at batch boundaries; fsync on a timer.
-//! - Publish live updates to the shared `IndexSnapshot` so reader threads
-//!   can pick them up.
+//! - Push `IndexUpdate` per committed write so readers stay current.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use nostro2::NostrNoteView;
+use quetzalcoatl::broadcast::arc::ArcProducer;
 
 use super::StorageConfig;
 use super::bucket::{
     Bucket, EphemeralBucket, EventPayload, ParameterizedBucket, ReplaceableBucket, WriteOutcome,
 };
-use super::handle::{WriteReq, WriteRx};
+use super::handle::{IndexUpdate, WriteReq, WriteRx};
 use super::slot::BucketKind;
 
-/// The shared, reader-accessible view of all bucket indexes. Readers hold
-/// an `Arc` and scan it; the storage thread mutates through `&mut` on its
-/// owned copy (see below — this is a simplification for v1: one `RwLock`
-/// over the whole state, upgrade to `arc-swap` or finer-grained CoW if
-/// profiles demand).
-///
-/// The generational CoW rule we designed is still enforced on eviction:
-/// the storage thread refuses to overwrite a slot whose `gen >= g_floor`.
-/// Readers therefore never observe *in-flight* mutation on a slot they
-/// care about. The `RwLock` here protects the *structure* (hashmaps
-/// resizing, vec grows) — the gen gate protects the *content*.
+/// Shared state between storage and reader threads. After the lock-free
+/// conversion, this contains only the generational-CoW gate — no buckets,
+/// no `RwLock`. Reader threads own their own `BucketIndex` instances and
+/// receive mutations via the broadcast ring.
 pub struct SharedState {
-    pub ephemeral: std::sync::RwLock<EphemeralBucket>,
-    pub replaceable: std::sync::RwLock<ReplaceableBucket>,
-    pub parameterized: std::sync::RwLock<ParameterizedBucket>,
     /// Current generation. Bumped after each batch commit. Readers load
     /// this at REQ start and ignore any slot with `slot.gen > g_req`.
     pub current_gen: Arc<AtomicU64>,
@@ -75,18 +79,22 @@ impl StorageShutdown {
 }
 
 /// The storage engine. The main thread constructs this, spawns its worker,
-/// and hands out `StorageHandle` clones to shards.
+/// and hands the `SharedState` arc to the reader pool.
 pub struct StorageEngine {
     pub shared: Arc<SharedState>,
 }
 
 impl StorageEngine {
-    /// Open buckets + spawn the storage thread. Returns the shutdown
-    /// controller and the shared state handle.
+    /// Open buckets + spawn the storage thread.
+    ///
+    /// `index_tx` is the producer side of the broadcast ring; the storage
+    /// thread pushes `IndexUpdate` messages here for the reader pool to
+    /// consume. The caller is responsible for sizing the ring.
     pub fn spawn(
         config: &StorageConfig,
         reader_threads: usize,
         write_rxs: Vec<WriteRx>,
+        index_tx: ArcProducer<IndexUpdate>,
     ) -> std::io::Result<(Self, StorageShutdown, std::thread::Thread)> {
         std::fs::create_dir_all(&config.data_dir)?;
         let eph_path = config.data_dir.join("ephemeral.log");
@@ -114,9 +122,6 @@ impl StorageEngine {
             .collect();
 
         let shared = Arc::new(SharedState {
-            ephemeral: std::sync::RwLock::new(eph),
-            replaceable: std::sync::RwLock::new(rep),
-            parameterized: std::sync::RwLock::new(par),
             current_gen: Arc::new(AtomicU64::new(initial_gen)),
             reader_active_gens,
         });
@@ -132,7 +137,11 @@ impl StorageEngine {
                 storage_loop(
                     shared_for_thread,
                     write_rxs,
+                    index_tx,
                     shutdown_for_thread,
+                    eph,
+                    rep,
+                    par,
                     next_seq,
                     fsync_interval,
                 );
@@ -190,10 +199,15 @@ fn initial_next_gen(
         .saturating_add(1)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn storage_loop(
     shared: Arc<SharedState>,
     mut write_rxs: Vec<WriteRx>,
+    index_tx: ArcProducer<IndexUpdate>,
     shutdown: Arc<AtomicBool>,
+    mut eph: EphemeralBucket,
+    mut rep: ReplaceableBucket,
+    mut par: ParameterizedBucket,
     mut next_seq: u64,
     fsync_interval: Option<Duration>,
 ) {
@@ -223,7 +237,7 @@ fn storage_loop(
             if let Some(interval) = fsync_interval {
                 let since = last_fsync.elapsed();
                 if since >= interval {
-                    do_fsync(&shared);
+                    do_fsync(&eph, &rep, &par);
                     last_fsync = Instant::now();
                     std::thread::park_timeout(interval);
                 } else {
@@ -239,12 +253,32 @@ fn storage_loop(
         let g_floor = shared.compute_g_floor();
 
         // First, retry any staged writes; they're older so they get priority.
-        staged.retain_mut(|sw| ingest_one(&shared, sw, generation, g_floor, &mut next_seq));
+        staged.retain_mut(|sw| {
+            ingest_one(
+                &mut eph,
+                &mut rep,
+                &mut par,
+                sw,
+                generation,
+                g_floor,
+                &mut next_seq,
+                &index_tx,
+            )
+        });
 
         // Then ingest the fresh batch.
         for req in batch.drain(..) {
             let mut sw = StagedWrite { req };
-            if ingest_one(&shared, &mut sw, generation, g_floor, &mut next_seq) {
+            if ingest_one(
+                &mut eph,
+                &mut rep,
+                &mut par,
+                &mut sw,
+                generation,
+                g_floor,
+                &mut next_seq,
+                &index_tx,
+            ) {
                 staged.push(sw);
             }
         }
@@ -256,30 +290,34 @@ fn storage_loop(
         if let Some(interval) = fsync_interval
             && last_fsync.elapsed() >= interval
         {
-            do_fsync(&shared);
+            do_fsync(&eph, &rep, &par);
             last_fsync = Instant::now();
         }
     }
 
     // Final flush on shutdown.
-    do_fsync(&shared);
+    do_fsync(&eph, &rep, &par);
 }
 
 struct StagedWrite {
     req: WriteReq,
 }
 
-/// Try to ingest one write. Returns `true` if it should be re-staged (
-/// stalled by g_floor), `false` if committed or dropped.
+/// Try to ingest one write. Returns `true` if it should be re-staged
+/// (stalled by g_floor), `false` if committed or dropped. On commit,
+/// pushes an `IndexUpdate` so reader threads see the new slot.
+#[allow(clippy::too_many_arguments)]
 fn ingest_one(
-    shared: &SharedState,
+    eph: &mut EphemeralBucket,
+    rep: &mut ReplaceableBucket,
+    par: &mut ParameterizedBucket,
     sw: &mut StagedWrite,
     generation: u64,
     g_floor: u64,
     next_seq: &mut u64,
+    index_tx: &ArcProducer<IndexUpdate>,
 ) -> bool {
     let req = &sw.req;
-    // Parse into a view against the raw JSON.
     let note: NostrNoteView<'_> = match serde_json::from_slice(&req.raw_json) {
         Ok(v) => v,
         Err(_) => return false,
@@ -291,32 +329,57 @@ fn ingest_one(
         pubkey: req.pubkey,
     };
 
-    let outcome = match BucketKind::classify(req.kind) {
-        BucketKind::Ephemeral => {
-            let mut b = shared.ephemeral.write().unwrap();
-            b.try_write(&payload, generation, g_floor, next_seq)
-        }
-        BucketKind::Replaceable => {
-            let mut b = shared.replaceable.write().unwrap();
-            b.try_write(&payload, generation, g_floor, next_seq)
-        }
-        BucketKind::Parameterized => {
-            let mut b = shared.parameterized.write().unwrap();
-            b.try_write(&payload, generation, g_floor, next_seq)
-        }
+    let bucket_kind = BucketKind::classify(req.kind);
+    let outcome = match bucket_kind {
+        BucketKind::Ephemeral => eph.try_write(&payload, generation, g_floor, next_seq),
+        BucketKind::Replaceable => rep.try_write(&payload, generation, g_floor, next_seq),
+        BucketKind::Parameterized => par.try_write(&payload, generation, g_floor, next_seq),
     };
 
-    matches!(outcome, WriteOutcome::Stalled)
+    match outcome {
+        WriteOutcome::Committed { slot_idx, meta } => {
+            // Broadcast the new slot meta to reader threads.
+            // Backpressure: the ring is sized per-batch * margin so
+            // overflow shouldn't happen in practice; if it does, spin
+            // briefly. Storage thread can afford the wait — the
+            // alternative is dropping a write that already hit disk.
+            push_with_backoff(
+                index_tx,
+                IndexUpdate {
+                    bucket: bucket_kind,
+                    slot_idx,
+                    meta: Some(meta),
+                },
+            );
+            false
+        }
+        WriteOutcome::Stalled => true,
+        WriteOutcome::Duplicate | WriteOutcome::TooBig => false,
+    }
 }
 
-fn do_fsync(shared: &SharedState) {
-    if let Ok(b) = shared.ephemeral.read() {
-        let _ = b.log().fsync();
+fn push_with_backoff(tx: &ArcProducer<IndexUpdate>, mut msg: IndexUpdate) {
+    let mut spins = 0u32;
+    loop {
+        match tx.push(msg) {
+            Ok(()) => return,
+            Err(returned) => {
+                msg = returned;
+                if spins < 64 {
+                    std::hint::spin_loop();
+                } else if spins < 256 {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(Duration::from_micros(10));
+                }
+                spins = spins.saturating_add(1);
+            }
+        }
     }
-    if let Ok(b) = shared.replaceable.read() {
-        let _ = b.log().fsync();
-    }
-    if let Ok(b) = shared.parameterized.read() {
-        let _ = b.log().fsync();
-    }
+}
+
+fn do_fsync(eph: &EphemeralBucket, rep: &ReplaceableBucket, par: &ParameterizedBucket) {
+    let _ = eph.log().fsync();
+    let _ = rep.log().fsync();
+    let _ = par.log().fsync();
 }

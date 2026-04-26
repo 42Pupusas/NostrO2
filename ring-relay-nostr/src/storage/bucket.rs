@@ -32,8 +32,10 @@ use nostro2::NostrNoteView;
 /// The outcome of a write attempt against a bucket.
 #[derive(Debug)]
 pub enum WriteOutcome {
-    /// Write committed.
-    Committed,
+    /// Write committed; carries the slot index it landed in and the
+    /// freshly-built `SlotMeta` so the engine can broadcast an
+    /// `IndexUpdate` to reader threads without re-reading.
+    Committed { slot_idx: u32, meta: SlotMeta },
     /// Write refused: the target slot is still visible to an active reader
     /// with `g_req >= slot.generation`. Caller should stage the event and
     /// retry after `g_floor` advances.
@@ -68,6 +70,13 @@ pub trait Bucket {
 
     fn index(&self) -> &BucketIndex;
     fn log(&self) -> &BucketLog;
+
+    /// Mutable handle on the index for the bootstrap-time handoff in the
+    /// reader pool. Storage path itself never calls this — it goes
+    /// through `try_write` / `commit_write`. Reader threads use it to
+    /// `mem::replace` the freshly-rebuilt index out of a temporary
+    /// bucket they're about to discard.
+    fn index_mut_for_handoff(&mut self) -> &mut BucketIndex;
 
     /// Rebuild the in-memory index from the on-disk log. Called once at
     /// startup.
@@ -127,7 +136,7 @@ impl Bucket for EphemeralBucket {
             return WriteOutcome::Stalled;
         }
 
-        commit_write(
+        let meta = commit_write(
             &mut self.log,
             &mut self.index,
             slot_idx,
@@ -137,7 +146,7 @@ impl Bucket for EphemeralBucket {
         );
 
         self.write_head = (self.write_head + 1) % self.log.slot_count() as u32;
-        WriteOutcome::Committed
+        WriteOutcome::Committed { slot_idx, meta }
     }
 
     fn index(&self) -> &BucketIndex {
@@ -145,6 +154,9 @@ impl Bucket for EphemeralBucket {
     }
     fn log(&self) -> &BucketLog {
         &self.log
+    }
+    fn index_mut_for_handoff(&mut self) -> &mut BucketIndex {
+        &mut self.index
     }
 
     fn rebuild(&mut self) -> std::io::Result<()> {
@@ -229,7 +241,7 @@ impl Bucket for ReplaceableBucket {
                     return WriteOutcome::Duplicate;
                 }
             }
-            commit_write(
+            let meta = commit_write(
                 &mut self.log,
                 &mut self.index,
                 slot_idx,
@@ -238,7 +250,7 @@ impl Bucket for ReplaceableBucket {
                 next_seq,
             );
             self.promote(slot_idx);
-            return WriteOutcome::Committed;
+            return WriteOutcome::Committed { slot_idx, meta };
         }
         // New pubkey. Use a free slot if available, otherwise evict LRU.
         let slot_idx = if let Some(s) = self.free_slots.pop() {
@@ -259,7 +271,7 @@ impl Bucket for ReplaceableBucket {
             victim
         };
 
-        commit_write(
+        let meta = commit_write(
             &mut self.log,
             &mut self.index,
             slot_idx,
@@ -269,7 +281,7 @@ impl Bucket for ReplaceableBucket {
         );
         self.by_pubkey.insert(event.pubkey, slot_idx);
         self.lru.push_back(slot_idx);
-        WriteOutcome::Committed
+        WriteOutcome::Committed { slot_idx, meta }
     }
 
     fn index(&self) -> &BucketIndex {
@@ -277,6 +289,9 @@ impl Bucket for ReplaceableBucket {
     }
     fn log(&self) -> &BucketLog {
         &self.log
+    }
+    fn index_mut_for_handoff(&mut self) -> &mut BucketIndex {
+        &mut self.index
     }
 
     fn rebuild(&mut self) -> std::io::Result<()> {
@@ -376,7 +391,7 @@ impl Bucket for ParameterizedBucket {
                     return WriteOutcome::Duplicate;
                 }
             }
-            commit_write(
+            let meta = commit_write(
                 &mut self.log,
                 &mut self.index,
                 slot_idx,
@@ -385,7 +400,7 @@ impl Bucket for ParameterizedBucket {
                 next_seq,
             );
             self.promote(slot_idx);
-            return WriteOutcome::Committed;
+            return WriteOutcome::Committed { slot_idx, meta };
         }
         let slot_idx = if let Some(s) = self.free_slots.pop() {
             s
@@ -416,7 +431,7 @@ impl Bucket for ParameterizedBucket {
             victim
         };
 
-        commit_write(
+        let meta = commit_write(
             &mut self.log,
             &mut self.index,
             slot_idx,
@@ -426,7 +441,7 @@ impl Bucket for ParameterizedBucket {
         );
         self.by_key.insert(key, slot_idx);
         self.lru.push_back(slot_idx);
-        WriteOutcome::Committed
+        WriteOutcome::Committed { slot_idx, meta }
     }
 
     fn index(&self) -> &BucketIndex {
@@ -434,6 +449,9 @@ impl Bucket for ParameterizedBucket {
     }
     fn log(&self) -> &BucketLog {
         &self.log
+    }
+    fn index_mut_for_handoff(&mut self) -> &mut BucketIndex {
+        &mut self.index
     }
 
     fn rebuild(&mut self) -> std::io::Result<()> {
@@ -468,8 +486,9 @@ impl Bucket for ParameterizedBucket {
 
 /// Shared commit-path used by all three buckets. Removes the old slot's
 /// index participation, writes the new slot's bytes to disk, and inserts
-/// new index entries. Caller is responsible for the eviction-policy
-/// bookkeeping (LRU, write_head, etc.).
+/// new index entries. Returns a clone of the freshly-inserted `SlotMeta`
+/// so the caller can broadcast it to reader threads. Caller is responsible
+/// for the eviction-policy bookkeeping (LRU, write_head, etc.).
 fn commit_write(
     log: &mut BucketLog,
     index: &mut BucketIndex,
@@ -477,7 +496,7 @@ fn commit_write(
     event: &EventPayload<'_>,
     generation: u64,
     next_seq: &mut u64,
-) {
+) -> SlotMeta {
     index.remove_slot(slot_idx);
 
     *next_seq += 1;
@@ -516,7 +535,8 @@ fn commit_write(
         tags,
         payload_len: slot.payload_len,
     };
-    index.insert_slot(slot_idx, meta);
+    index.insert_slot(slot_idx, meta.clone());
+    meta
 }
 
 fn tags_from_payload(payload: &[u8]) -> Arc<[(u8, Box<str>)]> {

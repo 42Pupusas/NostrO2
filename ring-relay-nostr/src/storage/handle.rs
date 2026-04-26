@@ -12,6 +12,26 @@ use std::sync::Arc;
 use nostro2::NostrSubscription;
 use quetzalcoatl::spsc::{Consumer as SpscConsumer, Producer as SpscProducer};
 
+use super::index::SlotMeta;
+use super::slot::BucketKind;
+
+/// One slot mutation, broadcast from the storage thread to every reader
+/// thread. Readers replay these in order against their thread-local
+/// `BucketIndex` snapshots; this is the disruptor / event-sourcing
+/// pattern that makes the index lock-free without a per-batch full
+/// clone.
+///
+/// `meta = None` means the slot was cleared (e.g. an LRU eviction with
+/// no replacement, which currently can't happen — eviction always
+/// installs a new entry — but the variant is kept for forward
+/// compatibility with NIP-09 deletion).
+#[derive(Clone)]
+pub struct IndexUpdate {
+    pub bucket: BucketKind,
+    pub slot_idx: u32,
+    pub meta: Option<SlotMeta>,
+}
+
 /// One EVENT queued for persistence.
 pub struct WriteReq {
     /// Raw JSON bytes of the event object (the exact substring of the

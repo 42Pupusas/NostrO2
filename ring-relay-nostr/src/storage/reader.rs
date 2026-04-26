@@ -1,28 +1,42 @@
-//! Reader pool: N threads that service historical REQ scans.
+//! Reader pool: N threads that service historical REQ scans against
+//! thread-local bucket indexes.
+//!
+//! ## Lock-free architecture
+//!
+//! Each reader thread owns its own private `BucketIndex` for each of the
+//! three buckets, plus a read-only `ReadOnlyLog` handle to fetch payloads
+//! on demand. Readers never share state with the storage thread; instead
+//! they consume `IndexUpdate` messages off a `quetzalcoatl` broadcast
+//! ring and apply them to their local indexes.
+//!
+//! Bootstrap: each reader independently calls `BucketIndex::rebuild_*`
+//! against the on-disk logs at startup. After that, all updates flow via
+//! the broadcast ring. There is no shared `RwLock` and no contention
+//! between readers or with the storage thread.
+//!
+//! ## Generational CoW
 //!
 //! Each reader owns its own `AtomicU64` generation slot inside
 //! `SharedState::reader_active_gens`. At REQ start it loads
 //! `current_gen` into its slot; at REQ end it writes `u64::MAX` back.
-//! The storage thread computes `g_floor = min(active_gens)` for eviction.
+//! The storage thread computes `g_floor = min(active_gens)` for eviction
+//! and refuses to overwrite slots a reader cares about.
 //!
-//! Readers emit `EVENT` frames via the shared `ServerSender` (same one the
-//! shards use). Writer routing (`fd % writer_shards`) handles delivery.
-//!
-//! Per-REQ timeout: ~500ms wall-clock. If a scan takes longer we abort it,
-//! release the gen slot, and send `CLOSED` with a reason. Without the
-//! timeout a pathologically slow scan could block eviction indefinitely.
+//! Per-REQ timeout: ~500ms wall-clock. If a scan takes longer we abort
+//! it, release the gen slot, and send `CLOSED` with a reason.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use quetzalcoatl::broadcast::arc::ArcConsumer;
 use ring_relay_server::ServerSender;
 
-use super::bucket::Bucket;
 use super::engine::SharedState;
-use super::handle::{ReqJob, ReqQueue};
-use super::index::SlotMeta;
+use super::handle::{IndexUpdate, ReqJob, ReqQueue};
+use super::index::{BucketIndex, SlotMeta};
 use super::log::ReadOnlyLog;
+use super::slot::BucketKind;
 use crate::protocol;
 
 const REQ_TIMEOUT: Duration = Duration::from_millis(500);
@@ -44,29 +58,61 @@ impl ReaderPoolShutdown {
     }
 }
 
+/// Bucket sizing handed to the reader pool so each reader can construct
+/// its own private bucket indexes during bootstrap.
+pub struct ReaderPoolConfig {
+    pub data_dir: std::path::PathBuf,
+    pub ephemeral_slots: usize,
+    pub replaceable_slots: usize,
+    pub parameterized_slots: usize,
+    pub max_payload: usize,
+}
+
 pub struct ReaderPool;
 
 impl ReaderPool {
+    /// Spawn the reader pool.
+    ///
+    /// `index_consumers` must contain exactly `reader_threads` consumer
+    /// handles into the broadcast ring; each thread owns one. Capacity
+    /// for the ring is the caller's choice — see `bind`.
     pub fn spawn(
         shared: Arc<SharedState>,
         req_queue: Arc<ReqQueue>,
         sender: ServerSender,
-        data_dir: std::path::PathBuf,
-        reader_threads: usize,
+        cfg: ReaderPoolConfig,
+        index_consumers: Vec<ArcConsumer<IndexUpdate>>,
     ) -> std::io::Result<(ReaderPoolShutdown, Vec<std::thread::Thread>)> {
+        let reader_threads = index_consumers.len();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::with_capacity(reader_threads);
         let mut thread_handles: Vec<std::thread::Thread> = Vec::with_capacity(reader_threads);
-        for i in 0..reader_threads {
+        for (i, index_rx) in index_consumers.into_iter().enumerate() {
             let shared_c = Arc::clone(&shared);
             let q_c = Arc::clone(&req_queue);
             let sender_c = sender.clone();
             let sd_c = Arc::clone(&shutdown);
-            let dir_c = data_dir.clone();
+            let dir_c = cfg.data_dir.clone();
+            let eph_slots = cfg.ephemeral_slots;
+            let rep_slots = cfg.replaceable_slots;
+            let par_slots = cfg.parameterized_slots;
+            let max_payload = cfg.max_payload;
             let handle = std::thread::Builder::new()
                 .name(format!("nostr-reader-{i}"))
                 .spawn(move || {
-                    reader_loop(i, shared_c, q_c, sender_c, sd_c, dir_c);
+                    reader_loop(
+                        i,
+                        shared_c,
+                        q_c,
+                        sender_c,
+                        sd_c,
+                        dir_c,
+                        eph_slots,
+                        rep_slots,
+                        par_slots,
+                        max_payload,
+                        index_rx,
+                    );
                 })?;
             thread_handles.push(handle.thread().clone());
             threads.push(handle);
@@ -81,6 +127,39 @@ impl ReaderPool {
     }
 }
 
+/// Per-reader thread state: one private `BucketIndex` and one
+/// `ReadOnlyLog` per bucket, plus the broadcast consumer.
+struct ReaderState {
+    eph_idx: BucketIndex,
+    rep_idx: BucketIndex,
+    par_idx: BucketIndex,
+    eph_log: ReadOnlyLog,
+    rep_log: ReadOnlyLog,
+    par_log: ReadOnlyLog,
+    index_rx: ArcConsumer<IndexUpdate>,
+}
+
+impl ReaderState {
+    /// Drain any pending `IndexUpdate` messages from the broadcast ring
+    /// and apply them to the local indexes. Call at the top of each REQ
+    /// so the snapshot is as fresh as possible.
+    fn drain_updates(&mut self) {
+        while let Some(update) = self.index_rx.pop() {
+            let upd: &IndexUpdate = &update;
+            let idx = match upd.bucket {
+                BucketKind::Ephemeral => &mut self.eph_idx,
+                BucketKind::Replaceable => &mut self.rep_idx,
+                BucketKind::Parameterized => &mut self.par_idx,
+            };
+            idx.remove_slot(upd.slot_idx);
+            if let Some(meta) = upd.meta.clone() {
+                idx.insert_slot(upd.slot_idx, meta);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn reader_loop(
     reader_idx: usize,
     shared: Arc<SharedState>,
@@ -88,41 +167,38 @@ fn reader_loop(
     sender: ServerSender,
     shutdown: Arc<AtomicBool>,
     data_dir: std::path::PathBuf,
+    ephemeral_slots: usize,
+    replaceable_slots: usize,
+    parameterized_slots: usize,
+    max_payload: usize,
+    index_rx: ArcConsumer<IndexUpdate>,
 ) {
-    // Open read-only handles to all three logs.
+    // Bootstrap: open one read-only handle per bucket and seed our local
+    // BucketIndex by replaying the on-disk log. After this point the
+    // storage thread may already be writing, but every committed write
+    // produces an IndexUpdate that we'll apply via `drain_updates`.
     let eph_path = data_dir.join("ephemeral.log");
     let rep_path = data_dir.join("replaceable.log");
     let par_path = data_dir.join("parameterized.log");
-    let eph_log = {
-        let b = shared.ephemeral.read().unwrap();
-        match b.log().reopen_readonly(&eph_path) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("reader {reader_idx}: open eph log: {e}");
-                return;
-            }
+
+    let state = match build_reader_state(
+        &eph_path,
+        &rep_path,
+        &par_path,
+        ephemeral_slots,
+        replaceable_slots,
+        parameterized_slots,
+        max_payload,
+        index_rx,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("reader {reader_idx}: bootstrap failed: {e}");
+            return;
         }
     };
-    let rep_log = {
-        let b = shared.replaceable.read().unwrap();
-        match b.log().reopen_readonly(&rep_path) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("reader {reader_idx}: open rep log: {e}");
-                return;
-            }
-        }
-    };
-    let par_log = {
-        let b = shared.parameterized.read().unwrap();
-        match b.log().reopen_readonly(&par_path) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("reader {reader_idx}: open par log: {e}");
-                return;
-            }
-        }
-    };
+    let mut state = state;
+
     let gen_slot: &AtomicU64 = &shared.reader_active_gens[reader_idx];
 
     while !shutdown.load(Ordering::Acquire) {
@@ -131,13 +207,16 @@ fn reader_loop(
             continue;
         };
 
+        // Drain any pending index updates before we snapshot the gen so
+        // our private indexes are as fresh as the broadcast ring lets us
+        // be at this instant.
+        state.drain_updates();
+
         let g_req = shared.current_gen.load(Ordering::Acquire);
         gen_slot.store(g_req, Ordering::Release);
 
         let deadline = Instant::now() + REQ_TIMEOUT;
-        let _timed_out = serve_req(
-            &job, g_req, deadline, &shared, &sender, &eph_log, &rep_log, &par_log,
-        );
+        let _timed_out = serve_req(&job, g_req, deadline, &state, &sender);
 
         // Release gen slot so the storage thread can advance g_floor.
         gen_slot.store(u64::MAX, Ordering::Release);
@@ -145,15 +224,65 @@ fn reader_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn build_reader_state(
+    eph_path: &std::path::Path,
+    rep_path: &std::path::Path,
+    par_path: &std::path::Path,
+    ephemeral_slots: usize,
+    replaceable_slots: usize,
+    parameterized_slots: usize,
+    max_payload: usize,
+    index_rx: ArcConsumer<IndexUpdate>,
+) -> std::io::Result<ReaderState> {
+    use super::bucket::{Bucket, EphemeralBucket, ParameterizedBucket, ReplaceableBucket};
+
+    // Each reader rebuilds its own BucketIndex from disk. We open each
+    // log via the read-only constructor used by the storage path so we
+    // share file-handle semantics, then immediately reopen a separate
+    // read-only fd for the actual scan path. The temporary `Bucket` is
+    // discarded after rebuild — we keep its index, not its write-side
+    // state.
+    let mut eph_tmp = EphemeralBucket::open(eph_path, ephemeral_slots, max_payload)?;
+    eph_tmp.rebuild()?;
+    let eph_log = eph_tmp.log().reopen_readonly(eph_path)?;
+    let eph_idx = std::mem::replace(
+        eph_tmp.index_mut_for_handoff(),
+        BucketIndex::new(ephemeral_slots),
+    );
+
+    let mut rep_tmp = ReplaceableBucket::open(rep_path, replaceable_slots, max_payload)?;
+    rep_tmp.rebuild()?;
+    let rep_log = rep_tmp.log().reopen_readonly(rep_path)?;
+    let rep_idx = std::mem::replace(
+        rep_tmp.index_mut_for_handoff(),
+        BucketIndex::new(replaceable_slots),
+    );
+
+    let mut par_tmp = ParameterizedBucket::open(par_path, parameterized_slots, max_payload)?;
+    par_tmp.rebuild()?;
+    let par_log = par_tmp.log().reopen_readonly(par_path)?;
+    let par_idx = std::mem::replace(
+        par_tmp.index_mut_for_handoff(),
+        BucketIndex::new(parameterized_slots),
+    );
+
+    Ok(ReaderState {
+        eph_idx,
+        rep_idx,
+        par_idx,
+        eph_log,
+        rep_log,
+        par_log,
+        index_rx,
+    })
+}
+
 fn serve_req(
     job: &ReqJob,
     g_req: u64,
     deadline: Instant,
-    shared: &SharedState,
+    state: &ReaderState,
     sender: &ServerSender,
-    eph_log: &ReadOnlyLog,
-    rep_log: &ReadOnlyLog,
-    par_log: &ReadOnlyLog,
 ) -> bool {
     // Aggregate cumulative limit across all filters.
     let mut total_limit: Option<usize> = None;
@@ -169,9 +298,6 @@ fn serve_req(
     let mut seen_ids: std::collections::HashSet<[u8; 32]> =
         std::collections::HashSet::with_capacity(64);
 
-    // Scan each bucket. Collection order doesn't matter for NIP-01 (clients
-    // sort by created_at); we deliver oldest-first to keep timeline UIs
-    // happy.
     let mut matches: Vec<EmitEntry> = Vec::new();
 
     for (filter_idx, filter) in job.filters.iter().enumerate() {
@@ -181,10 +307,9 @@ fn serve_req(
         }
         let limit = per_filter_limit[filter_idx];
 
-        // Each bucket contributes candidate slot indices.
         scan_bucket(
-            shared,
             BucketRef::Ephemeral,
+            &state.eph_idx,
             filter,
             g_req,
             limit,
@@ -192,8 +317,8 @@ fn serve_req(
             &mut seen_ids,
         );
         scan_bucket(
-            shared,
             BucketRef::Replaceable,
+            &state.rep_idx,
             filter,
             g_req,
             limit,
@@ -201,8 +326,8 @@ fn serve_req(
             &mut seen_ids,
         );
         scan_bucket(
-            shared,
             BucketRef::Parameterized,
+            &state.par_idx,
             filter,
             g_req,
             limit,
@@ -228,34 +353,20 @@ fn serve_req(
         {
             break;
         }
-        let payload = match entry.bucket {
-            BucketRef::Ephemeral => {
-                eph_log.read_payload(entry.slot_idx as usize, entry.payload_len)
-            }
-            BucketRef::Replaceable => {
-                rep_log.read_payload(entry.slot_idx as usize, entry.payload_len)
-            }
-            BucketRef::Parameterized => {
-                par_log.read_payload(entry.slot_idx as usize, entry.payload_len)
-            }
+        let log = match entry.bucket {
+            BucketRef::Ephemeral => &state.eph_log,
+            BucketRef::Replaceable => &state.rep_log,
+            BucketRef::Parameterized => &state.par_log,
         };
+        let payload = log.read_payload(entry.slot_idx as usize, entry.payload_len);
         let Ok(bytes) = payload else { continue };
 
         // Validate seq hasn't changed mid-scan (storage rewrote the slot
         // despite the gen gate — shouldn't happen, but defensive).
-        if let Some(slot_head) = match entry.bucket {
-            BucketRef::Ephemeral => eph_log.read_slot(entry.slot_idx as usize),
-            BucketRef::Replaceable => rep_log.read_slot(entry.slot_idx as usize),
-            BucketRef::Parameterized => par_log.read_slot(entry.slot_idx as usize),
-        }
-        .ok()
-        .flatten()
+        if let Some(slot_head) = log.read_slot(entry.slot_idx as usize).ok().flatten()
+            && slot_head.0.seq != entry.seq
         {
-            if slot_head.0.seq != entry.seq {
-                continue; // raced; the slot was overwritten
-            }
-        } else {
-            continue;
+            continue; // raced; the slot was overwritten
         }
 
         sender.send_event_frame(
@@ -266,7 +377,6 @@ fn serve_req(
         emitted += 1;
     }
 
-    // End of stored events for this sub.
     sender.send_text(job.client_fd, protocol::eose(&job.sub_id));
     false
 }
@@ -288,33 +398,20 @@ struct EmitEntry {
 }
 
 fn scan_bucket(
-    shared: &SharedState,
     which: BucketRef,
+    index: &BucketIndex,
     filter: &nostro2::NostrSubscription,
     g_req: u64,
     filter_limit: Option<usize>,
     out: &mut Vec<EmitEntry>,
     seen_ids: &mut std::collections::HashSet<[u8; 32]>,
 ) {
-    // Collect (slot_idx, metadata) under the read lock, drop the lock, then
-    // do the actual filter evaluation outside the critical section.
-    let candidates: Vec<(u32, SlotMeta)> = match which {
-        BucketRef::Ephemeral => {
-            let b = shared.ephemeral.read().unwrap();
-            collect_candidates(&b.index().candidates(filter), &b.index().meta)
-        }
-        BucketRef::Replaceable => {
-            let b = shared.replaceable.read().unwrap();
-            collect_candidates(&b.index().candidates(filter), &b.index().meta)
-        }
-        BucketRef::Parameterized => {
-            let b = shared.parameterized.read().unwrap();
-            collect_candidates(&b.index().candidates(filter), &b.index().meta)
-        }
-    };
+    let candidates: Vec<(u32, SlotMeta)> = index
+        .candidates(filter)
+        .into_iter()
+        .filter_map(|i| index.meta[i as usize].as_ref().map(|m| (i, m.clone())))
+        .collect();
 
-    // Per-filter limit picks the newest N; sort desc by created_at, truncate.
-    // Final oldest-first ordering happens after the cross-bucket union.
     let mut filtered: Vec<(u32, SlotMeta)> = candidates
         .into_iter()
         .filter(|(_, m)| m.generation <= g_req && m.matches(filter))
@@ -337,14 +434,4 @@ fn scan_bucket(
             event_id: meta.event_id,
         });
     }
-}
-
-fn collect_candidates(slot_idxs: &[u32], meta: &[Option<SlotMeta>]) -> Vec<(u32, SlotMeta)> {
-    let mut out = Vec::with_capacity(slot_idxs.len());
-    for &i in slot_idxs {
-        if let Some(m) = &meta[i as usize] {
-            out.push((i, m.clone()));
-        }
-    }
-    out
 }

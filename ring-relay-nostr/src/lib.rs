@@ -194,18 +194,56 @@ impl NostrRelay {
                 per_shard_write_tx.push(Some(storage::handle::WriteTx(tx)));
                 per_shard_write_rx.push(storage::handle::WriteRx(rx));
             }
+
+            // Index-update broadcast ring: storage thread (single producer)
+            // pushes one IndexUpdate per committed write; each reader thread
+            // consumes its own copy. This is what makes the storage layer
+            // lock-free — readers never share state with the writer, only
+            // a snapshot stream.
+            //
+            // Capacity: must be > peak in-flight writes between reader
+            // drains. Reader drains at REQ start, so worst case is the
+            // batch size (1024) × a few batches. Round up generously.
+            let n_readers = sc.reader_threads.max(1);
+            let index_cap =
+                quetzalcoatl::capacity::Capacity::at_least((sc.write_ring_capacity * n).max(8192));
+            let (index_producer, index_consumer_seed) =
+                quetzalcoatl::broadcast::arc::ArcRingBuffer::<storage::handle::IndexUpdate>::new(
+                    index_cap, n_readers,
+                )
+                .split();
+
+            // Distribute one consumer slot per reader thread.
+            let mut index_consumers: Vec<_> = Vec::with_capacity(n_readers);
+            let mut seed_opt = Some(index_consumer_seed);
+            for i in 0..n_readers {
+                let c = if i + 1 < n_readers {
+                    seed_opt.clone().expect("seed live")
+                } else {
+                    seed_opt.take().expect("seed live for last reader")
+                };
+                index_consumers.push(c);
+            }
+
             let (engine, sd, thread_handle) = storage::engine::StorageEngine::spawn(
                 sc,
-                sc.reader_threads,
+                n_readers,
                 std::mem::take(&mut per_shard_write_rx),
+                index_producer,
             )?;
             let req_queue = Arc::new(storage::handle::ReqQueue::new());
             let (pool_sd, reader_threads) = storage::reader::ReaderPool::spawn(
                 engine.shared(),
                 Arc::clone(&req_queue),
                 builder.sender(),
-                sc.data_dir.clone(),
-                sc.reader_threads,
+                storage::reader::ReaderPoolConfig {
+                    data_dir: sc.data_dir.clone(),
+                    ephemeral_slots: sc.ephemeral_slots,
+                    replaceable_slots: sc.replaceable_slots,
+                    parameterized_slots: sc.parameterized_slots,
+                    max_payload: sc.max_payload,
+                },
+                index_consumers,
             )?;
             (
                 Some((engine, req_queue)),
