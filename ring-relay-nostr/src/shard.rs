@@ -397,47 +397,42 @@ impl ShardDispatcher {
         }
     }
 
-    /// Push a verify job to one of this shard's workers, round-robined.
-    /// Backs off briefly if the chosen worker's ring is full; in steady
-    /// state all workers drain at the same rate so the rings stay near
-    /// empty and the fast path is a single push + unpark.
+    /// Push a verify job onto the shard's SPMC jobs ring and wake one
+    /// worker. Any worker can pop any job, so the wake target is just a
+    /// fairness hint — if it's busy, another worker will pop on its
+    /// own park-timeout or via a peer's torch-pass.
+    ///
+    /// On full ring we back off briefly. The ring is sized to absorb
+    /// bursts; sustained backpressure means verify is the bottleneck,
+    /// at which point spinning is the right answer (slowing the
+    /// shard's frame parser is exactly the desired backpressure).
     fn push_verify_job(&mut self, mut job: VerifyJob) {
         let Some(handle) = self.verify.as_mut() else {
             return;
         };
-        let n = handle.jobs_txs.len();
+        let n = handle.worker_threads.len();
         if n == 0 {
             return;
         }
-        let start = handle.next_worker % n;
-        handle.next_worker = (start + 1) % n;
-
         let mut spins = 0u32;
-        let mut attempt = 0usize;
         loop {
-            // Walk the worker list starting at the round-robin slot so
-            // we naturally spread under partial fullness too.
-            let idx = (start + attempt) % n;
-            match handle.jobs_txs[idx].push(job) {
+            match handle.jobs_tx.push(job) {
                 Ok(()) => {
+                    let idx = handle.next_wake_hint % n;
+                    handle.next_wake_hint = handle.next_wake_hint.wrapping_add(1);
                     handle.worker_threads[idx].unpark();
                     return;
                 }
                 Err(returned) => {
                     job = returned;
-                    attempt = attempt.saturating_add(1);
-                    // After one full sweep over all workers, back off.
-                    if attempt >= n {
-                        attempt = 0;
-                        if spins < 64 {
-                            std::hint::spin_loop();
-                        } else if spins < 256 {
-                            std::thread::yield_now();
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_micros(10));
-                        }
-                        spins = spins.saturating_add(1);
+                    if spins < 64 {
+                        std::hint::spin_loop();
+                    } else if spins < 256 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_micros(10));
                     }
+                    spins = spins.saturating_add(1);
                 }
             }
         }

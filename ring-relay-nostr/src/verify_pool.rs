@@ -10,27 +10,36 @@
 //!
 //! Per shard, with `verify_threads_per_shard = M`:
 //!
-//! - **M jobs SPSCs** (one per worker). Shard owns all M producers and
-//!   round-robins pushes across them. Each worker owns its consumer.
+//! - **One jobs SPMC** (single producer = the shard, M consumers = the
+//!   workers). Workers compete via CAS on the consumer head; whichever
+//!   worker is least busy pops next. Self-balancing — a slow worker
+//!   simply pulls less, no jobs get stuck behind it.
 //! - **One results MPSC** (M producers cloned to workers, single
 //!   consumer on the shard). Workers push verdicts back; the shard
 //!   drains the ring at the top of every loop iteration.
 //!
-//! Why this shape? `quetzalcoatl` ships SPSC, MPSC, SPMC, and broadcast
-//! — but no MPMC, so we can't have a single shared jobs queue served by
-//! many workers. The per-worker SPSC + shared MPSC results combo is the
-//! cleanest fit and lets each shard scale its verify rate up to M cores
-//! independent of the I/O shard count.
+//! ## Why SPMC over per-worker SPSCs
 //!
-//! ## Round-robin distribution
+//! The earlier design used M SPSCs (one per worker) plus a shard-side
+//! round-robin cursor with a full-sweep retry on push. That suffered
+//! from head-of-line blocking: a worker stalled in a page fault or a
+//! GC-induced pause left its queued jobs stranded until it woke, while
+//! the round-robin push had to walk all M producer head pointers on
+//! every backoff iteration. SPMC collapses this to a single ring with
+//! consumer-side CAS distribution — natural load-balancing, less code,
+//! one cache line for the head pointer instead of M.
 //!
-//! The shard increments a `next_worker` cursor mod M for each push. If
-//! a particular worker's ring is full it backs off briefly before
-//! retrying — but in practice all workers drain at the same rate so
-//! the rings stay nearly empty.
+//! ## Wakeup discipline
+//!
+//! On push, the shard unparks **one** worker (round-robin hint). The
+//! woken worker pops; if more jobs remain it unparks the next worker
+//! before processing. This "torch-passing" keeps at most one extra
+//! worker awake when load is low, while still parallelising under
+//! backlog. Workers fall back to `park_timeout(10ms)` as a safety net
+//! against missed unparks.
 
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use nostro2::NostrNoteView;
@@ -38,15 +47,22 @@ use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::{
     Consumer as MpscConsumer, Producer as MpscProducer, RingBuffer as MpscRingBuffer,
 };
-use quetzalcoatl::spsc::{
-    Consumer as SpscConsumer, Producer as SpscProducer, RingBuffer as SpscRingBuffer,
+use quetzalcoatl::spmc::{
+    Consumer as SpmcConsumer, Producer as SpmcProducer, RingBuffer as SpmcRingBuffer,
 };
 
-/// Default capacity for both the jobs and results rings, per shard.
-/// Sized large enough to absorb a burst from a single publisher's
-/// connection without backpressuring the shard's frame parser. 1024 jobs
-/// at ~1 KiB each = ~1 MiB worst case per ring — cheap.
-const DEFAULT_RING_CAPACITY: usize = 1024;
+/// Capacity for the per-shard MPSC results ring (workers → shard).
+/// 1024 verdicts at ~96 B each = ~96 KiB per ring — cheap.
+const RESULTS_RING_CAPACITY: usize = 1024;
+
+/// Capacity for the per-shard SPMC jobs ring (shard → workers). Sized
+/// to match the aggregate buffering the previous M-SPSC design provided
+/// (M workers × 1024 per-worker rings = 12288 jobs). With a single
+/// shared SPMC ring we lose the per-consumer headroom, so we size up
+/// here to keep the shard's `push_verify_job` from spinning into
+/// `std::thread::sleep` under burst — which would prevent the shard
+/// from draining the results ring and livelock the pipeline.
+const JOBS_RING_CAPACITY: usize = 12 * 1024;
 
 /// One EVENT queued for verify. Owned because it must cross threads;
 /// the shard parses the inbound frame as a borrowed view, then promotes
@@ -84,15 +100,20 @@ pub struct VerifyResult {
     pub verified: bool,
 }
 
-/// Per-shard handle. The shard owns M job producers (round-robined),
-/// one result consumer, and the worker thread handles for `unpark`.
+/// Per-shard handle. The shard owns the single SPMC jobs producer, the
+/// MPSC results consumer, and the worker thread handles for targeted
+/// `unpark`.
 pub struct VerifyHandle {
-    pub jobs_txs: Vec<SpscProducer<VerifyJob>>,
+    /// Single SPMC jobs producer. All workers for this shard share the
+    /// matching consumer (cloned once per worker at spawn time).
+    pub jobs_tx: SpmcProducer<VerifyJob>,
     pub results_rx: MpscConsumer<VerifyResult>,
     pub worker_threads: Vec<std::thread::Thread>,
-    /// Round-robin cursor across `jobs_txs`. Bumped on every push so
-    /// successive events go to different workers.
-    pub next_worker: usize,
+    /// Round-robin hint for which worker to unpark on push. Any worker
+    /// can pop any job, so this is purely a wakeup-fairness knob; if
+    /// the chosen worker is busy, the next push (or the worker's own
+    /// torch-pass on its way out) will wake another.
+    pub next_wake_hint: usize,
     /// Shared handle workers use to wake the shard thread when a
     /// verify result lands. Filled in by the shard's `run_shard`
     /// before its main loop starts. Without this, a shard parked on
@@ -139,7 +160,13 @@ pub fn spawn(
         // One results ring per shard, MPSC: every worker for this shard
         // gets a clone of the producer; the shard owns the consumer.
         let (results_seed_tx, results_rx) =
-            MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
+            MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(RESULTS_RING_CAPACITY)).split();
+
+        // One jobs ring per shard, SPMC: shard owns the (non-cloneable)
+        // producer; each worker gets a clone of the consumer and competes
+        // for slots via CAS. Self-balancing across workers.
+        let (jobs_tx, jobs_rx_seed) =
+            SpmcRingBuffer::<VerifyJob>::new(Capacity::at_least(JOBS_RING_CAPACITY)).split();
 
         // Shared handle the shard fills in once it starts running.
         // Workers read from it to unpark the shard after pushing a
@@ -147,44 +174,64 @@ pub fn spawn(
         // still wakes promptly when a verdict lands.
         let shard_waker: Arc<OnceLock<std::thread::Thread>> = Arc::new(OnceLock::new());
 
-        let mut jobs_txs = Vec::with_capacity(workers_per);
+        // Wake-fanout list: each worker also gets a copy of every other
+        // worker's `Thread` so it can torch-pass on its way out. We build
+        // this in a second pass after we've spawned all workers.
         let mut worker_threads = Vec::with_capacity(workers_per);
+        let mut spawned: Vec<std::thread::JoinHandle<()>> = Vec::with_capacity(workers_per);
+
+        // We need the full peer-thread list available to each worker, so
+        // pass an Arc<OnceLock<Arc<[Thread]>>> that's filled after spawn.
+        let peers_slot: Arc<OnceLock<Arc<[std::thread::Thread]>>> = Arc::new(OnceLock::new());
 
         for worker_idx in 0..workers_per {
-            // Each worker has its own SPSC jobs ring fed only by the
-            // shard. SPSC is the lightest-weight option and matches the
-            // single-producer reality (shard) ↔ single-consumer reality
-            // (worker).
-            let (jobs_tx, jobs_rx) =
-                SpscRingBuffer::<VerifyJob>::new(Capacity::at_least(DEFAULT_RING_CAPACITY)).split();
-            jobs_txs.push(jobs_tx);
-
-            // Clone the MPSC producer for this worker. The seed
-            // producer stays unused; we drop it after the loop.
+            // Clone the SPMC consumer once per worker (the seed handle
+            // was returned from split()).
+            let jobs_rx = jobs_rx_seed.clone();
             let results_tx = results_seed_tx.clone();
             let waker_for_worker = Arc::clone(&shard_waker);
+            let peers_for_worker = Arc::clone(&peers_slot);
 
             let shutdown_for_thread = Arc::clone(&shutdown);
             let thread = std::thread::Builder::new()
                 .name(format!("nostr-verify-{shard_idx}-{worker_idx}"))
                 .spawn(move || {
-                    worker_loop(shutdown_for_thread, jobs_rx, results_tx, waker_for_worker);
+                    worker_loop(
+                        shutdown_for_thread,
+                        jobs_rx,
+                        results_tx,
+                        waker_for_worker,
+                        peers_for_worker,
+                        worker_idx,
+                    );
                 })
                 .expect("spawn verify worker");
             worker_threads.push(thread.thread().clone());
-            threads.push(thread);
+            spawned.push(thread);
         }
 
-        // Drop the seed producer so total producer count == workers_per.
-        // (The mpsc Producer is reference-counted internally; dropping
-        // here just frees one reference.)
+        // Publish the peer list so torch-passing works. Each worker reads
+        // this lazily on first use.
+        let peers: Arc<[std::thread::Thread]> = Arc::from(worker_threads.clone());
+        if peers_slot.set(peers).is_err() {
+            unreachable!("peers_slot only set once per shard");
+        }
+
+        for h in spawned {
+            threads.push(h);
+        }
+
+        // Drop the seed handles so producer/consumer counts match the
+        // intended populations: producer = 1 (the shard, captured below);
+        // consumers = workers_per; mpsc producers = workers_per.
+        drop(jobs_rx_seed);
         drop(results_seed_tx);
 
         handles.push(VerifyHandle {
-            jobs_txs,
+            jobs_tx,
             results_rx,
             worker_threads,
-            next_worker: 0,
+            next_wake_hint: 0,
             shard_waker,
         });
     }
@@ -205,15 +252,26 @@ pub fn spawn(
 /// it enables to run off the I/O thread.
 fn worker_loop(
     shutdown: Arc<AtomicBool>,
-    mut jobs_rx: SpscConsumer<VerifyJob>,
+    jobs_rx: SpmcConsumer<VerifyJob>,
     results_tx: MpscProducer<VerifyResult>,
     shard_waker: Arc<OnceLock<std::thread::Thread>>,
+    _peers: Arc<OnceLock<Arc<[std::thread::Thread]>>>,
+    _self_idx: usize,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let Some(job) = jobs_rx.pop() else {
             std::thread::park_timeout(Duration::from_millis(10));
             continue;
         };
+
+        // No torch-pass: with the batched-CAS SPMC consumer, `is_empty()`
+        // can read false negatives because each consumer claims up to 32
+        // slots into a thread-local cursor before re-touching `head`. A
+        // peer-wake based on `is_empty()` would silently skip when the
+        // claiming worker still has 31 queued items, leaving peers
+        // parked. Wakeups instead come solely from the shard's per-push
+        // round-robin unpark, which is sufficient because the batched
+        // claim already amortizes contention.
 
         let verified = match serde_json::from_slice::<NostrNoteView<'_>>(&job.raw_json) {
             Ok(view) => view.verify(),

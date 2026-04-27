@@ -95,6 +95,13 @@ name = "heap_fanout_live_compare"
 [[example]]
 name = "heap_ingest_persistent_compare"
 
+# Multi-publisher heap profile of the ephemeral relay. Mirrors
+# benches/event_ingest_multi.rs (8 pubs × 500 events). Used to A/B the
+# verify-pool topology cost. Knobs: HEAP_SHARDS, HEAP_EVENTS, HEAP_PUBS,
+# HEAP_WORKERS.
+[[example]]
+name = "heap_ingest_multi"
+
 # Relay-only heap profile. `heap_fanout_relay_server` runs one relay under
 # dhat; `heap_fanout_driver` runs the client workload in a separate process
 # against it. dhat's output then reflects relay-side heap only, with no

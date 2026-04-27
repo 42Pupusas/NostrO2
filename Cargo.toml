@@ -76,3 +76,8 @@ web-sys = { version = "0.3" }
 [profile.release]
 debug = "line-tables-only"
 
+# Local override: redirect quetzalcoatl to the in-development tree to test
+# the batched-CAS SPMC consumer. Remove once published.
+[patch.crates-io]
+quetzalcoatl = { path = "../../tooling/quetzalcoatl" }
+
