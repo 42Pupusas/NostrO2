@@ -328,6 +328,11 @@ pub struct ParameterizedBucket {
     index: BucketIndex,
     /// (pubkey, kind, d_tag) → slot_idx.
     by_key: std::collections::HashMap<ParamKey, u32>,
+    /// Reverse map: slot_idx → key. `None` for empty / freed slots. Kept
+    /// in sync with `by_key` so eviction is O(1) instead of O(slot_count)
+    /// — without this, every LRU eviction would scan the entire `by_key`
+    /// map to recover the old key for removal.
+    by_slot: Vec<Option<ParamKey>>,
     lru: VecDeque<u32>,
     free_slots: Vec<u32>,
 }
@@ -337,10 +342,12 @@ impl ParameterizedBucket {
         let log = BucketLog::open(path, slot_count, max_payload)?;
         let index = BucketIndex::new(slot_count);
         let free_slots = (0..slot_count as u32).collect();
+        let by_slot = (0..slot_count).map(|_| None).collect();
         Ok(Self {
             log,
             index,
             by_key: std::collections::HashMap::new(),
+            by_slot,
             lru: VecDeque::new(),
             free_slots,
         })
@@ -414,17 +421,8 @@ impl Bucket for ParameterizedBucket {
                 return WriteOutcome::Stalled;
             }
             self.lru.pop_front();
-            // Find and remove old key. We don't keep the d-tag in meta
-            // directly; rebuild it by iterating by_key to find the slot.
-            // Cheap: bucket is modest size.
-            if self.index.meta[victim as usize].is_some() {
-                let old_key = self
-                    .by_key
-                    .iter()
-                    .find_map(|(k, &v)| if v == victim { Some(k.clone()) } else { None });
-                if let Some(k) = old_key {
-                    self.by_key.remove(&k);
-                }
+            if let Some(old_key) = self.by_slot[victim as usize].take() {
+                self.by_key.remove(&old_key);
             }
             victim
         };
@@ -437,7 +435,8 @@ impl Bucket for ParameterizedBucket {
             generation,
             next_seq,
         );
-        self.by_key.insert(key, slot_idx);
+        self.by_key.insert(key.clone(), slot_idx);
+        self.by_slot[slot_idx as usize] = Some(key);
         self.lru.push_back(slot_idx);
         WriteOutcome::Committed { slot_idx, meta }
     }
@@ -468,8 +467,9 @@ impl Bucket for ParameterizedBucket {
             let d_tag = Self::extract_d_tag(&note_view);
             let tags = extract_tags(&note_view);
             self.index.rebuild_from_disk(slot_idx as u32, &slot, tags);
-            self.by_key
-                .insert((Box::new(slot.pubkey), slot.kind, d_tag), slot_idx as u32);
+            let key: ParamKey = (Box::new(slot.pubkey), slot.kind, d_tag);
+            self.by_key.insert(key.clone(), slot_idx as u32);
+            self.by_slot[slot_idx] = Some(key);
             self.lru.push_back(slot_idx as u32);
             used[slot_idx] = true;
         }
@@ -643,6 +643,58 @@ mod tests {
         let ev2 = sample_event(&view2, raw_old.as_bytes(), 0x22, 0xaa);
         let out = b.try_write(&ev2, 2, u64::MAX, &mut next_seq);
         assert!(matches!(out, WriteOutcome::Duplicate));
+    }
+
+    /// Parameterized eviction must keep `by_key` consistent with `by_slot`:
+    /// when an LRU victim is evicted, its old key must be gone from
+    /// `by_key`. Regression guard: a previous version found the old key by
+    /// scanning `by_key` linearly, which was both O(n) per eviction and a
+    /// correctness hazard if anyone ever reordered the eviction code.
+    #[test]
+    fn parameterized_eviction_clears_old_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("par.log");
+        // 2 slots so the third write has to evict.
+        let mut b = ParameterizedBucket::open(&path, 2, 4096).unwrap();
+        let mut next_seq: u64 = 0;
+
+        let mk = |pk_byte: u8, d: &str, id_byte: u8, t: i64| -> String {
+            format!(
+                r#"{{"pubkey":"{pk}","created_at":{t},"kind":30001,"tags":[["d","{d}"]],"content":"x","id":"{id}","sig":"00"}}"#,
+                pk = format!("{:02x}", pk_byte).repeat(32),
+                id = format!("{:02x}", id_byte).repeat(32),
+            )
+        };
+
+        // Fill both slots with distinct (pubkey, d) keys.
+        let raw_a = mk(0xaa, "first", 0x11, 100);
+        let view_a: NostrNoteView<'_> = serde_json::from_str(&raw_a).unwrap();
+        let ev_a = sample_event(&view_a, raw_a.as_bytes(), 0x11, 0xaa);
+        b.try_write(&ev_a, 1, u64::MAX, &mut next_seq);
+
+        let raw_b = mk(0xbb, "second", 0x22, 101);
+        let view_b: NostrNoteView<'_> = serde_json::from_str(&raw_b).unwrap();
+        let ev_b = sample_event(&view_b, raw_b.as_bytes(), 0x22, 0xbb);
+        b.try_write(&ev_b, 1, u64::MAX, &mut next_seq);
+
+        assert_eq!(b.by_key.len(), 2);
+
+        // Third write evicts the oldest (key A).
+        let raw_c = mk(0xcc, "third", 0x33, 102);
+        let view_c: NostrNoteView<'_> = serde_json::from_str(&raw_c).unwrap();
+        let ev_c = sample_event(&view_c, raw_c.as_bytes(), 0x33, 0xcc);
+        let out = b.try_write(&ev_c, 1, u64::MAX, &mut next_seq);
+        assert!(matches!(out, WriteOutcome::Committed { .. }));
+
+        // by_key must no longer contain key A.
+        let key_a: ParamKey = (Box::new([0xaa; 32]), 30001, Box::from("first"));
+        assert!(
+            !b.by_key.contains_key(&key_a),
+            "by_key still has the evicted key"
+        );
+        // And the reverse map must agree.
+        assert_eq!(b.by_key.len(), 2);
+        assert_eq!(b.by_slot.iter().filter(|s| s.is_some()).count(), 2);
     }
 
     #[test]
