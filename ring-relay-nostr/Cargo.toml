@@ -19,7 +19,7 @@ serde = { workspace = true }
 # re-serialization pass entirely.
 serde_json = { workspace = true, features = ["raw_value"] }
 # Lock-free broadcast ring for cross-shard sub replication.
-quetzalcoatl = "0.6.0"
+quetzalcoatl = { workspace = true }
 
 [features]
 default = []

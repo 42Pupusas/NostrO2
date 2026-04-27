@@ -12,7 +12,7 @@ keywords = ["nostr", "relay", "websocket", "lock-free", "io-uring"]
 
 [dependencies]
 # Ring buffers
-quetzalcoatl = "0.6.0"
+quetzalcoatl = { workspace = true }
 serde_json = { workspace = true }
 # WebSocket RFC6455 codec
 coyoquil = "0.3.0"

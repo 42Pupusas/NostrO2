@@ -14,7 +14,7 @@ keywords = ["nostr", "relay", "ringbuffer", "lock-free", "io-uring"]
 # Nostr protocol
 nostro2 = { workspace = true }
 # Ring buffers
-quetzalcoatl = "0.6.0"
+quetzalcoatl = { workspace = true }
 serde_json = { workspace = true }
 # WebSockets RFC6455 codec
 coyoquil = "0.3.0"

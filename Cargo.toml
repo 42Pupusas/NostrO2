@@ -59,6 +59,9 @@ chrono = "0.4"
 tracing-test = "0.2"
 lru = "0.12"
 
+# Lock-free ring buffers
+quetzalcoatl = "0.7.1"
+
 # Native platform TCP
 tokio = { version = "^1.44" }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
@@ -75,9 +78,4 @@ web-sys = { version = "0.3" }
 # via RUSTFLAGS at profile-run time (see scripts in ring-relay-nostr).
 [profile.release]
 debug = "line-tables-only"
-
-# Local override: redirect quetzalcoatl to the in-development tree to test
-# the batched-CAS SPMC consumer. Remove once published.
-[patch.crates-io]
-quetzalcoatl = { path = "../../tooling/quetzalcoatl" }
 
