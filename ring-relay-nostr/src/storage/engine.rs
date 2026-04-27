@@ -201,12 +201,11 @@ fn storage_loop(
         batch.clear();
 
         // Drain the shared MPSC write ring up to the batch cap.
-        while let Some(req) = write_rx.0.pop() {
-            batch.push(req);
-            if batch.len() >= 1024 {
-                break;
-            }
-        }
+        // `drain_up_to` amortizes the consumer's head-pointer update —
+        // one Release store per drain instead of one per item — so this
+        // is meaningfully cheaper than a `while let Some = pop()` loop
+        // when the ring is hot.
+        write_rx.0.drain_up_to(1024, |req| batch.push(req));
 
         if batch.is_empty() && staged.is_empty() {
             // Idle: park with timeout so we can still fsync on schedule.

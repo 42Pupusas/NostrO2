@@ -136,13 +136,15 @@ fn run_mpsc(num_producers: usize) -> Duration {
     let consumer_thread = std::thread::spawn(move || {
         let mut local: usize = 0;
         while local < target {
-            let mut drained_any = false;
-            while let Some(item) = rx.pop() {
-                drained_any = true;
+            // `drain_up_to` amortizes the consumer's head-pointer update
+            // across the batch — one Release store per drain call instead
+            // of one per item. This is exactly what the storage thread
+            // does in production after the MPSC swap.
+            let drained = rx.drain_up_to(1024, |item| {
                 std::hint::black_box(item);
                 local += 1;
-            }
-            if !drained_any {
+            });
+            if drained == 0 {
                 std::hint::spin_loop();
             }
         }
