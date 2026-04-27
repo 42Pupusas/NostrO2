@@ -93,7 +93,7 @@ impl StorageEngine {
     pub fn spawn(
         config: &StorageConfig,
         reader_threads: usize,
-        write_rxs: Vec<WriteRx>,
+        write_rx: WriteRx,
         index_tx: ArcProducer<IndexUpdate>,
     ) -> std::io::Result<(Self, StorageShutdown, std::thread::Thread)> {
         std::fs::create_dir_all(&config.data_dir)?;
@@ -136,7 +136,7 @@ impl StorageEngine {
             .spawn(move || {
                 storage_loop(
                     shared_for_thread,
-                    write_rxs,
+                    write_rx,
                     index_tx,
                     shutdown_for_thread,
                     eph,
@@ -184,7 +184,7 @@ fn highest_seq_and_gen(
 #[allow(clippy::too_many_arguments)]
 fn storage_loop(
     shared: Arc<SharedState>,
-    mut write_rxs: Vec<WriteRx>,
+    mut write_rx: WriteRx,
     index_tx: ArcProducer<IndexUpdate>,
     shutdown: Arc<AtomicBool>,
     mut eph: EphemeralBucket,
@@ -200,15 +200,9 @@ fn storage_loop(
     while !shutdown.load(Ordering::Acquire) {
         batch.clear();
 
-        // Drain each shard's write ring. quetzalcoatl SPSC doesn't expose a
-        // `drain` directly on consumer, so pop until empty.
-        for rx in &mut write_rxs {
-            while let Some(req) = rx.0.pop() {
-                batch.push(req);
-                if batch.len() >= 1024 {
-                    break;
-                }
-            }
+        // Drain the shared MPSC write ring up to the batch cap.
+        while let Some(req) = write_rx.0.pop() {
+            batch.push(req);
             if batch.len() >= 1024 {
                 break;
             }

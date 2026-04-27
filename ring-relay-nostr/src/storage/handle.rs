@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use nostro2::NostrSubscription;
-use quetzalcoatl::spsc::{Consumer as SpscConsumer, Producer as SpscProducer};
+use quetzalcoatl::mpsc::{Consumer as MpscConsumer, Producer as MpscProducer};
 
 use super::index::SlotMeta;
 use super::slot::BucketKind;
@@ -59,8 +59,10 @@ pub struct ReqJob {
     pub filters: Arc<[NostrSubscription]>,
 }
 
-/// Per-shard producer side of the writes ring.
-pub struct WriteTx(pub SpscProducer<WriteReq>);
+/// Per-shard producer side of the writes ring. `Clone` because every
+/// shard gets its own handle into the same shared MPSC ring.
+#[derive(Clone)]
+pub struct WriteTx(pub MpscProducer<WriteReq>);
 
 impl WriteTx {
     /// Best-effort push; returns `Err` if the ring is full. The storage
@@ -72,7 +74,7 @@ impl WriteTx {
 }
 
 /// Storage-thread side of the writes ring.
-pub struct WriteRx(pub SpscConsumer<WriteReq>);
+pub struct WriteRx(pub MpscConsumer<WriteReq>);
 
 /// Simple lock-protected FIFO for REQ jobs. REQs are coarse-grained
 /// (one per subscribe) so contention here is tiny compared to EVENT

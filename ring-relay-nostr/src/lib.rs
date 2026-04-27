@@ -191,10 +191,11 @@ impl NostrRelay {
 
         // Storage + reader pool setup (if persistence is enabled).
         //
-        // One per-shard SPSC write ring feeds the single storage thread.
-        // Reader pool shares one MPSC job queue + per-thread wakers.
-        let mut per_shard_write_tx: Vec<Option<storage::handle::WriteTx>> = Vec::with_capacity(n);
-        let mut per_shard_write_rx: Vec<storage::handle::WriteRx> = Vec::with_capacity(n);
+        // EXPERIMENT (mpsc-write-ring branch): one shared MPSC write ring
+        // for all shards, replacing the previous N SPSC rings. Capacity is
+        // sized to `write_ring_capacity * n` so total in-flight buffering
+        // matches the SPSC layout — only the contention shape changes.
+        let mut shard_write_tx: Vec<Option<storage::handle::WriteTx>> = Vec::with_capacity(n);
         let (
             storage_engine,
             storage_shutdown_opt,
@@ -202,14 +203,17 @@ impl NostrRelay {
             reader_pool_shutdown_opt,
             reader_thread_handles,
         ) = if let Some(sc) = storage_config.as_ref() {
+            let total_cap = sc.write_ring_capacity.saturating_mul(n).max(sc.write_ring_capacity);
+            let (tx_seed, rx) = quetzalcoatl::mpsc::RingBuffer::new(
+                quetzalcoatl::capacity::Capacity::at_least(total_cap),
+            )
+            .split();
             for _ in 0..n {
-                let (tx, rx) = quetzalcoatl::spsc::RingBuffer::new(
-                    quetzalcoatl::capacity::Capacity::at_least(sc.write_ring_capacity),
-                )
-                .split();
-                per_shard_write_tx.push(Some(storage::handle::WriteTx(tx)));
-                per_shard_write_rx.push(storage::handle::WriteRx(rx));
+                shard_write_tx.push(Some(storage::handle::WriteTx(tx_seed.clone())));
             }
+            // Drop the seed producer so producer count == n exactly.
+            drop(tx_seed);
+            let storage_write_rx = storage::handle::WriteRx(rx);
 
             // Index-update broadcast ring: storage thread (single producer)
             // pushes one IndexUpdate per committed write; each reader thread
@@ -244,7 +248,7 @@ impl NostrRelay {
             let (engine, sd, thread_handle) = storage::engine::StorageEngine::spawn(
                 sc,
                 n_readers,
-                std::mem::take(&mut per_shard_write_rx),
+                storage_write_rx,
                 index_producer,
             )?;
             let req_queue = Arc::new(storage::handle::ReqQueue::new());
@@ -338,7 +342,7 @@ impl NostrRelay {
             let shard_storage = match (
                 storage_engine.as_ref(),
                 storage_thread_handle.as_ref(),
-                per_shard_write_tx.get_mut(i).and_then(Option::take),
+                shard_write_tx.get_mut(i).and_then(Option::take),
             ) {
                 (Some((_engine, req_queue)), Some(storage_thread), Some(write_tx)) => {
                     Some(shard::ShardStorage {
