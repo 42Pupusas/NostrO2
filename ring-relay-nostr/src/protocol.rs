@@ -355,8 +355,8 @@ pub fn serialize_note_view(note: &NostrNoteView<'_>) -> String {
 #[must_use]
 pub fn event_from_serialized(sub_id: &str, note_json: &str) -> String {
     let sub_id_json = serde_json::to_string(sub_id).expect("sub_id serialization cannot fail");
-    // `["EVENT",` + sub_id JSON + `,` + note JSON + `]`
-    let mut out = String::with_capacity(10 + sub_id_json.len() + note_json.len());
+    // `["EVENT",` (9) + sub_id JSON + `,` (1) + note JSON + `]` (1)
+    let mut out = String::with_capacity(11 + sub_id_json.len() + note_json.len());
     out.push_str("[\"EVENT\",");
     out.push_str(&sub_id_json);
     out.push(',');

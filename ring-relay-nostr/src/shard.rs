@@ -74,10 +74,7 @@ impl ClientState {
         // Replacing an existing sub with the same id: remove it from order
         // first so re-insertion puts it at the back.
         if self.subs.remove(&sub_id).is_some()
-            && let Some(pos) = self
-                .order
-                .iter()
-                .position(|s| s.as_ref() == sub_id.as_ref())
+            && let Some(pos) = self.order.iter().position(|s| s == &sub_id)
         {
             self.order.remove(pos);
         }
@@ -242,14 +239,7 @@ impl ShardDispatcher {
                 Ok(()) => return,
                 Err(returned) => {
                     msg = returned;
-                    if spins < 64 {
-                        std::hint::spin_loop();
-                    } else if spins < 256 {
-                        std::thread::yield_now();
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_micros(10));
-                    }
-                    spins = spins.saturating_add(1);
+                    spins = crate::backoff::step(spins);
                 }
             }
         }
@@ -425,14 +415,7 @@ impl ShardDispatcher {
                 }
                 Err(returned) => {
                     job = returned;
-                    if spins < 64 {
-                        std::hint::spin_loop();
-                    } else if spins < 256 {
-                        std::thread::yield_now();
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_micros(10));
-                    }
-                    spins = spins.saturating_add(1);
+                    spins = crate::backoff::step(spins);
                 }
             }
         }
@@ -579,21 +562,19 @@ impl ShardDispatcher {
             return;
         }
 
-        let Some(state) = self.clients.get_mut(&client_id) else {
-            return;
-        };
-
         let sub_id_arc: Arc<str> = Arc::from(sub_id);
         let filters_arc: Arc<[NostrSubscription]> = Arc::from(filters.into_boxed_slice());
 
-        let evicted = state.insert_sub(
-            Arc::clone(&sub_id_arc),
-            Arc::clone(&filters_arc),
-            self.config.max_subs_per_conn,
-        );
-        // End the mutable borrow of `state` here; subsequent code uses
-        // `filters_arc` which we already own.
-        let _ = state;
+        let evicted = {
+            let Some(state) = self.clients.get_mut(&client_id) else {
+                return;
+            };
+            state.insert_sub(
+                Arc::clone(&sub_id_arc),
+                Arc::clone(&filters_arc),
+                self.config.max_subs_per_conn,
+            )
+        };
 
         if let Some(old_sub) = evicted {
             self.sender.send_text(
@@ -616,8 +597,10 @@ impl ShardDispatcher {
         });
 
         // Replay historical matches if storage is enabled; otherwise
-        // immediate EOSE (ephemeral behavior). The reader thread sends
-        // EOSE itself once the scan completes.
+        // immediate EOSE (ephemeral behavior). In storage mode the reader
+        // pool emits EOSE once its scan completes. Live fan-out (including
+        // cross-shard) is unaffected — `push_repl(SubRepl::Add)` above
+        // already replicated this sub to peer shards regardless of mode.
         if let Some(storage) = &self.storage {
             let job = ReqJob {
                 client_fd: client_id,
@@ -629,12 +612,6 @@ impl ShardDispatcher {
             self.next_reader = self.next_reader.wrapping_add(1);
             storage.reader_wakers[reader_idx].unpark();
         } else {
-            // Replicate the new sub to peer shards (live-only mode).
-            // NOTE: in storage mode we skip replication of subs since
-            // historical replay covers both buckets AND live fan-out runs
-            // locally; cross-shard sub-replication for live events still
-            // works via the existing `replica` table update below in the
-            // non-storage path.
             self.sender
                 .send_text(client_id, protocol::eose(&sub_id_arc));
         }

@@ -24,7 +24,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::index::{BucketIndex, SlotMeta, extract_tags};
+use super::index::{BucketIndex, IndexedTags, SlotMeta, extract_tags};
 use super::log::BucketLog;
 use super::slot::{self, Slot};
 use nostro2::NostrNoteView;
@@ -414,11 +414,10 @@ impl Bucket for ParameterizedBucket {
                 return WriteOutcome::Stalled;
             }
             self.lru.pop_front();
-            // Find and remove old key.
-            if let Some(old_meta) = &self.index.meta[victim as usize] {
-                // We don't keep the d-tag in meta directly; rebuild it by
-                // iterating by_key to find the slot. Cheap: bucket is
-                // modest size.
+            // Find and remove old key. We don't keep the d-tag in meta
+            // directly; rebuild it by iterating by_key to find the slot.
+            // Cheap: bucket is modest size.
+            if self.index.meta[victim as usize].is_some() {
                 let old_key = self
                     .by_key
                     .iter()
@@ -426,7 +425,6 @@ impl Bucket for ParameterizedBucket {
                 if let Some(k) = old_key {
                     self.by_key.remove(&k);
                 }
-                let _ = old_meta;
             }
             victim
         };
@@ -503,10 +501,9 @@ fn commit_write(
     let seq = NonZeroU64::new(*next_seq).expect("next_seq starts at 1");
 
     // Payload is the raw JSON bytes. Caller already checked
-    // `raw_json.len() <= log.max_payload()`; truncating here would corrupt
-    // the JSON, so we just slice the full thing.
-    let payload_len = event.raw_json.len();
-    let payload = &event.raw_json[..payload_len];
+    // `raw_json.len() <= log.max_payload()`.
+    let payload = event.raw_json;
+    let payload_len = payload.len();
 
     let tags = extract_tags(event.note);
 
@@ -539,7 +536,7 @@ fn commit_write(
     meta
 }
 
-fn tags_from_payload(payload: &[u8]) -> Arc<[(u8, Box<str>)]> {
+fn tags_from_payload(payload: &[u8]) -> IndexedTags {
     match serde_json::from_slice::<NostrNoteView<'_>>(payload) {
         Ok(view) => extract_tags(&view),
         Err(_) => Arc::from(Vec::new().into_boxed_slice()),

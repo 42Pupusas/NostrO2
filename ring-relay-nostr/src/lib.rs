@@ -17,6 +17,7 @@
 //! ~11K events/sec single-thread bottleneck that the old central-loop design
 //! had.
 
+mod backoff;
 mod filter;
 mod info;
 mod protocol;
@@ -233,7 +234,7 @@ impl NostrRelay {
             let mut seed_opt = Some(index_consumer_seed);
             for i in 0..n_readers {
                 let c = if i + 1 < n_readers {
-                    seed_opt.clone().expect("seed live")
+                    seed_opt.as_ref().expect("seed live").clone()
                 } else {
                     seed_opt.take().expect("seed live for last reader")
                 };
@@ -270,7 +271,6 @@ impl NostrRelay {
         } else {
             (None, None, None, None, Vec::new())
         };
-        let _ = &storage_engine;
 
         // Cross-shard sub replication via one broadcast ring. Only allocate
         // when there's more than one shard — a single-shard relay has no

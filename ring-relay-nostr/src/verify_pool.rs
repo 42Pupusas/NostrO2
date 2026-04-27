@@ -174,15 +174,8 @@ pub fn spawn(
         // still wakes promptly when a verdict lands.
         let shard_waker: Arc<OnceLock<std::thread::Thread>> = Arc::new(OnceLock::new());
 
-        // Wake-fanout list: each worker also gets a copy of every other
-        // worker's `Thread` so it can torch-pass on its way out. We build
-        // this in a second pass after we've spawned all workers.
         let mut worker_threads = Vec::with_capacity(workers_per);
         let mut spawned: Vec<std::thread::JoinHandle<()>> = Vec::with_capacity(workers_per);
-
-        // We need the full peer-thread list available to each worker, so
-        // pass an Arc<OnceLock<Arc<[Thread]>>> that's filled after spawn.
-        let peers_slot: Arc<OnceLock<Arc<[std::thread::Thread]>>> = Arc::new(OnceLock::new());
 
         for worker_idx in 0..workers_per {
             // Clone the SPMC consumer once per worker (the seed handle
@@ -190,31 +183,16 @@ pub fn spawn(
             let jobs_rx = jobs_rx_seed.clone();
             let results_tx = results_seed_tx.clone();
             let waker_for_worker = Arc::clone(&shard_waker);
-            let peers_for_worker = Arc::clone(&peers_slot);
 
             let shutdown_for_thread = Arc::clone(&shutdown);
             let thread = std::thread::Builder::new()
                 .name(format!("nostr-verify-{shard_idx}-{worker_idx}"))
                 .spawn(move || {
-                    worker_loop(
-                        shutdown_for_thread,
-                        jobs_rx,
-                        results_tx,
-                        waker_for_worker,
-                        peers_for_worker,
-                        worker_idx,
-                    );
+                    worker_loop(shutdown_for_thread, jobs_rx, results_tx, waker_for_worker);
                 })
                 .expect("spawn verify worker");
             worker_threads.push(thread.thread().clone());
             spawned.push(thread);
-        }
-
-        // Publish the peer list so torch-passing works. Each worker reads
-        // this lazily on first use.
-        let peers: Arc<[std::thread::Thread]> = Arc::from(worker_threads.clone());
-        if peers_slot.set(peers).is_err() {
-            unreachable!("peers_slot only set once per shard");
         }
 
         for h in spawned {
@@ -255,8 +233,6 @@ fn worker_loop(
     jobs_rx: SpmcConsumer<VerifyJob>,
     results_tx: MpscProducer<VerifyResult>,
     shard_waker: Arc<OnceLock<std::thread::Thread>>,
-    _peers: Arc<OnceLock<Arc<[std::thread::Thread]>>>,
-    _self_idx: usize,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let Some(job) = jobs_rx.pop() else {
@@ -312,14 +288,7 @@ fn push_result(tx: &MpscProducer<VerifyResult>, mut msg: VerifyResult) {
             Ok(()) => return,
             Err(returned) => {
                 msg = returned;
-                if spins < 64 {
-                    std::hint::spin_loop();
-                } else if spins < 256 {
-                    std::thread::yield_now();
-                } else {
-                    std::thread::sleep(Duration::from_micros(10));
-                }
-                spins = spins.saturating_add(1);
+                spins = crate::backoff::step(spins);
             }
         }
     }

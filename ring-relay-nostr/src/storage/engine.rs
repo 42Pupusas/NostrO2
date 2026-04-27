@@ -112,10 +112,10 @@ impl StorageEngine {
         par.rebuild()?;
 
         // Next seq for newly-written slots must be > any existing slot's seq.
-        let next_seq = initial_next_seq(&eph, &rep, &par);
         // current_gen must start at > any persisted gen so reopens don't
         // render old slots "from the future."
-        let initial_gen = initial_next_gen(&eph, &rep, &par);
+        let (next_seq, max_gen) = highest_seq_and_gen(&eph, &rep, &par);
+        let initial_gen = max_gen.saturating_add(1);
 
         let reader_active_gens: Arc<[AtomicU64]> = (0..reader_threads.max(1))
             .map(|_| AtomicU64::new(u64::MAX))
@@ -162,41 +162,23 @@ impl StorageEngine {
     }
 }
 
-fn initial_next_seq(
+/// Highest `(seq, generation)` pair seen across all three buckets'
+/// rebuilt indexes. Used at startup to seed `next_seq` and `current_gen`
+/// so we never reuse a value that already lives on disk.
+fn highest_seq_and_gen(
     eph: &EphemeralBucket,
     rep: &ReplaceableBucket,
     par: &ParameterizedBucket,
-) -> u64 {
-    let max_from = |b: &dyn Bucket| -> u64 {
-        b.index()
-            .meta
-            .iter()
-            .flatten()
-            .map(|m| m.seq.get())
-            .max()
-            .unwrap_or(0)
-    };
-    max_from(eph).max(max_from(rep)).max(max_from(par))
-}
-
-fn initial_next_gen(
-    eph: &EphemeralBucket,
-    rep: &ReplaceableBucket,
-    par: &ParameterizedBucket,
-) -> u64 {
-    let max_from = |b: &dyn Bucket| -> u64 {
-        b.index()
-            .meta
-            .iter()
-            .flatten()
-            .map(|m| m.generation)
-            .max()
-            .unwrap_or(0)
-    };
-    max_from(eph)
-        .max(max_from(rep))
-        .max(max_from(par))
-        .saturating_add(1)
+) -> (u64, u64) {
+    let mut max_seq: u64 = 0;
+    let mut max_gen: u64 = 0;
+    for b in [eph as &dyn Bucket, rep as &dyn Bucket, par as &dyn Bucket] {
+        for meta in b.index().meta.iter().flatten() {
+            max_seq = max_seq.max(meta.seq.get());
+            max_gen = max_gen.max(meta.generation);
+        }
+    }
+    (max_seq, max_gen)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -365,14 +347,7 @@ fn push_with_backoff(tx: &ArcProducer<IndexUpdate>, mut msg: IndexUpdate) {
             Ok(()) => return,
             Err(returned) => {
                 msg = returned;
-                if spins < 64 {
-                    std::hint::spin_loop();
-                } else if spins < 256 {
-                    std::thread::yield_now();
-                } else {
-                    std::thread::sleep(Duration::from_micros(10));
-                }
-                spins = spins.saturating_add(1);
+                spins = crate::backoff::step(spins);
             }
         }
     }

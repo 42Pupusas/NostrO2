@@ -38,7 +38,7 @@ pub struct SlotMeta {
     pub pubkey: [u8; 32],
     /// Indexable tags only: (name, value). We keep `#p`, `#e`, `#d` and any
     /// single-letter tag NIP-01 blesses. Storage trims anything else.
-    pub tags: Arc<[(u8, Box<str>)]>,
+    pub tags: IndexedTags,
     pub payload_len: u32,
 }
 
@@ -111,21 +111,27 @@ pub fn hex_encode32(bytes: &[u8; 32]) -> String {
     out
 }
 
+/// `(tag-letter byte, tag value)` pairs kept in `SlotMeta`. Public so the
+/// `extract_tags` / `empty_tags` signatures don't grow the type-complexity
+/// every time we touch them.
+pub type IndexedTag = (u8, Box<str>);
+pub type IndexedTags = Arc<[IndexedTag]>;
+
 /// Shared empty-tags Arc. Most kind-1 events have no indexable tags;
 /// returning a clone of this avoids two allocations (Vec + Arc) per write.
-fn empty_tags() -> Arc<[(u8, Box<str>)]> {
-    static EMPTY: OnceLock<Arc<[(u8, Box<str>)]>> = OnceLock::new();
+fn empty_tags() -> IndexedTags {
+    static EMPTY: OnceLock<IndexedTags> = OnceLock::new();
     Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new().into_boxed_slice())))
 }
 
 /// Extract the indexable single-letter tags from a parsed note view. Used
 /// when the storage thread accepts an EVENT; result goes into `SlotMeta`.
 #[must_use]
-pub fn extract_tags(note: &NostrNoteView<'_>) -> Arc<[(u8, Box<str>)]> {
+pub fn extract_tags(note: &NostrNoteView<'_>) -> IndexedTags {
     if note.tags.is_empty() {
         return empty_tags();
     }
-    let mut out: Vec<(u8, Box<str>)> = Vec::new();
+    let mut out: Vec<IndexedTag> = Vec::new();
     for row in note.tags.iter() {
         let Some(name) = row.first() else { continue };
         if name.len() != 1 {
@@ -221,7 +227,7 @@ impl BucketIndex {
     /// Rebuild `SlotMeta` from a decoded on-disk `Slot` plus its payload,
     /// for startup index recovery. The payload is re-parsed into a view so
     /// we can extract tags identically to the fresh-write path.
-    pub fn rebuild_from_disk(&mut self, slot_idx: u32, slot: &Slot, tags: Arc<[(u8, Box<str>)]>) {
+    pub fn rebuild_from_disk(&mut self, slot_idx: u32, slot: &Slot, tags: IndexedTags) {
         let meta = SlotMeta {
             seq: slot.seq,
             generation: slot.generation,

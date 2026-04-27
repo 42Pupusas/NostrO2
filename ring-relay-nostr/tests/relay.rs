@@ -7,7 +7,7 @@
 use futures_util::{SinkExt, StreamExt};
 use nostro2::{NostrNote, NostrSigner};
 use nostro2_signer::K256Keypair;
-use ring_relay_nostr::{NostrRelay, RelayConfig};
+use ring_relay_nostr::{NostrRelay, RelayConfig, StorageConfig};
 use serde_json::Value;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -479,6 +479,71 @@ async fn too_many_tags_is_rejected() {
     );
 
     shutdown.shutdown(); // joins relay thread
+}
+
+/// Cross-shard live fan-out **with storage enabled**. The persistence layer
+/// changes the REQ flow (reader pool sends EOSE after a historical scan
+/// instead of inline), but live fan-out for matching EVENTs must still cross
+/// shards. Regression guard: an earlier comment in `on_req` falsely claimed
+/// storage mode skipped sub replication. If anyone refactors based on that
+/// comment, this test will fail loudly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_shard_fanout_with_storage() {
+    use ring_relay_server::ShardConfig;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = StorageConfig {
+        data_dir: dir.path().to_path_buf(),
+        ephemeral_slots: 64,
+        replaceable_slots: 16,
+        parameterized_slots: 16,
+        max_payload: 16 * 1024,
+        reader_threads: 1,
+        write_ring_capacity: 64,
+        req_ring_capacity: 16,
+        fsync_interval_ms: Some(10),
+    };
+    let mut cfg = RelayConfig::default();
+    cfg.shards = ShardConfig {
+        reader_shards: 2,
+        writer_shards: 2,
+    };
+    cfg.storage = Some(storage);
+    let (port, shutdown) = spawn_relay(cfg);
+
+    // Open 4 subscribers and drain each one's EOSE (which now arrives from
+    // the reader pool after the historical scan, not inline).
+    let mut subs = Vec::with_capacity(4);
+    for i in 0..4 {
+        let mut ws = connect(port).await;
+        let req = format!(r#"["REQ","s{i}",{{"kinds":[1]}}]"#);
+        send(&mut ws, &req).await;
+        let eose = recv_text(&mut ws).await;
+        assert_eq!(eose[0], "EOSE", "sub {i} expected EOSE, got {eose:?}");
+        subs.push(ws);
+    }
+
+    // Let SubRepl::Add propagate to peer shards.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut pub_ws = connect(port).await;
+    let note = signed_note("cross-shard-storage");
+    let id = note.id.clone().unwrap();
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut pub_ws, &frame).await;
+
+    let ok = recv_text(&mut pub_ws).await;
+    assert_eq!(ok[0], "OK");
+    assert_eq!(ok[2], true);
+
+    for (i, sub) in subs.iter_mut().enumerate() {
+        let evt = recv_text(sub).await;
+        assert_eq!(evt[0], "EVENT", "sub {i} did not receive EVENT");
+        assert_eq!(evt[1], format!("s{i}"));
+        assert_eq!(evt[2]["id"].as_str().unwrap(), id);
+    }
+
+    shutdown.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
