@@ -177,3 +177,10 @@ harness = false
 [[bench]]
 name = "idle_scale"
 harness = false
+
+# Microbench: producer-side cost of the storage write-ring topology.
+# Compares N×SPSC (round-robin drained by one consumer) vs one shared
+# MPSC (FAA tail). Pure ring traffic, no parse/verify/disk.
+[[bench]]
+name = "write_ring_topology"
+harness = false
