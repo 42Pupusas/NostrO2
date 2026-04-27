@@ -330,6 +330,24 @@ impl ShardDispatcher {
     fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>, note_json: &str) {
         let id = note.id.as_deref().unwrap_or("");
 
+        // Decode hex up front. Both the verify-pool and storage paths
+        // need raw bytes, and we refuse to carry zero-byte fallbacks
+        // anywhere downstream — a malformed id/pubkey would otherwise
+        // index events under all-zero keys and let separate clients
+        // collide on a shared "broken" slot in the replaceable bucket.
+        let Some(id_bytes) = note.id.as_deref().and_then(decode_hex32) else {
+            self.sender
+                .send_text(client_id, protocol::ok(id, false, "invalid: malformed id"));
+            return;
+        };
+        let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) else {
+            self.sender.send_text(
+                client_id,
+                protocol::ok(id, false, "invalid: malformed pubkey"),
+            );
+            return;
+        };
+
         // Cheap pre-checks (length, tag count, drift). The expensive
         // schnorr verify is *not* done here; it gets offloaded if we have
         // a verify pool, or done inline as a fallback in the legacy path.
@@ -337,20 +355,6 @@ impl ShardDispatcher {
             self.sender
                 .send_text(client_id, protocol::ok(id, false, reason));
             return;
-        }
-
-        // Decode hex once; both the verify-pool path and the storage
-        // path want these as raw bytes, and the verify worker shouldn't
-        // have to redo it.
-        let mut event_id = [0u8; 32];
-        let mut pubkey = [0u8; 32];
-        if let Some(id_hex) = note.id.as_deref()
-            && let Some(id_bytes) = decode_hex32(id_hex)
-        {
-            event_id = id_bytes;
-        }
-        if let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) {
-            pubkey = pk_bytes;
         }
 
         let raw_json: Arc<[u8]> = Arc::from(note_json.as_bytes());
@@ -365,8 +369,8 @@ impl ShardDispatcher {
                 raw_json,
                 client_id,
                 event_id_hex,
-                event_id,
-                pubkey,
+                event_id: id_bytes,
+                pubkey: pk_bytes,
                 kind,
             };
             self.push_verify_job(job);
@@ -379,8 +383,8 @@ impl ShardDispatcher {
                 raw_json,
                 client_id,
                 event_id_hex,
-                event_id,
-                pubkey,
+                event_id: id_bytes,
+                pubkey: pk_bytes,
                 kind,
                 verified,
             });

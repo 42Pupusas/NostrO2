@@ -356,6 +356,74 @@ async fn cross_shard_fanout() {
 
 // --- validation / NIP-11 limit enforcement -------------------------------
 
+/// Non-hex id must be rejected up front with `invalid: malformed id` — not
+/// silently coerced to `[0; 32]` and pushed into the verify pool / storage
+/// indexes. Regression guard: a previous version fell back to all-zero bytes
+/// for any id that failed `decode_hex32`, which would then index distinct
+/// events under a shared zero-key slot in the replaceable bucket.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_id_is_rejected_with_message() {
+    let (port, shutdown) = spawn_relay(RelayConfig::default());
+    let mut ws = connect(port).await;
+
+    let mut note = signed_note("hi");
+    // Replace the id with a 64-char string that contains a non-hex char.
+    // Length matches so naive validators wave it through.
+    let mut id = note.id.clone().unwrap();
+    id.replace_range(0..1, "z");
+    note.id = Some(id.clone());
+
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], id);
+    assert_eq!(resp[2], false);
+    assert!(
+        resp[3]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid: malformed id"),
+        "got {:?}",
+        resp[3]
+    );
+
+    shutdown.shutdown();
+}
+
+/// Wrong-length pubkey must be rejected with `invalid: malformed pubkey`.
+/// Same regression guard as above but for the pubkey field, which feeds
+/// the replaceable bucket's primary key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_pubkey_is_rejected_with_message() {
+    let (port, shutdown) = spawn_relay(RelayConfig::default());
+    let mut ws = connect(port).await;
+
+    let mut note = signed_note("hi");
+    let id = note.id.clone().unwrap();
+    // Trim one hex digit. Now 63 chars, fails decode_hex32's length check.
+    note.pubkey.pop();
+
+    let frame = format!(r#"["EVENT",{}]"#, serde_json::to_string(&note).unwrap());
+    send(&mut ws, &frame).await;
+
+    let resp = recv_text(&mut ws).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], id);
+    assert_eq!(resp[2], false);
+    assert!(
+        resp[3]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid: malformed pubkey"),
+        "got {:?}",
+        resp[3]
+    );
+
+    shutdown.shutdown();
+}
+
 /// Tampered `id` (valid hex, same length) must fail verification. Guards the
 /// sha256(id) check against regressing to a length-only validator.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
