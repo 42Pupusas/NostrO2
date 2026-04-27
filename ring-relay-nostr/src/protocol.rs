@@ -4,11 +4,12 @@
 //! verbs a NIP-01 relay must handle: `EVENT`, `REQ`, `CLOSE`. Anything else
 //! comes back as [`ClientMessage::Unknown`] so the dispatcher can NOTICE it.
 
+use std::cell::Cell;
+use std::fmt;
+
 use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
-use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde_json::value::RawValue;
-use std::fmt;
 
 /// A parsed client → relay message.
 #[derive(Debug, Clone)]
@@ -83,7 +84,13 @@ impl std::fmt::Display for ParseError {
 /// Returns [`ParseError`] for malformed JSON or known verbs with bad payloads.
 /// Unknown verbs are returned as [`ClientMessage::Unknown`], not an error.
 pub fn parse(text: &str) -> Result<ClientMessage, ParseError> {
-    serde_json::from_str::<ClientMessage>(text).map_err(ParseError::from_serde)
+    let typed: Cell<Option<ParseError>> = Cell::new(None);
+    let mut de = serde_json::Deserializer::from_str(text);
+    let visitor = ClientMessageVisitor { typed: &typed };
+    match de.deserialize_seq(visitor) {
+        Ok(msg) => Ok(msg),
+        Err(err) => Err(typed.take().unwrap_or_else(|| classify_serde_err(&err))),
+    }
 }
 
 /// Parse a client → relay frame into a borrowed view.
@@ -96,62 +103,54 @@ pub fn parse(text: &str) -> Result<ClientMessage, ParseError> {
 /// # Errors
 /// Same error taxonomy as [`parse`].
 pub fn parse_view(text: &str) -> Result<ClientMessageView<'_>, ParseError> {
-    serde_json::from_str::<ClientMessageView<'_>>(text).map_err(ParseError::from_serde)
-}
-
-impl ParseError {
-    fn from_serde(err: serde_json::Error) -> Self {
-        // The visitor surfaces specific failure kinds via custom error messages;
-        // generic JSON errors fall back to NotJson / NotArray based on category.
-        use serde_json::error::Category;
-        match err.classify() {
-            Category::Eof | Category::Syntax => Self::NotJson,
-            Category::Io => Self::NotJson,
-            Category::Data => {
-                let msg = err.to_string();
-                if msg.starts_with("NotArray") {
-                    Self::NotArray
-                } else if msg.starts_with("Empty") {
-                    Self::Empty
-                } else if msg.starts_with("BadTag") {
-                    Self::BadTag
-                } else if let Some(rest) = msg.strip_prefix("BadPayload:") {
-                    // Map the embedded reason back to a &'static str; the set
-                    // below mirrors every literal the visitor emits.
-                    let reason: &'static str = match rest.trim() {
-                        "EVENT missing note" => "EVENT missing note",
-                        "EVENT note" => "EVENT note",
-                        "REQ missing sub id" => "REQ missing sub id",
-                        "REQ filter" => "REQ filter",
-                        "CLOSE missing sub id" => "CLOSE missing sub id",
-                        _ => "unknown",
-                    };
-                    Self::BadPayload(reason)
-                } else {
-                    Self::NotArray
-                }
-            }
-        }
+    let typed: Cell<Option<ParseError>> = Cell::new(None);
+    let mut de = serde_json::Deserializer::from_str(text);
+    let visitor = ClientMessageViewVisitor {
+        typed: &typed,
+        _marker: std::marker::PhantomData,
+    };
+    match de.deserialize_seq(visitor) {
+        Ok(msg) => Ok(msg),
+        Err(err) => Err(typed.take().unwrap_or_else(|| classify_serde_err(&err))),
     }
 }
 
-impl<'de> Deserialize<'de> for ClientMessage {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_seq(ClientMessageVisitor)
+/// Map a generic `serde_json::Error` (from the JSON layer, not our visitor)
+/// to a `ParseError` variant. Used as a fallback when the visitor didn't
+/// stash a typed error — i.e. the JSON didn't even parse as a sequence.
+fn classify_serde_err(err: &serde_json::Error) -> ParseError {
+    use serde_json::error::Category;
+    match err.classify() {
+        Category::Eof | Category::Syntax | Category::Io => ParseError::NotJson,
+        Category::Data => ParseError::NotArray,
     }
 }
+
+/// Sentinel string passed to `de::Error::custom` when the visitor has
+/// already recorded a typed `ParseError` in its `Cell`. The string itself
+/// is never inspected — `parse`/`parse_view` consult the cell first.
+const TYPED_ERR_SENTINEL: &str = "ring-relay-nostr: see typed error cell";
 
 /// Visits a NIP-01 client frame in array form. Reads the verb tag first, then
 /// dispatches to the verb-specific shape. Avoids the `serde_json::Value`
 /// round-trip the older `parse` implementation used.
 ///
-/// Error messages are prefixed (`NotArray`, `BadTag`, `BadPayload:<reason>`)
-/// so `ParseError::from_serde` can recover the typed variant from the string
-/// serde_json hands back. Not beautiful, but keeps the public error type
-/// unchanged.
-struct ClientMessageVisitor;
+/// Failure modes are recorded in the `typed` cell as a strongly-typed
+/// `ParseError`; the `de::Error` returned to serde is a sentinel string
+/// that nobody parses. The driver in `parse` reads `typed` after a failed
+/// `deserialize_seq` and uses that variant directly.
+struct ClientMessageVisitor<'cell> {
+    typed: &'cell Cell<Option<ParseError>>,
+}
 
-impl<'de> Visitor<'de> for ClientMessageVisitor {
+impl<'cell> ClientMessageVisitor<'cell> {
+    fn fail<E: de::Error>(&self, err: ParseError) -> E {
+        self.typed.set(Some(err));
+        E::custom(TYPED_ERR_SENTINEL)
+    }
+}
+
+impl<'de, 'cell> Visitor<'de> for ClientMessageVisitor<'cell> {
     type Value = ClientMessage;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -165,14 +164,14 @@ impl<'de> Visitor<'de> for ClientMessageVisitor {
         // because it used `Value::as_str` + `ok_or(BadTag)`.
         let tag: String = match seq.next_element::<String>() {
             Ok(Some(t)) => t,
-            Ok(None) | Err(_) => return Err(de::Error::custom("BadTag")),
+            Ok(None) | Err(_) => return Err(self.fail(ParseError::BadTag)),
         };
 
         match tag.as_str() {
             "EVENT" => {
                 let note: NostrNote = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: EVENT missing note"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("EVENT missing note")))?;
                 // Ensure no trailing elements (tolerant: ignore extras).
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessage::Event(note))
@@ -180,7 +179,7 @@ impl<'de> Visitor<'de> for ClientMessageVisitor {
             "REQ" => {
                 let sub_id: String = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: REQ missing sub id"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("REQ missing sub id")))?;
                 let mut filters = Vec::new();
                 while let Some(filter) = seq.next_element::<NostrSubscription>()? {
                     filters.push(filter);
@@ -190,7 +189,7 @@ impl<'de> Visitor<'de> for ClientMessageVisitor {
             "CLOSE" => {
                 let sub_id: String = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: CLOSE missing sub id"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("CLOSE missing sub id")))?;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessage::Close { sub_id })
             }
@@ -204,17 +203,21 @@ impl<'de> Visitor<'de> for ClientMessageVisitor {
     }
 }
 
-impl<'de: 'a, 'a> Deserialize<'de> for ClientMessageView<'a> {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_seq(ClientMessageViewVisitor(std::marker::PhantomData))
+/// Borrowed counterpart to [`ClientMessageVisitor`]. Same typed-cell
+/// failure plumbing.
+struct ClientMessageViewVisitor<'cell, 'a> {
+    typed: &'cell Cell<Option<ParseError>>,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'cell, 'a> ClientMessageViewVisitor<'cell, 'a> {
+    fn fail<E: de::Error>(&self, err: ParseError) -> E {
+        self.typed.set(Some(err));
+        E::custom(TYPED_ERR_SENTINEL)
     }
 }
 
-/// Borrowed counterpart to [`ClientMessageVisitor`]. Same error taxonomy so
-/// `ParseError::from_serde` can recover the same variants.
-struct ClientMessageViewVisitor<'a>(std::marker::PhantomData<&'a ()>);
-
-impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
+impl<'de: 'a, 'cell, 'a> Visitor<'de> for ClientMessageViewVisitor<'cell, 'a> {
     type Value = ClientMessageView<'a>;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -224,7 +227,7 @@ impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         let tag: &'a str = match seq.next_element::<&'a str>() {
             Ok(Some(t)) => t,
-            Ok(None) | Err(_) => return Err(de::Error::custom("BadTag")),
+            Ok(None) | Err(_) => return Err(self.fail(ParseError::BadTag)),
         };
 
         match tag {
@@ -235,16 +238,16 @@ impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
                 // verify + filter work against the structured form.
                 let raw: &'a RawValue = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: EVENT missing note"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("EVENT missing note")))?;
                 let note: NostrNoteView<'a> = serde_json::from_str(raw.get())
-                    .map_err(|_| de::Error::custom("BadPayload: EVENT note"))?;
+                    .map_err(|_| self.fail(ParseError::BadPayload("EVENT note")))?;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessageView::Event { note, raw })
             }
             "REQ" => {
                 let sub_id: &'a str = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: REQ missing sub id"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("REQ missing sub id")))?;
                 let mut filters = Vec::new();
                 while let Some(filter) = seq.next_element::<NostrSubscription>()? {
                     filters.push(filter);
@@ -254,7 +257,7 @@ impl<'de: 'a, 'a> Visitor<'de> for ClientMessageViewVisitor<'a> {
             "CLOSE" => {
                 let sub_id: &'a str = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::custom("BadPayload: CLOSE missing sub id"))?;
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("CLOSE missing sub id")))?;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessageView::Close { sub_id })
             }
@@ -425,13 +428,43 @@ mod tests {
         assert!(matches!(parse("{}"), Err(ParseError::NotArray)));
         assert!(matches!(parse("[]"), Err(ParseError::BadTag)));
         assert!(matches!(parse(r#"[123]"#), Err(ParseError::BadTag)));
+        // BadPayload reasons must round-trip *verbatim* — the visitor stores
+        // the &'static str directly in the typed-error cell, no string
+        // parsing involved. If anyone changes a literal in the visitor and
+        // forgets to update this assertion, the test catches it.
         assert!(matches!(
             parse(r#"["EVENT"]"#),
-            Err(ParseError::BadPayload(_))
+            Err(ParseError::BadPayload("EVENT missing note"))
         ));
         assert!(matches!(
             parse(r#"["REQ"]"#),
-            Err(ParseError::BadPayload(_))
+            Err(ParseError::BadPayload("REQ missing sub id"))
+        ));
+        assert!(matches!(
+            parse(r#"["CLOSE"]"#),
+            Err(ParseError::BadPayload("CLOSE missing sub id"))
+        ));
+    }
+
+    #[test]
+    fn parse_view_errors() {
+        // The view-side parser must produce the same typed errors, with the
+        // same verbatim BadPayload reasons.
+        assert!(matches!(parse_view("not-json"), Err(ParseError::NotJson)));
+        assert!(matches!(parse_view("{}"), Err(ParseError::NotArray)));
+        assert!(matches!(parse_view("[]"), Err(ParseError::BadTag)));
+        assert!(matches!(parse_view(r#"[123]"#), Err(ParseError::BadTag)));
+        assert!(matches!(
+            parse_view(r#"["EVENT"]"#),
+            Err(ParseError::BadPayload("EVENT missing note"))
+        ));
+        assert!(matches!(
+            parse_view(r#"["REQ"]"#),
+            Err(ParseError::BadPayload("REQ missing sub id"))
+        ));
+        assert!(matches!(
+            parse_view(r#"["CLOSE"]"#),
+            Err(ParseError::BadPayload("CLOSE missing sub id"))
         ));
     }
 
