@@ -18,6 +18,7 @@
 //! had.
 
 mod backoff;
+mod extension;
 mod filter;
 mod info;
 mod protocol;
@@ -30,6 +31,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ring_relay_server::{ServerComponents, ServerConfig, ShardConfig};
 
+pub use extension::{
+    Extension, ExtensionAction, MessageRef, OutboundDecision, OutboundFrame, OutboundKind,
+    Session, extract_ip,
+};
 pub use filter::{matches, matches_match_view, matches_view};
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
@@ -41,7 +46,12 @@ pub use storage::StorageConfig;
 pub use verify_pool::MatchView;
 
 /// Configuration for the Nostr relay layer.
-#[derive(Debug, Clone)]
+///
+/// `RelayConfig` is `Clone` but not `Debug`: the `extensions` field holds
+/// `Arc<dyn Extension>`, which has no `Debug` requirement (forcing one
+/// would burden every extension impl). Operators that want to log config
+/// should walk the structured fields directly.
+#[derive(Clone)]
 pub struct RelayConfig {
     /// Max concurrent connections. The oldest connection is evicted on overflow.
     pub max_clients: usize,
@@ -92,6 +102,16 @@ pub struct RelayConfig {
     /// must have `enable_secret_extraction = true`.
     #[cfg(feature = "ktls")]
     pub tls: Option<Arc<ring_relay_server::rustls::ServerConfig>>,
+    /// Extensions invoked at shard hook points (connect / disconnect /
+    /// inbound message / outbound frame). The same `Arc<dyn Extension>`
+    /// is shared across all shards. Default is empty — preserving the
+    /// vanilla NIP-01 wire behavior. See [`Extension`].
+    pub extensions: Vec<Arc<dyn Extension>>,
+    /// Header to consult for the real client IP (e.g. `"x-forwarded-for"`).
+    /// `None` disables IP extraction. The first comma-separated entry of
+    /// the matching header is parsed; behind a trusted proxy this is the
+    /// real client. Untrusted deployments should leave this `None`.
+    pub trusted_ip_header: Option<String>,
 }
 
 impl Default for RelayConfig {
@@ -130,6 +150,8 @@ impl Default for RelayConfig {
             verify_threads: 0,
             #[cfg(feature = "ktls")]
             tls: None,
+            extensions: Vec::new(),
+            trusted_ip_header: None,
         }
     }
 }

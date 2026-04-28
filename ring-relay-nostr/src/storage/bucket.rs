@@ -519,7 +519,7 @@ fn commit_write(
     };
     let header = slot::encode_header(&slot, payload);
     if let Err(e) = log.write_slot(slot_idx as usize, &header, payload) {
-        eprintln!("storage write_slot failed: {e}");
+        tracing::error!(slot_idx, error = %e, "storage write_slot failed");
     }
 
     let meta = SlotMeta {

@@ -20,6 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 # Lock-free broadcast ring for cross-shard sub replication.
 quetzalcoatl = { workspace = true }
+# Structured logging. Library only emits events; the binary owns the subscriber.
+tracing = { workspace = true }
 
 [features]
 default = []

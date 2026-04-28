@@ -31,7 +31,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 use quetzalcoatl::broadcast::arc::{ArcConsumer, ArcProducer};
 use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
+use tracing::{debug, error, trace, warn};
 
+use crate::extension::{
+    self, AdmitOutcome, Extension, MessageRef, OutboundDecision, OutboundFrame, OutboundKind,
+    Session,
+};
 use crate::protocol::ClientMessageView;
 use crate::storage::handle::{ReqJob, ReqTx, WriteReq, WriteTx};
 use crate::storage::slot::decode_hex32;
@@ -53,55 +58,6 @@ pub(crate) enum SubRepl {
     },
     /// A client disconnected from its owning shard; drop all its replica subs.
     ClientGone { owner: u32, client_id: i32 },
-}
-
-/// Subscriptions owned by a single connected client (local, authoritative view).
-#[derive(Default)]
-struct ClientState {
-    /// Insertion-ordered map of sub_id → filters. The `order` VecDeque gives
-    /// O(1) FIFO pop for eviction.
-    subs: HashMap<Arc<str>, Arc<[NostrSubscription]>>,
-    order: VecDeque<Arc<str>>,
-}
-
-impl ClientState {
-    fn insert_sub(
-        &mut self,
-        sub_id: Arc<str>,
-        filters: Arc<[NostrSubscription]>,
-        cap: usize,
-    ) -> Option<Arc<str>> {
-        // Replacing an existing sub with the same id: remove it from order
-        // first so re-insertion puts it at the back.
-        if self.subs.remove(&sub_id).is_some()
-            && let Some(pos) = self.order.iter().position(|s| s == &sub_id)
-        {
-            self.order.remove(pos);
-        }
-
-        let evicted = if self.subs.len() >= cap {
-            self.order.pop_front().inspect(|old| {
-                self.subs.remove(old);
-            })
-        } else {
-            None
-        };
-
-        self.order.push_back(Arc::clone(&sub_id));
-        self.subs.insert(sub_id, filters);
-        evicted
-    }
-
-    fn remove_sub(&mut self, sub_id: &str) -> bool {
-        if self.subs.remove(sub_id).is_some() {
-            if let Some(pos) = self.order.iter().position(|s| s.as_ref() == sub_id) {
-                self.order.remove(pos);
-            }
-            true
-        } else {
-            false
-        }
-    }
 }
 
 /// Replicated subs from one peer-owned client (owner, client_id) → sub_id → filters.
@@ -128,7 +84,7 @@ pub struct ShardDispatcher {
     /// This shard's index, stamped into every outgoing SubRepl message so
     /// peers can skip our own broadcasts on readback.
     owner_id: u32,
-    clients: HashMap<i32, ClientState>,
+    clients: HashMap<i32, Session>,
     /// Arrival order on this shard, for FIFO eviction at capacity.
     client_order: VecDeque<i32>,
     /// Replicated peer subs: (owner, client_id) → sub_id → filters.
@@ -145,6 +101,10 @@ pub struct ShardDispatcher {
     /// to a dedicated worker and continue reading frames; the post-verify
     /// path runs from `drain_verify_results` on the next loop iteration.
     verify: Option<VerifyHandle>,
+    /// Snapshot of the relay's extension list. `Arc<dyn Extension>` is
+    /// cloned once per shard at construction; the slice is read-only on
+    /// the hot path, so an empty list reduces to a single length check.
+    extensions: Arc<[Arc<dyn Extension>]>,
 }
 
 impl ShardDispatcher {
@@ -157,6 +117,7 @@ impl ShardDispatcher {
         storage: Option<ShardStorage>,
         verify: Option<VerifyHandle>,
     ) -> Self {
+        let extensions: Arc<[Arc<dyn Extension>]> = Arc::from(config.extensions.clone());
         Self {
             config,
             sender,
@@ -168,6 +129,7 @@ impl ShardDispatcher {
             repl_rx,
             storage,
             verify,
+            extensions,
         }
     }
 
@@ -246,7 +208,7 @@ impl ShardDispatcher {
     /// Handle one frame-level event from the reader core.
     pub fn handle(&mut self, event: ReaderEvent<'_>) {
         match event {
-            ReaderEvent::Connected { fd, .. } => self.on_connect(fd),
+            ReaderEvent::Connected { fd, headers, .. } => self.on_connect(fd, &headers),
             ReaderEvent::Disconnected { fd, .. } => self.on_disconnect(fd),
             ReaderEvent::Text { fd, text } => self.on_text(fd, text),
             ReaderEvent::Binary { .. } => {
@@ -258,30 +220,47 @@ impl ShardDispatcher {
         }
     }
 
-    fn on_connect(&mut self, client_id: i32) {
+    fn on_connect(&mut self, client_id: i32, headers: &[(String, String)]) {
         // Per-shard FIFO eviction. The server layer already caps total fds
         // at `max_clients`, so this is defensive.
         while self.client_order.len() >= self.config.max_clients {
             if let Some(old) = self.client_order.pop_front() {
                 self.clients.remove(&old);
-                self.sender
-                    .send_text(old, protocol::notice("evicted: relay at capacity"));
+                warn!(fd = old, "evicting client: shard at capacity");
+                self.dispatch_text(old, protocol::notice("evicted: relay at capacity"));
                 self.sender
                     .close_client(old, ring_relay_server::CloseCode::PolicyViolation);
             } else {
                 break;
             }
         }
-        self.clients.insert(client_id, ClientState::default());
+
+        // Resolve real client IP from configured trust header, if any.
+        let remote_ip = self
+            .config
+            .trusted_ip_header
+            .as_deref()
+            .and_then(|h| extension::extract_ip(headers, h));
+
+        let mut session = Session::new(client_id, remote_ip);
+        for ext in self.extensions.iter() {
+            ext.on_connect(&mut session);
+        }
+        debug!(fd = client_id, ?remote_ip, "client connected");
+        self.clients.insert(client_id, session);
         self.client_order.push_back(client_id);
     }
 
     fn on_disconnect(&mut self, client_id: i32) {
-        let had = self.clients.remove(&client_id).is_some();
+        let removed = self.clients.remove(&client_id);
         if let Some(pos) = self.client_order.iter().position(|&c| c == client_id) {
             self.client_order.remove(pos);
         }
-        if had {
+        if let Some(mut session) = removed {
+            for ext in self.extensions.iter() {
+                ext.on_disconnect(&mut session);
+            }
+            debug!(fd = client_id, "client disconnected");
             // Tell peers to drop this client's replica entry.
             self.push_repl(SubRepl::ClientGone {
                 owner: self.owner_id,
@@ -290,11 +269,72 @@ impl ShardDispatcher {
         }
     }
 
+    /// Funnel for outbound text frames. Walks the extension list (no-op when
+    /// empty) and forwards to the sender unless an extension dropped the
+    /// frame. Centralizing here means new control verbs don't have to
+    /// thread the hook through manually.
+    fn dispatch_text(&mut self, fd: i32, frame: String) {
+        if self.extensions.is_empty() {
+            self.sender.send_text(fd, frame);
+            return;
+        }
+        let Some(session) = self.clients.get_mut(&fd) else {
+            // No session (e.g. eviction sequence above): bypass extensions
+            // — they observe by-session, and there's nothing to observe.
+            self.sender.send_text(fd, frame);
+            return;
+        };
+        let outbound = OutboundFrame {
+            fd,
+            kind: OutboundKind::Text(frame.as_str()),
+        };
+        let mut decision = OutboundDecision::Forward;
+        for ext in self.extensions.iter() {
+            if let OutboundDecision::Drop = ext.on_outbound(&outbound, session) {
+                decision = OutboundDecision::Drop;
+                break;
+            }
+        }
+        if matches!(decision, OutboundDecision::Forward) {
+            self.sender.send_text(fd, frame);
+        }
+    }
+
+    /// Outbound funnel for the verbatim-splice EVENT fan-out path.
+    fn dispatch_event_frame(&mut self, fd: i32, sub_id: Arc<str>, note_bytes: Arc<[u8]>) {
+        if self.extensions.is_empty() {
+            self.sender.send_event_frame(fd, sub_id, note_bytes);
+            return;
+        }
+        let Some(session) = self.clients.get_mut(&fd) else {
+            self.sender.send_event_frame(fd, sub_id, note_bytes);
+            return;
+        };
+        let outbound = OutboundFrame {
+            fd,
+            kind: OutboundKind::Event {
+                sub_id: sub_id.as_ref(),
+                note_json: note_bytes.as_ref(),
+            },
+        };
+        let mut decision = OutboundDecision::Forward;
+        for ext in self.extensions.iter() {
+            if let OutboundDecision::Drop = ext.on_outbound(&outbound, session) {
+                decision = OutboundDecision::Drop;
+                break;
+            }
+        }
+        if matches!(decision, OutboundDecision::Forward) {
+            self.sender.send_event_frame(fd, sub_id, note_bytes);
+        }
+    }
+
     fn on_text(&mut self, client_id: i32, text: &str) {
         if let Some(max) = self.config.max_message_length
             && text.len() > max
         {
-            self.sender.send_text(
+            warn!(fd = client_id, len = text.len(), max, "frame exceeds max_message_length");
+            self.dispatch_text(
                 client_id,
                 protocol::notice(&format!(
                     "invalid: message exceeds max_message_length ({max} bytes)"
@@ -306,18 +346,56 @@ impl ShardDispatcher {
         let parsed = match protocol::parse_view(text) {
             Ok(msg) => msg,
             Err(e) => {
-                self.sender
-                    .send_text(client_id, protocol::notice(&format!("invalid: {e}")));
+                warn!(fd = client_id, error = %e, "frame parse failed");
+                self.dispatch_text(client_id, protocol::notice(&format!("invalid: {e}")));
                 return;
             }
         };
 
+        // Run extension admission against a borrowed view of the parsed
+        // message, before any validate / verify / fan-out / storage step.
+        // Extensions can short-circuit with a reply or silently drop.
+        if !self.extensions.is_empty() {
+            let msg_ref = match &parsed {
+                ClientMessageView::Event { note, .. } => MessageRef::Event(note),
+                ClientMessageView::Req { sub_id, filters } => MessageRef::Req {
+                    sub_id,
+                    filters: filters.as_slice(),
+                },
+                ClientMessageView::Close { sub_id } => MessageRef::Close { sub_id },
+                ClientMessageView::Unknown(verb) => MessageRef::Unknown(verb),
+            };
+            let outcome = if let Some(session) = self.clients.get_mut(&client_id) {
+                extension::run_admission(&self.extensions, &msg_ref, session)
+            } else {
+                AdmitOutcome::Continue
+            };
+            match outcome {
+                AdmitOutcome::Continue => {}
+                AdmitOutcome::Reply(frame) => {
+                    self.dispatch_text(client_id, frame);
+                    return;
+                }
+                AdmitOutcome::Drop => return,
+            }
+        }
+
         match parsed {
-            ClientMessageView::Event { note, raw } => self.on_event(client_id, &note, raw.get()),
-            ClientMessageView::Req { sub_id, filters } => self.on_req(client_id, sub_id, filters),
-            ClientMessageView::Close { sub_id } => self.on_close_sub(client_id, sub_id),
+            ClientMessageView::Event { note, raw } => {
+                trace!(fd = client_id, kind = note.kind, "event accepted for processing");
+                self.on_event(client_id, &note, raw.get());
+            }
+            ClientMessageView::Req { sub_id, filters } => {
+                debug!(fd = client_id, %sub_id, n_filters = filters.len(), "req received");
+                self.on_req(client_id, sub_id, filters);
+            }
+            ClientMessageView::Close { sub_id } => {
+                debug!(fd = client_id, %sub_id, "close received");
+                self.on_close_sub(client_id, sub_id);
+            }
             ClientMessageView::Unknown(verb) => {
-                self.sender.send_text(
+                debug!(fd = client_id, %verb, "unsupported verb");
+                self.dispatch_text(
                     client_id,
                     protocol::notice(&format!("unsupported verb: {verb}")),
                 );
@@ -334,12 +412,11 @@ impl ShardDispatcher {
         // index events under all-zero keys and let separate clients
         // collide on a shared "broken" slot in the replaceable bucket.
         let Some(id_bytes) = note.id.as_deref().and_then(decode_hex32) else {
-            self.sender
-                .send_text(client_id, protocol::ok(id, false, "invalid: malformed id"));
+            self.dispatch_text(client_id, protocol::ok(id, false, "invalid: malformed id"));
             return;
         };
         let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) else {
-            self.sender.send_text(
+            self.dispatch_text(
                 client_id,
                 protocol::ok(id, false, "invalid: malformed pubkey"),
             );
@@ -350,8 +427,7 @@ impl ShardDispatcher {
         // schnorr verify is *not* done here; it gets offloaded if we have
         // a verify pool, or done inline as a fallback in the legacy path.
         if let Err(reason) = self.pre_validate_event(note) {
-            self.sender
-                .send_text(client_id, protocol::ok(id, false, reason));
+            self.dispatch_text(client_id, protocol::ok(id, false, reason));
             return;
         }
 
@@ -433,15 +509,15 @@ impl ShardDispatcher {
     fn complete_event(&mut self, result: VerifyResult) {
         let id = result.event_id_hex.as_ref();
         if !result.verified {
-            self.sender.send_text(
+            warn!(fd = result.client_id, %id, "event verify failed");
+            self.dispatch_text(
                 result.client_id,
                 protocol::ok(id, false, "invalid: bad signature or id"),
             );
             return;
         }
 
-        self.sender
-            .send_text(result.client_id, protocol::ok(id, true, ""));
+        self.dispatch_text(result.client_id, protocol::ok(id, true, ""));
 
         let note_bytes = result.raw_json;
 
@@ -467,29 +543,71 @@ impl ShardDispatcher {
             return;
         };
 
-        for (&other_id, state) in &self.clients {
-            for (sub_id, filters) in &state.subs {
-                if filters.iter().any(|f| filter::matches_match_view(match_view, f)) {
-                    self.sender.send_event_frame(
-                        other_id,
-                        Arc::clone(sub_id),
-                        Arc::clone(&note_bytes),
-                    );
-                    break;
+        // Two paths:
+        // - Empty extension list (default, hot path): walk the table
+        //   in place and call `self.sender.send_event_frame` directly.
+        //   Zero allocations beyond the existing Arc clones.
+        // - Non-empty extensions: collect matching (fd, sub_id) pairs
+        //   first so we can drop the immutable borrow on `self.clients`
+        //   and route through `dispatch_event_frame` (which needs
+        //   `&mut self` to look up the session for the outbound hook).
+        if self.extensions.is_empty() {
+            for (&other_id, session) in &self.clients {
+                for (sub_id, filters) in session.subs() {
+                    if filters
+                        .iter()
+                        .any(|f| filter::matches_match_view(match_view, f))
+                    {
+                        self.sender.send_event_frame(
+                            other_id,
+                            Arc::clone(sub_id),
+                            Arc::clone(&note_bytes),
+                        );
+                        break;
+                    }
                 }
             }
-        }
-
-        for (&(_owner, client_id), subs) in &self.replica {
-            for (sub_id, filters) in subs {
-                if filters.iter().any(|f| filter::matches_match_view(match_view, f)) {
-                    self.sender.send_event_frame(
-                        client_id,
-                        Arc::clone(sub_id),
-                        Arc::clone(&note_bytes),
-                    );
-                    break;
+            for (&(_owner, client_id), subs) in &self.replica {
+                for (sub_id, filters) in subs {
+                    if filters
+                        .iter()
+                        .any(|f| filter::matches_match_view(match_view, f))
+                    {
+                        self.sender.send_event_frame(
+                            client_id,
+                            Arc::clone(sub_id),
+                            Arc::clone(&note_bytes),
+                        );
+                        break;
+                    }
                 }
+            }
+        } else {
+            let mut targets: Vec<(i32, Arc<str>)> = Vec::new();
+            for (&other_id, session) in &self.clients {
+                for (sub_id, filters) in session.subs() {
+                    if filters
+                        .iter()
+                        .any(|f| filter::matches_match_view(match_view, f))
+                    {
+                        targets.push((other_id, Arc::clone(sub_id)));
+                        break;
+                    }
+                }
+            }
+            for (&(_owner, client_id), subs) in &self.replica {
+                for (sub_id, filters) in subs {
+                    if filters
+                        .iter()
+                        .any(|f| filter::matches_match_view(match_view, f))
+                    {
+                        targets.push((client_id, Arc::clone(sub_id)));
+                        break;
+                    }
+                }
+            }
+            for (fd, sub_id) in targets {
+                self.dispatch_event_frame(fd, sub_id, Arc::clone(&note_bytes));
             }
         }
     }
@@ -538,14 +656,14 @@ impl ShardDispatcher {
         if let Some(max) = self.config.max_subid_length
             && sub_id.len() > max
         {
-            self.sender.send_text(
+            self.dispatch_text(
                 client_id,
                 protocol::closed(sub_id, "invalid: sub_id exceeds max_subid_length"),
             );
             return;
         }
         if filters.len() > self.config.max_filters_per_sub {
-            self.sender.send_text(
+            self.dispatch_text(
                 client_id,
                 protocol::closed(sub_id, "invalid: too many filters"),
             );
@@ -567,7 +685,8 @@ impl ShardDispatcher {
         };
 
         if let Some(old_sub) = evicted {
-            self.sender.send_text(
+            warn!(fd = client_id, evicted = %old_sub, "subscription evicted (fifo)");
+            self.dispatch_text(
                 client_id,
                 protocol::closed(&old_sub, "rate-limited: subscription evicted (fifo)"),
             );
@@ -603,8 +722,7 @@ impl ShardDispatcher {
             // means the relay is shutting down — discard quietly.
             let _ = storage.req_tx.submit(job);
         } else {
-            self.sender
-                .send_text(client_id, protocol::eose(&sub_id_arc));
+            self.dispatch_text(client_id, protocol::eose(&sub_id_arc));
         }
     }
 
@@ -612,7 +730,7 @@ impl ShardDispatcher {
         if let Some(max) = self.config.max_subid_length
             && sub_id.len() > max
         {
-            self.sender.send_text(
+            self.dispatch_text(
                 client_id,
                 protocol::notice("invalid: CLOSE sub_id exceeds max_subid_length"),
             );
@@ -650,7 +768,7 @@ pub(crate) fn run_shard(
     let mut core = match ReaderCore::new(4096) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("nostr shard fatal: ReaderCore::new: {e}");
+            error!(error = %e, owner_id, "shard fatal: ReaderCore::new");
             return;
         }
     };
@@ -696,7 +814,7 @@ pub(crate) fn run_shard(
         // 3. Drive the I/O: parse + verify + fan-out all happen inline via
         //    ShardDispatcher::handle inside poll_once.
         if let Err(e) = core.poll_once(|event| dispatcher.handle(event)) {
-            eprintln!("nostr shard fatal: poll_once: {e}");
+            error!(error = %e, owner_id, "shard fatal: poll_once");
             return;
         }
     }
@@ -709,8 +827,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_state_fifo_eviction() {
-        let mut state = ClientState::default();
+    fn session_fifo_eviction() {
+        let mut state = Session::new(1, None);
         let filters: Arc<[NostrSubscription]> =
             Arc::from(vec![NostrSubscription::default()].into_boxed_slice());
         assert!(
@@ -725,20 +843,20 @@ mod tests {
         );
         let evicted = state.insert_sub(Arc::from("c"), filters, 2);
         assert_eq!(evicted.as_deref(), Some("a"));
-        assert!(!state.subs.contains_key("a"));
-        assert!(state.subs.contains_key("b"));
-        assert!(state.subs.contains_key("c"));
+        assert!(!state.subs().contains_key("a"));
+        assert!(state.subs().contains_key("b"));
+        assert!(state.subs().contains_key("c"));
     }
 
     #[test]
-    fn client_state_replace_same_id() {
-        let mut state = ClientState::default();
+    fn session_replace_same_id() {
+        let mut state = Session::new(1, None);
         let f: Arc<[NostrSubscription]> =
             Arc::from(vec![NostrSubscription::default()].into_boxed_slice());
         state.insert_sub(Arc::from("a"), Arc::clone(&f), 2);
         state.insert_sub(Arc::from("b"), Arc::clone(&f), 2);
         let evicted = state.insert_sub(Arc::from("a"), f, 2);
         assert!(evicted.is_none());
-        assert_eq!(state.order.len(), 2);
+        assert_eq!(state.subs().len(), 2);
     }
 }

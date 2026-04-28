@@ -200,7 +200,7 @@ fn reader_loop(
     ) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("reader {reader_idx}: bootstrap failed: {e}");
+            tracing::error!(reader_idx, error = %e, "storage reader bootstrap failed");
             return;
         }
     };
