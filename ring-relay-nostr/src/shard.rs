@@ -1093,7 +1093,7 @@ pub(crate) fn run_shard(
     storage: Option<ShardStorage>,
     verify: Option<VerifyHandle>,
 ) {
-    let mut core = match ReaderCore::new(4096) {
+    let mut core = match ReaderCore::new(config.read_buffer_capacity) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, owner_id, "shard fatal: ReaderCore::new");

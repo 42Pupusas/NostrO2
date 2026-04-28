@@ -135,6 +135,7 @@ fn spawn_ring_persistent(max_clients: usize) -> RelayHandle {
                 write_ring_capacity: 8192,
                 req_ring_capacity: 1024,
                 fsync_interval_ms: Some(10),
+                ..StorageConfig::default()
             }),
             ..Default::default()
         };

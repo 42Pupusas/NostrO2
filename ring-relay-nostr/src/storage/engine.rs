@@ -200,6 +200,8 @@ impl StorageEngine {
         let shared_for_thread = Arc::clone(&shared);
         let shutdown_for_thread = Arc::clone(&shutdown);
         let fsync_interval = config.fsync_interval_ms.map(Duration::from_millis);
+        let batch_capacity = config.write_batch_capacity.max(1);
+        let idle_park = Duration::from_millis(config.idle_park_interval_ms);
 
         let handle = std::thread::Builder::new()
             .name("nostr-storage".into())
@@ -216,6 +218,8 @@ impl StorageEngine {
                     fsync_interval,
                     ack_txs,
                     shard_wakers,
+                    batch_capacity,
+                    idle_park,
                 );
             })?;
         let thread = handle.thread().clone();
@@ -266,10 +270,12 @@ fn storage_loop(
     fsync_interval: Option<Duration>,
     ack_txs: Vec<MpscProducer<StorageAck>>,
     shard_wakers: Vec<Arc<OnceLock<std::thread::Thread>>>,
+    batch_capacity: usize,
+    idle_park: Duration,
 ) {
     let mut last_fsync = Instant::now();
     let mut staged: Vec<StagedWrite> = Vec::new();
-    let mut batch: Vec<WriteReq> = Vec::with_capacity(1024);
+    let mut batch: Vec<WriteReq> = Vec::with_capacity(batch_capacity);
     // NIP-09 deletion state. Replayed at startup from existing kind-5
     // events on disk via `seed_deletions_from_disk` below.
     let mut deletions = DeletionState::default();
@@ -283,7 +289,7 @@ fn storage_loop(
         // one Release store per drain instead of one per item — so this
         // is meaningfully cheaper than a `while let Some = pop()` loop
         // when the ring is hot.
-        write_rx.0.drain_up_to(1024, |req| batch.push(req));
+        write_rx.0.drain_up_to(batch_capacity, |req| batch.push(req));
 
         if batch.is_empty() && staged.is_empty() {
             // Idle: park with timeout so we can still fsync on schedule.
@@ -297,7 +303,7 @@ fn storage_loop(
                     std::thread::park_timeout(interval - since);
                 }
             } else {
-                std::thread::park_timeout(Duration::from_millis(10));
+                std::thread::park_timeout(idle_park);
             }
             continue;
         }

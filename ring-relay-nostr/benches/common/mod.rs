@@ -139,6 +139,7 @@ impl Relay {
                 write_ring_capacity: 8192,
                 req_ring_capacity: 1024,
                 fsync_interval_ms: Some(10),
+                ..StorageConfig::default()
             });
             let mut relay = NostrRelay::bind([127, 0, 0, 1], 0, cfg).expect("ring bind");
             let port = relay.port();

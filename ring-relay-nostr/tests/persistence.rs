@@ -89,6 +89,7 @@ fn storage_cfg(dir: &std::path::Path) -> StorageConfig {
         write_ring_capacity: 256,
         req_ring_capacity: 64,
         fsync_interval_ms: Some(10),
+        ..StorageConfig::default()
     }
 }
 

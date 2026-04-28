@@ -126,6 +126,37 @@ pub struct RelayConfig {
     /// frame and ignores any inbound `AUTH` verb. `Some` activates
     /// AUTH per [`AuthConfig`].
     pub auth: Option<AuthConfig>,
+    /// Per-shard `ReaderCore` io_uring submission/completion ring
+    /// capacity (entries). Default 4096.
+    pub read_buffer_capacity: u32,
+    /// Capacity of each per-shard MPSC verify-results ring (workers →
+    /// shard). Default 1024 — verdicts are ~96 B so a full ring is
+    /// ~96 KiB.
+    pub verify_results_ring_capacity: usize,
+    /// Capacity of the global MPMC verify-jobs ring (shards → workers).
+    /// Sized to absorb cross-shard bursts without producers parking.
+    /// Default 16384.
+    pub verify_jobs_ring_capacity: usize,
+    /// Upper bound used by the `verify_threads = 0` (auto) policy. The
+    /// auto-pick is `clamp(cpus / 2, 1, verify_auto_thread_cap)`. The
+    /// global MPMC jobs ring shows a measured contention regression
+    /// past ~8 consumers, so the default is 8. Setting `verify_threads`
+    /// explicitly bypasses this cap entirely.
+    pub verify_auto_thread_cap: usize,
+    /// Floor for the index-update broadcast ring capacity in storage
+    /// mode. Effective capacity is
+    /// `max(write_ring_capacity * shards, index_broadcast_capacity_floor)`.
+    /// Default 8192.
+    pub index_broadcast_capacity_floor: usize,
+    /// Floor for the cross-shard sub-replication broadcast ring
+    /// capacity. Effective capacity is
+    /// `max(max_clients * max_subs_per_conn, repl_broadcast_capacity_floor)`.
+    /// Default 4096.
+    pub repl_broadcast_capacity_floor: usize,
+    /// Park timeout used by [`NostrRelay::run`] while waiting on the
+    /// shutdown flag, in milliseconds. Lower values shorten shutdown
+    /// latency at the cost of a bit more wakeup traffic. Default 100.
+    pub shutdown_poll_interval_ms: u64,
 }
 
 /// NIP-42 AUTH configuration. Activate by setting [`RelayConfig::auth`].
@@ -217,6 +248,13 @@ impl Default for RelayConfig {
             trusted_ip_header: None,
             min_pow_difficulty,
             auth: None,
+            read_buffer_capacity: 4096,
+            verify_results_ring_capacity: 1024,
+            verify_jobs_ring_capacity: 16 * 1024,
+            verify_auto_thread_cap: 8,
+            index_broadcast_capacity_floor: 8192,
+            repl_broadcast_capacity_floor: 4096,
+            shutdown_poll_interval_ms: 100,
         }
     }
 }
@@ -237,6 +275,10 @@ pub struct NostrRelay {
     /// One schnorr-verify worker per shard. Held so its threads are
     /// joined on relay shutdown.
     verify_pool_shutdown: Option<verify_pool::VerifyPoolShutdown>,
+    /// Park interval for `run()`'s shutdown poll. Mirrors
+    /// `RelayConfig::shutdown_poll_interval_ms` so we don't have to
+    /// keep the full config around.
+    shutdown_poll_interval: std::time::Duration,
 }
 
 impl NostrRelay {
@@ -274,6 +316,8 @@ impl NostrRelay {
         let shutdown = builder.shutdown_flag();
         let n = accept_rxs.len();
         let storage_config = config.storage.clone();
+        let shutdown_poll_interval =
+            std::time::Duration::from_millis(config.shutdown_poll_interval_ms);
         let config = Arc::new(config);
 
         // Storage + reader pool setup (if persistence is enabled).
@@ -339,10 +383,12 @@ impl NostrRelay {
             //
             // Capacity: must be > peak in-flight writes between reader
             // drains. Reader drains at REQ start, so worst case is the
-            // batch size (1024) × a few batches. Round up generously.
+            // batch size × a few batches. Floor configurable via
+            // `RelayConfig::index_broadcast_capacity_floor`.
             let n_readers = sc.reader_threads.max(1);
-            let index_cap =
-                quetzalcoatl::capacity::Capacity::at_least((sc.write_ring_capacity * n).max(8192));
+            let index_cap = quetzalcoatl::capacity::Capacity::at_least(
+                (sc.write_ring_capacity * n).max(config.index_broadcast_capacity_floor),
+            );
             let (index_producer, index_consumer_seed) =
                 quetzalcoatl::broadcast::arc::ArcRingBuffer::<storage::handle::IndexUpdate>::new(
                     index_cap, n_readers,
@@ -391,6 +437,7 @@ impl NostrRelay {
                     replaceable_slots: sc.replaceable_slots,
                     parameterized_slots: sc.parameterized_slots,
                     max_payload: sc.max_payload,
+                    req_timeout: std::time::Duration::from_millis(sc.req_timeout_ms),
                 },
                 index_consumers,
             )?;
@@ -415,7 +462,8 @@ impl NostrRelay {
         // Producer is MP so we can freely clone.
         let (repl_producer, mut repl_consumer_opt) = if n > 1 {
             let cap = quetzalcoatl::capacity::Capacity::at_least(
-                (config.max_clients * config.max_subs_per_conn).max(4096),
+                (config.max_clients * config.max_subs_per_conn)
+                    .max(config.repl_broadcast_capacity_floor),
             );
             let (p, c) =
                 quetzalcoatl::broadcast::arc::ArcRingBuffer::<shard::SubRepl>::new(cap, n).split();
@@ -432,24 +480,30 @@ impl NostrRelay {
         // capacity automatically — no static partition.
         //
         // verify_threads == 0 means "auto": pick a default that's
-        // roughly half the host's parallelism, capped at 8. The
-        // upper cap reflects a measured contention regression on the
-        // global MPMC jobs ring above ~8 consumers — past that, the
-        // CAS traffic on the head pointer eats more than the extra
-        // worker brings in. Schnorr verify is ~50µs; 8 workers is
-        // already 160K verifies/sec, comfortably above what one
-        // io_uring reader shard can feed even at saturated
-        // throughput. Users who want more can set this explicitly.
+        // roughly half the host's parallelism, clamped to
+        // `[1, verify_auto_thread_cap]`. The default cap is 8; it
+        // reflects a measured contention regression on the global
+        // MPMC jobs ring above ~8 consumers — past that, the CAS
+        // traffic on the head pointer eats more than the extra worker
+        // brings in. Schnorr verify is ~50µs; 8 workers is already
+        // 160K verifies/sec, comfortably above what one io_uring
+        // reader shard can feed even at saturated throughput. Users
+        // who want more can set `verify_threads` explicitly (which
+        // bypasses the cap) or raise `verify_auto_thread_cap`.
         let total_verify_threads = if config.verify_threads == 0 {
             let cpus = std::thread::available_parallelism()
                 .map(std::num::NonZero::get)
                 .unwrap_or(1);
-            (cpus / 2).clamp(1, 8)
+            (cpus / 2).clamp(1, config.verify_auto_thread_cap.max(1))
         } else {
             config.verify_threads
         };
-        let (mut verify_handles, verify_pool_shutdown) =
-            verify_pool::spawn(n, total_verify_threads);
+        let (mut verify_handles, verify_pool_shutdown) = verify_pool::spawn(
+            n,
+            total_verify_threads,
+            config.verify_jobs_ring_capacity,
+            config.verify_results_ring_capacity,
+        );
         verify_handles.reverse(); // pop yields shard 0 first
 
         // Spawn one reader thread per shard, each running a ShardDispatcher
@@ -538,6 +592,7 @@ impl NostrRelay {
             storage_shutdown: storage_shutdown_opt,
             reader_pool_shutdown: reader_pool_shutdown_opt,
             verify_pool_shutdown: Some(verify_pool_shutdown),
+            shutdown_poll_interval,
         })
     }
 
@@ -564,7 +619,7 @@ impl NostrRelay {
     /// to own the relay's lifetime.
     pub fn run(&mut self) {
         while !self.shutdown.load(Ordering::Acquire) {
-            std::thread::park_timeout(std::time::Duration::from_millis(100));
+            std::thread::park_timeout(self.shutdown_poll_interval);
         }
     }
 }

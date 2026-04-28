@@ -39,8 +39,6 @@ use super::log::ReadOnlyLog;
 use super::slot::BucketKind;
 use crate::protocol;
 
-const REQ_TIMEOUT: Duration = Duration::from_millis(500);
-
 pub struct ReaderPoolShutdown {
     pub flag: Arc<AtomicBool>,
     pub threads: Vec<std::thread::JoinHandle<()>>,
@@ -66,6 +64,9 @@ pub struct ReaderPoolConfig {
     pub replaceable_slots: usize,
     pub parameterized_slots: usize,
     pub max_payload: usize,
+    /// Per-REQ wall-clock timeout. Reads exceeding this get
+    /// `CLOSED "timeout"` mid-stream.
+    pub req_timeout: Duration,
 }
 
 pub struct ReaderPool;
@@ -104,6 +105,7 @@ impl ReaderPool {
             let rep_slots = cfg.replaceable_slots;
             let par_slots = cfg.parameterized_slots;
             let max_payload = cfg.max_payload;
+            let req_timeout = cfg.req_timeout;
             let handle = std::thread::Builder::new()
                 .name(format!("nostr-reader-{i}"))
                 .spawn(move || {
@@ -119,6 +121,7 @@ impl ReaderPool {
                         par_slots,
                         max_payload,
                         index_rx,
+                        req_timeout,
                     );
                 })?;
             thread_handles.push(handle.thread().clone());
@@ -179,6 +182,7 @@ fn reader_loop(
     parameterized_slots: usize,
     max_payload: usize,
     index_rx: ArcConsumer<IndexUpdate>,
+    req_timeout: Duration,
 ) {
     // Bootstrap: open one read-only handle per bucket and seed our local
     // BucketIndex by replaying the on-disk log. After this point the
@@ -237,7 +241,7 @@ fn reader_loop(
         let g_req = shared.current_gen.load(Ordering::Acquire);
         gen_slot.store(g_req, Ordering::Release);
 
-        let deadline = Instant::now() + REQ_TIMEOUT;
+        let deadline = Instant::now() + req_timeout;
         let _timed_out = serve_req(&job, g_req, deadline, &state, &sender);
 
         // Release gen slot so the storage thread can advance g_floor.

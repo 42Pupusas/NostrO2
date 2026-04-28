@@ -58,17 +58,12 @@ use quetzalcoatl::mpsc::{
     Consumer as MpscConsumer, Producer as MpscProducer, RingBuffer as MpscRingBuffer,
 };
 
-/// Capacity for each per-shard MPSC results ring (workers → shard).
-/// 1024 verdicts at ~96 B each = ~96 KiB per ring — cheap.
-const RESULTS_RING_CAPACITY: usize = 1024;
-
-/// Capacity for the global MPMC jobs ring (shards → workers). Sized to
-/// absorb cross-shard bursts: enough head-room that a burst on one
-/// shard doesn't block other shards' pushes if the workers happen to
-/// be saturated. The previous per-shard SPMC was 12K slots × N shards
-/// in aggregate; one global ring sized to a flat 16K achieves the same
-/// headroom for the typical N ≤ 16.
-const JOBS_RING_CAPACITY: usize = 16 * 1024;
+// Ring capacities are passed in by the relay (`RelayConfig`). The
+// per-shard MPSC results ring is sized to absorb a burst of verdicts
+// while the shard is busy parsing inbound frames; the global MPMC
+// jobs ring is sized to absorb cross-shard bursts so producers don't
+// park on a saturated worker pool. Sensible defaults live on
+// `RelayConfig` (1024 / 16384).
 
 /// One EVENT queued for verify. Owned because it must cross threads;
 /// the shard parses the inbound frame as a borrowed view, then promotes
@@ -190,19 +185,25 @@ impl VerifyPoolShutdown {
 /// MPMC jobs ring. Returns one [`VerifyHandle`] per shard plus a
 /// shutdown handle.
 ///
-/// `total_verify_threads` is clamped to ≥ 1.
+/// `total_verify_threads` is clamped to ≥ 1. `jobs_ring_capacity` and
+/// `results_ring_capacity` are clamped to ≥ 1 (the underlying
+/// quetzalcoatl ring rounds up to a power of two).
 pub fn spawn(
     num_shards: usize,
     total_verify_threads: usize,
+    jobs_ring_capacity: usize,
+    results_ring_capacity: usize,
 ) -> (Vec<VerifyHandle>, VerifyPoolShutdown) {
     let total_workers = total_verify_threads.max(1);
+    let jobs_cap = jobs_ring_capacity.max(1);
+    let results_cap = results_ring_capacity.max(1);
     let shutdown = Arc::new(AtomicBool::new(false));
 
     // One global MPMC jobs ring. Producer seed is cloned once per
     // shard; consumer seed is cloned once per worker. Drop both seeds
     // afterwards so producer/consumer counts match the live populations.
     let (jobs_tx_seed, jobs_rx_seed) =
-        MpmcRingBuffer::<VerifyJob>::new(Capacity::at_least(JOBS_RING_CAPACITY)).split();
+        MpmcRingBuffer::<VerifyJob>::new(Capacity::at_least(jobs_cap)).split();
 
     // One MPSC results ring per shard. Each worker holds a producer
     // clone for every shard so it can route a result by `source_shard`.
@@ -212,7 +213,7 @@ pub fn spawn(
     let mut shard_wakers: Vec<Arc<OnceLock<std::thread::Thread>>> = Vec::with_capacity(num_shards);
     for _ in 0..num_shards {
         let (tx_seed, rx) =
-            MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(RESULTS_RING_CAPACITY)).split();
+            MpscRingBuffer::<VerifyResult>::new(Capacity::at_least(results_cap)).split();
         results_consumers.push(rx);
         results_producer_seeds.push(tx_seed);
         shard_wakers.push(Arc::new(OnceLock::new()));

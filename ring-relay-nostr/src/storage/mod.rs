@@ -71,6 +71,19 @@ pub struct StorageConfig {
     /// Group-commit fsync interval. `None` disables fsync (faster, less
     /// durable — tail can be lost on crash).
     pub fsync_interval_ms: Option<u64>,
+    /// Max number of `WriteReq`s drained from the shared write ring per
+    /// storage-loop iteration. Controls how aggressively the storage
+    /// thread amortizes the consumer head-pointer update — bigger
+    /// batches lower per-event overhead but raise tail latency for the
+    /// last event in a batch. Default 1024.
+    pub write_batch_capacity: usize,
+    /// Park timeout used by the storage loop when there's nothing to
+    /// drain *and* fsync is disabled. With fsync enabled the park
+    /// duration is governed by `fsync_interval_ms`. Default 10.
+    pub idle_park_interval_ms: u64,
+    /// Per-REQ wall-clock timeout for historical scans. Reads exceeding
+    /// this get `CLOSED "timeout"` mid-stream. Default 500.
+    pub req_timeout_ms: u64,
 }
 
 impl Default for StorageConfig {
@@ -85,6 +98,9 @@ impl Default for StorageConfig {
             write_ring_capacity: 4096,
             req_ring_capacity: 1024,
             fsync_interval_ms: Some(10),
+            write_batch_capacity: 1024,
+            idle_park_interval_ms: 10,
+            req_timeout_ms: 500,
         }
     }
 }

@@ -570,6 +570,7 @@ async fn cross_shard_fanout_with_storage() {
         write_ring_capacity: 64,
         req_ring_capacity: 16,
         fsync_interval_ms: Some(10),
+        ..StorageConfig::default()
     };
     let mut cfg = RelayConfig::default();
     cfg.shards = ShardConfig {
