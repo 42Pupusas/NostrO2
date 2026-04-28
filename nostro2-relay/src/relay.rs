@@ -372,7 +372,13 @@ impl NostrRelay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Live-relay smoke test. Connects to a real wss endpoint and
+    // streams an open subscription with no termination condition, so
+    // it hangs `cargo test` indefinitely. Kept around for manual
+    // verification (`cargo test -p nostro2-relay -- --ignored`); not
+    // part of the default suite.
     #[tokio::test]
+    #[ignore = "live relay; manual run only"]
     async fn test_relay() {
         let time = std::time::Instant::now();
         println!("Connecting to relay...");
@@ -381,7 +387,6 @@ mod tests {
             .unwrap();
         let subscription = nostro2::NostrSubscription {
             kinds: vec![20001].into(),
-            // limit: 5000.into(),
             ..Default::default()
         };
         relay.send(subscription).unwrap();

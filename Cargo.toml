@@ -4,9 +4,8 @@ resolver="2"
 members = [
     "nips",
     "nostro2", "nostro2-cache",
-    "nostro2-relay", "ring-relay-client",
-    "nostro2-signer", "nostro2-benchmarks", "ring-relay-server",
-    "ring-relay-nostr",
+    "nostro2-relay",
+    "nostro2-signer", "nostro2-benchmarks",
 ]
 
 [workspace.dependencies]
@@ -29,10 +28,6 @@ nostro2-signer = { path = "nostro2-signer", version = "0.3.0" }
 # nostro2-cache = { path = "nostro2-cache" }
 nostro2-cache = { path = "nostro2-cache", version = "0.1.0" }
 
-# Logging
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
 # Cryptography
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
@@ -53,29 +48,18 @@ zeroize = "1.8"
 bech32 = "0.11"
 bip39 = { version = "2.1", features = ["spanish"] }
 
+# Native platform TCP (still used by nostro2-relay / nostro2-benchmarks)
+tokio = { version = "^1.44" }
+
 # Miscellanea utility
 futures-util = { version = "0.3", features = ["sink", "std"] }
 chrono = "0.4"
 tracing-test = "0.2"
 lru = "0.12"
 
-# Lock-free ring buffers
-quetzalcoatl = "0.8.0"
-
-# Native platform TCP
-tokio = { version = "^1.44" }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
-rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
-
-ring = "^0.17.12" 
+ring = "^0.17.12"
 tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roots"] }
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
-
-# Profiling-friendly release build: keep debug info so flamegraphs
-# symbolicate without penalizing release perf. Frame pointers are enabled
-# via RUSTFLAGS at profile-run time (see scripts in ring-relay-nostr).
-[profile.release]
-debug = "line-tables-only"
 
