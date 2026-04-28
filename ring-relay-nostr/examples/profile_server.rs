@@ -58,7 +58,7 @@ fn main() {
         reader_shards: shards,
         writer_shards: shards,
     };
-    cfg.verify_threads_per_shard = verify_threads;
+    cfg.verify_threads = verify_threads;
 
     let relay = NostrRelay::bind([127, 0, 0, 1], port, cfg).expect("bind");
     let shutdown = relay.shutdown_handle();

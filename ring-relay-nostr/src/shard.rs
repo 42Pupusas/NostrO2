@@ -370,6 +370,7 @@ impl ShardDispatcher {
                 event_id: id_bytes,
                 pubkey: pk_bytes,
                 kind,
+                source_shard: self.owner_id as u16,
             };
             self.push_verify_job(job);
         } else {
@@ -397,38 +398,18 @@ impl ShardDispatcher {
         }
     }
 
-    /// Push a verify job onto the shard's SPMC jobs ring and wake one
-    /// worker. Any worker can pop any job, so the wake target is just a
-    /// fairness hint — if it's busy, another worker will pop on its
-    /// own park-timeout or via a peer's torch-pass.
-    ///
-    /// On full ring we back off briefly. The ring is sized to absorb
-    /// bursts; sustained backpressure means verify is the bottleneck,
-    /// at which point spinning is the right answer (slowing the
-    /// shard's frame parser is exactly the desired backpressure).
-    fn push_verify_job(&mut self, mut job: VerifyJob) {
+    /// Push a verify job onto the global MPMC jobs ring. The ring's
+    /// futex-style wake bitmap handles worker wakeups; we don't need
+    /// explicit `unpark`. `push_block` parks the shard if the ring is
+    /// full — sustained backpressure means verify is the bottleneck,
+    /// and slowing the shard's frame parser is exactly the desired
+    /// shape of backpressure. Returns Err only when every worker has
+    /// dropped (relay shutdown), in which case we discard quietly.
+    fn push_verify_job(&mut self, job: VerifyJob) {
         let Some(handle) = self.verify.as_mut() else {
             return;
         };
-        let n = handle.worker_threads.len();
-        if n == 0 {
-            return;
-        }
-        let mut spins = 0u32;
-        loop {
-            match handle.jobs_tx.push(job) {
-                Ok(()) => {
-                    let idx = handle.next_wake_hint % n;
-                    handle.next_wake_hint = handle.next_wake_hint.wrapping_add(1);
-                    handle.worker_threads[idx].unpark();
-                    return;
-                }
-                Err(returned) => {
-                    job = returned;
-                    spins = crate::backoff::step(spins);
-                }
-            }
-        }
+        let _ = handle.jobs_tx.push_block(job);
     }
 
     /// Drain any verify verdicts that came back from our worker thread

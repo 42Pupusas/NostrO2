@@ -78,16 +78,15 @@ pub struct RelayConfig {
     /// stored. When `Some`, events are persisted to the bounded buckets
     /// and REQs stream historical matches before EOSE.
     pub storage: Option<StorageConfig>,
-    /// Number of schnorr-verify worker threads spawned per shard. The
-    /// shard pushes EVENTs onto its workers round-robin so a single
-    /// reader shard can saturate up to `verify_threads_per_shard`
-    /// cores' worth of crypto.
+    /// Total number of schnorr-verify worker threads. All reader
+    /// shards push into one shared MPMC jobs ring, so any shard can
+    /// pull from the full pool when busy — there's no per-shard
+    /// partition.
     ///
-    /// `0` (the default) means "auto": divide the available host
-    /// parallelism across the configured shards so total verify
-    /// threads ≈ CPU count regardless of `shards.reader_shards`. Set
+    /// `0` (the default) means "auto": match the host's available
+    /// parallelism so total verify capacity ≈ CPU count. Set
     /// explicitly to override.
-    pub verify_threads_per_shard: usize,
+    pub verify_threads: usize,
     /// kTLS config. When set, the kernel terminates TLS on every connection
     /// and the io_uring data path sees plaintext. The rustls `ServerConfig`
     /// must have `enable_secret_extraction = true`.
@@ -128,7 +127,7 @@ impl Default for RelayConfig {
             max_future_drift: Some(900), // 15 minutes
             info: Some(info),
             storage: None,
-            verify_threads_per_shard: 0,
+            verify_threads: 0,
             #[cfg(feature = "ktls")]
             tls: None,
         }
@@ -307,27 +306,32 @@ impl NostrRelay {
             (None, None)
         };
 
-        // Schnorr-verify offload: M workers per shard, paired via SPSC
-        // jobs / shared MPSC results. Profiling showed verify pinned
-        // the shard's I/O thread at >80% CPU, so we hand each event
-        // to a worker and continue reading frames immediately.
+        // Schnorr-verify offload: one global pool of W workers, one
+        // shared MPMC jobs ring fed by all reader shards. Profiling
+        // showed verify pinned the shard's I/O thread at >80% CPU, so
+        // we hand each event to the pool and continue reading frames
+        // immediately. Whichever shard is busiest pulls more verify
+        // capacity automatically — no static partition.
         //
-        // verify_threads_per_shard == 0 means "auto": divide the host
-        // parallelism across shards so total verify capacity ≈ cpu
-        // count regardless of `shards` config. Without this the user
-        // sees shards>1 as a slowdown on verify-bound workloads
-        // because adding shards alone adds cross-shard SubRepl /
-        // replica-fanout cost without adding verify capacity.
-        let verify_threads_per_shard = if config.verify_threads_per_shard == 0 {
+        // verify_threads == 0 means "auto": pick a default that's
+        // roughly half the host's parallelism, capped at 8. The
+        // upper cap reflects a measured contention regression on the
+        // global MPMC jobs ring above ~8 consumers — past that, the
+        // CAS traffic on the head pointer eats more than the extra
+        // worker brings in. Schnorr verify is ~50µs; 8 workers is
+        // already 160K verifies/sec, comfortably above what one
+        // io_uring reader shard can feed even at saturated
+        // throughput. Users who want more can set this explicitly.
+        let total_verify_threads = if config.verify_threads == 0 {
             let cpus = std::thread::available_parallelism()
                 .map(std::num::NonZero::get)
                 .unwrap_or(1);
-            (cpus / n.max(1)).max(1)
+            (cpus / 2).clamp(1, 8)
         } else {
-            config.verify_threads_per_shard
+            config.verify_threads
         };
         let (mut verify_handles, verify_pool_shutdown) =
-            verify_pool::spawn(n, verify_threads_per_shard);
+            verify_pool::spawn(n, total_verify_threads);
         verify_handles.reverse(); // pop yields shard 0 first
 
         // Spawn one reader thread per shard, each running a ShardDispatcher
