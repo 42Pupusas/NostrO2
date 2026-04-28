@@ -86,6 +86,41 @@ pub struct VerifyJob {
     pub kind: u32,
 }
 
+/// Owned, send-able snapshot of the EVENT fields the live fan-out
+/// matcher actually reads. Built once on the verify worker (which
+/// already owns a parsed `NostrNoteView`) and shared via `Arc` to every
+/// fan-out match so the shard never re-parses the JSON.
+///
+/// Tag rows are stored as a single flat `Box<[Box<str>]>` plus an
+/// offsets table — same layout as `nostro2::TagsView` but owned, so
+/// `iter_tags` walks contiguous memory without per-row indirection.
+pub struct MatchView {
+    /// Hex-encoded event id. Shares ownership with
+    /// `VerifyResult::event_id_hex`.
+    pub id: Arc<str>,
+    /// Hex-encoded pubkey. Owned because filter matching needs it as
+    /// a `&str` and the parsed view's pubkey was borrowed from the
+    /// raw JSON.
+    pub pubkey: Arc<str>,
+    pub kind: u32,
+    pub created_at: i64,
+    /// Flattened tag cells, row-major.
+    pub tag_cells: Box<[Box<str>]>,
+    /// Row offsets: `tag_offsets[i]..tag_offsets[i+1]` covers row `i`.
+    /// Always has `rows + 1` entries (closing sentinel).
+    pub tag_offsets: Box<[u32]>,
+}
+
+impl MatchView {
+    /// Iterate tag rows as `&[Box<str>]` slices. Walks the offsets
+    /// table directly so there is no per-row bounds check.
+    pub fn iter_tags(&self) -> impl Iterator<Item = &[Box<str>]> {
+        self.tag_offsets
+            .windows(2)
+            .map(|w| &self.tag_cells[w[0] as usize..w[1] as usize])
+    }
+}
+
 /// Verdict returned to the shard. Carries the original payload back so
 /// the shard's post-verify path doesn't have to look anything up.
 pub struct VerifyResult {
@@ -98,6 +133,10 @@ pub struct VerifyResult {
     /// `true` iff `note.verify()` succeeded: id matches sha256 of the
     /// canonical serialization AND the schnorr signature is valid.
     pub verified: bool,
+    /// Owned matcher snapshot built on the worker. `None` only when
+    /// `verified == false` (no point spending allocation on a rejected
+    /// event).
+    pub view: Option<Arc<MatchView>>,
 }
 
 /// Per-shard handle. The shard owns the single SPMC jobs producer, the
@@ -252,12 +291,22 @@ fn worker_loop(
         // round-robin unpark, which is sufficient because the batched
         // claim already amortizes contention.
 
-        let verified = match serde_json::from_slice::<NostrNoteView<'_>>(&job.raw_json) {
-            Ok(view) => view.verify(),
+        // Parse once. On success: verify schnorr+id, then if valid build
+        // the owned MatchView so the shard's matcher loop never re-parses.
+        // We elide the MatchView build for verify-failure cases — those
+        // events get rejected, no fan-out happens.
+        let (verified, view) = match serde_json::from_slice::<NostrNoteView<'_>>(&job.raw_json) {
+            Ok(view) => {
+                if view.verify() {
+                    (true, Some(Arc::new(snapshot_match_view(&view, &job.event_id_hex))))
+                } else {
+                    (false, None)
+                }
+            }
             // If parse fails on the worker side, the shard already
             // accepted the parse (we got here from a successful
             // parse_view). Treat as verify-failure to be safe.
-            Err(_) => false,
+            Err(_) => (false, None),
         };
 
         let result = VerifyResult {
@@ -268,6 +317,7 @@ fn worker_loop(
             pubkey: job.pubkey,
             kind: job.kind,
             verified,
+            view,
         };
 
         // Backpressure: park on the results ring if the shard hasn't
@@ -282,5 +332,35 @@ fn worker_loop(
         if let Some(t) = shard_waker.get() {
             t.unpark();
         }
+    }
+}
+
+/// Convert a borrowed `NostrNoteView` into the owned, send-able
+/// matcher snapshot. Runs on the verify worker after a successful
+/// `view.verify()` (or inline on the shard for the legacy fallback
+/// path), so the cost is amortized against ~50 µs of schnorr math —
+/// the extra microsecond of allocation is invisible alongside it.
+pub(crate) fn snapshot_match_view(view: &NostrNoteView<'_>, event_id_hex: &Arc<str>) -> MatchView {
+    // Flatten tag rows into one cell vec + offsets table. Mirrors
+    // `nostro2::TagsView`'s layout but owned (Box<str>) so the matcher
+    // can iterate without touching the borrowed Cow source.
+    let row_count = view.tags.len();
+    let mut tag_cells: Vec<Box<str>> = Vec::with_capacity(row_count * 2);
+    let mut tag_offsets: Vec<u32> = Vec::with_capacity(row_count + 1);
+    tag_offsets.push(0);
+    for row in view.tags.iter() {
+        for cell in row {
+            tag_cells.push(Box::<str>::from(cell.as_ref()));
+        }
+        tag_offsets.push(tag_cells.len() as u32);
+    }
+
+    MatchView {
+        id: Arc::clone(event_id_hex),
+        pubkey: Arc::<str>::from(view.pubkey.as_ref()),
+        kind: view.kind,
+        created_at: view.created_at,
+        tag_cells: tag_cells.into_boxed_slice(),
+        tag_offsets: tag_offsets.into_boxed_slice(),
     }
 }

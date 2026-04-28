@@ -35,7 +35,7 @@ use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 use crate::protocol::ClientMessageView;
 use crate::storage::handle::{ReqJob, ReqTx, WriteReq, WriteTx};
 use crate::storage::slot::decode_hex32;
-use crate::verify_pool::{VerifyHandle, VerifyJob, VerifyResult};
+use crate::verify_pool::{VerifyHandle, VerifyJob, VerifyResult, snapshot_match_view};
 use crate::{RelayConfig, filter, protocol};
 
 /// A sub-replication message broadcast from one shard to all others.
@@ -377,6 +377,13 @@ impl ShardDispatcher {
             // tests and any caller that constructs a ShardDispatcher
             // without spawning a verify pool.
             let verified = note.verify();
+            // Mirror the verify-pool worker: only build the matcher
+            // snapshot for events we'll actually fan out.
+            let view = if verified {
+                Some(Arc::new(snapshot_match_view(note, &event_id_hex)))
+            } else {
+                None
+            };
             self.complete_event(VerifyResult {
                 raw_json,
                 client_id,
@@ -385,6 +392,7 @@ impl ShardDispatcher {
                 pubkey: pk_bytes,
                 kind,
                 verified,
+                view,
             });
         }
     }
@@ -470,18 +478,17 @@ impl ShardDispatcher {
             }
         }
 
-        // Re-parse the JSON for filter matching. This is cheaper than
-        // shipping the parsed view across the verify-pool boundary
-        // (which would force allocations to satisfy the borrow), and
-        // serde_json::from_slice on a small EVENT body is microseconds.
-        let view: NostrNoteView<'_> = match serde_json::from_slice(&note_bytes) {
-            Ok(v) => v,
-            Err(_) => return,
+        // The verify worker's pre-built `MatchView` is required for
+        // the fan-out match loop. A verified event always carries
+        // one (the worker only elides it on `verified == false`, and
+        // we returned early above) — defensive bail-out otherwise.
+        let Some(match_view) = result.view.as_deref() else {
+            return;
         };
 
         for (&other_id, state) in &self.clients {
             for (sub_id, filters) in &state.subs {
-                if filters.iter().any(|f| filter::matches_view(&view, f)) {
+                if filters.iter().any(|f| filter::matches_match_view(match_view, f)) {
                     self.sender.send_event_frame(
                         other_id,
                         Arc::clone(sub_id),
@@ -494,7 +501,7 @@ impl ShardDispatcher {
 
         for (&(_owner, client_id), subs) in &self.replica {
             for (sub_id, filters) in subs {
-                if filters.iter().any(|f| filter::matches_view(&view, f)) {
+                if filters.iter().any(|f| filter::matches_match_view(match_view, f)) {
                     self.sender.send_event_frame(
                         client_id,
                         Arc::clone(sub_id),

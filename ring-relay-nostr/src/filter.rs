@@ -2,6 +2,8 @@
 
 use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 
+use crate::verify_pool::MatchView;
+
 /// Check whether `note` matches `filter` per NIP-01 semantics.
 ///
 /// All supplied fields are ANDed. Within a list field (authors, ids, kinds),
@@ -123,6 +125,69 @@ pub fn matches_view(note: &NostrNoteView<'_>, filter: &NostrSubscription) -> boo
                 if tag.first().map(AsRef::as_ref) == Some(tag_name)
                     && let Some(val) = tag.get(1).map(AsRef::as_ref)
                     && values.iter().any(|v| v == val)
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Owned-input counterpart to [`matches_view`]. Matches the same NIP-01
+/// semantics against the verify worker's pre-built [`MatchView`], so the
+/// shard's fan-out path doesn't have to re-parse the event JSON.
+#[must_use]
+pub fn matches_match_view(view: &MatchView, filter: &NostrSubscription) -> bool {
+    if let Some(ids) = &filter.ids {
+        let id = view.id.as_ref();
+        if !ids.iter().any(|i| id.starts_with(i.as_str()) || i == id) {
+            return false;
+        }
+    }
+
+    let pubkey = view.pubkey.as_ref();
+    if let Some(authors) = &filter.authors
+        && !authors
+            .iter()
+            .any(|a| pubkey.starts_with(a.as_str()) || a == pubkey)
+    {
+        return false;
+    }
+
+    if let Some(kinds) = &filter.kinds
+        && !kinds.contains(&view.kind)
+    {
+        return false;
+    }
+
+    if let Some(since) = filter.since
+        && (view.created_at as i128) < (since as i128)
+    {
+        return false;
+    }
+
+    if let Some(until) = filter.until
+        && (view.created_at as i128) > (until as i128)
+    {
+        return false;
+    }
+
+    if let Some(tag_filters) = &filter.tags {
+        for (key, values) in tag_filters {
+            let Some(tag_name) = key.strip_prefix('#') else {
+                continue;
+            };
+            let mut matched = false;
+            for tag in view.iter_tags() {
+                if tag.first().map(|s| s.as_ref()) == Some(tag_name)
+                    && let Some(val) = tag.get(1).map(|s| s.as_ref())
+                    && values.iter().any(|v| v.as_str() == val)
                 {
                     matched = true;
                     break;

@@ -184,3 +184,11 @@ harness = false
 [[bench]]
 name = "write_ring_topology"
 harness = false
+
+# Microbench: fan-out matcher loop in isolation. Mirrors the body of
+# `ShardDispatcher::complete_event` (re-parse, walk every sub, Arc::clone
+# per delivery) without TCP/io_uring/verify-pool. Baseline for the
+# matcher-pool split.
+[[bench]]
+name = "fanout_match"
+harness = false

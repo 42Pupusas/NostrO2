@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ring_relay_server::{ServerComponents, ServerConfig, ShardConfig};
 
-pub use filter::{matches, matches_view};
+pub use filter::{matches, matches_match_view, matches_view};
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
     ClientMessage, ClientMessageView, ParseError, event_from_serialized, parse, parse_view,
@@ -38,6 +38,7 @@ pub use protocol::{
 };
 pub use shard::ShardDispatcher;
 pub use storage::StorageConfig;
+pub use verify_pool::MatchView;
 
 /// Configuration for the Nostr relay layer.
 #[derive(Debug, Clone)]
