@@ -215,6 +215,40 @@ impl ReplaceableBucket {
         }
         self.lru.push_back(slot_idx);
     }
+
+    /// NIP-09 address-target removal.
+    ///
+    /// The replaceable bucket keys on `pubkey` only (one slot per pubkey
+    /// regardless of kind — a separate gap not in scope here), so we
+    /// must additionally check that the slot's `kind` matches the
+    /// caller's request and that the deletion event's `created_at` is
+    /// strictly newer than the existing slot. Returns `Some(slot_idx)`
+    /// if a slot was removed, `None` otherwise. Caller broadcasts the
+    /// `IndexUpdate { meta: None }`; we keep the `index_tx` plumbing
+    /// in the engine layer so the bucket stays I/O-free.
+    pub fn try_remove_address(
+        &mut self,
+        kind: u32,
+        pubkey: &[u8; 32],
+        deletion_created_at: i64,
+    ) -> Option<u32> {
+        let slot_idx = *self.by_pubkey.get(pubkey)?;
+        let meta = self.index.meta.get(slot_idx as usize).and_then(Option::as_ref)?;
+        if meta.kind != kind || meta.pubkey != *pubkey {
+            return None;
+        }
+        if meta.created_at >= deletion_created_at {
+            // Spec: deletion only applies to events older than itself.
+            return None;
+        }
+        self.index.remove_slot(slot_idx);
+        self.by_pubkey.remove(pubkey);
+        if let Some(pos) = self.lru.iter().position(|&s| s == slot_idx) {
+            self.lru.remove(pos);
+        }
+        self.free_slots.push(slot_idx);
+        Some(slot_idx)
+    }
 }
 
 impl Bucket for ReplaceableBucket {
@@ -371,6 +405,34 @@ impl ParameterizedBucket {
             self.lru.remove(pos);
         }
         self.lru.push_back(slot_idx);
+    }
+
+    /// NIP-09 address-target removal for parameterized events.
+    ///
+    /// Looks up the slot by `(pubkey, kind, d_tag)` via `by_key`; only
+    /// removes if `meta.created_at < deletion_created_at`. Returns
+    /// `Some(slot_idx)` on removal.
+    pub fn try_remove_address(
+        &mut self,
+        kind: u32,
+        pubkey: &[u8; 32],
+        d_tag: &str,
+        deletion_created_at: i64,
+    ) -> Option<u32> {
+        let key: ParamKey = (Box::new(*pubkey), kind, Box::from(d_tag));
+        let slot_idx = *self.by_key.get(&key)?;
+        let meta = self.index.meta.get(slot_idx as usize).and_then(Option::as_ref)?;
+        if meta.created_at >= deletion_created_at {
+            return None;
+        }
+        self.index.remove_slot(slot_idx);
+        self.by_key.remove(&key);
+        self.by_slot[slot_idx as usize] = None;
+        if let Some(pos) = self.lru.iter().position(|&s| s == slot_idx) {
+            self.lru.remove(pos);
+        }
+        self.free_slots.push(slot_idx);
+        Some(slot_idx)
     }
 }
 

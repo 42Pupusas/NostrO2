@@ -22,7 +22,6 @@
 //! - Bump `current_gen` at batch boundaries; fsync on a timer.
 //! - Push `IndexUpdate` per committed write so readers stay current.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -40,21 +39,25 @@ use crate::filter::{DeletionRef, deletion_refs_from_view};
 
 /// NIP-09 deletion state owned by the storage thread.
 ///
-/// `deleted_ids` carries event ids the relay has been asked to forget;
+/// `deleted_ids` maps `event_id → deleter_pubkey`. Future re-publishes
+/// of a deleted id are dropped only if the publisher's pubkey matches
+/// the deleter's — without this check, anyone could pre-emptively
+/// "delete" an arbitrary 32-byte hex string and silently suppress a
+/// legitimate publisher who happens to produce that id later.
+///
 /// `deleted_addresses` carries replaceable / parameterized addresses
-/// `(kind, pubkey, d_tag)`. Future ingests are checked against both —
-/// re-publishing a deleted id is silently dropped (same shape as the
-/// existing storage drop-on-error semantics).
+/// `(kind, pubkey, d_tag) → deletion.created_at`. New events at the
+/// address are dropped only if their `created_at` is older than the
+/// deletion; newer events revive the address. The pubkey is part of
+/// the key, and the same-pubkey ownership check at apply time means
+/// only the rightful owner can write here.
 ///
 /// State is process-local — it lives on disk only as long as the kind-5
 /// events that produced it. On reopen, those events are still in the log
 /// and are reapplied during bucket rebuild.
 #[derive(Default)]
 struct DeletionState {
-    deleted_ids: HashSet<[u8; 32]>,
-    /// Address tuple → the unix `created_at` of the deletion event.
-    /// New events at this address are dropped only if their own
-    /// `created_at` is older; newer ones can revive the address.
+    deleted_ids: std::collections::HashMap<[u8; 32], [u8; 32]>,
     deleted_addresses: std::collections::HashMap<(u32, [u8; 32], Box<str>), i64>,
 }
 
@@ -328,12 +331,33 @@ fn ingest_one(
     };
 
     // NIP-09: silently drop ingest of any event whose id was previously
-    // deleted. This is the storage-side enforcement of "MUST be rejected".
+    // deleted *by its rightful owner*. The deleter's pubkey is recorded
+    // alongside the id, and we only suppress when this publish comes
+    // from that same pubkey — otherwise a kind-5 with an unknown id
+    // could pre-emptively poison a different publisher's future event.
     // Sending OK=false back to the publisher would require a feedback
     // channel that we don't have today (the shard has already replied
     // OK=true after verify); v1 ships the suppression and leaves the
     // explicit reject signal to a follow-up.
-    if req.kind != 5 && deletions.deleted_ids.contains(&req.event_id) {
+    if req.kind != 5
+        && let Some(deleter) = deletions.deleted_ids.get(&req.event_id)
+        && *deleter == req.pubkey
+    {
+        return false;
+    }
+
+    let bucket_kind = BucketKind::classify(req.kind);
+
+    // NIP-09 address-target enforcement: for replaceable / parameterized
+    // ingests, drop if the (kind, pubkey, d_tag) was deleted by a kind-5
+    // whose `created_at` is newer than this event. The deletion event's
+    // own pubkey check is enforced at apply time, so any address found
+    // here was deleted by its rightful owner.
+    if req.kind != 5
+        && let Some(deletion_ts) =
+            lookup_address_deletion(deletions, &note, bucket_kind, req.kind, &req.pubkey)
+        && note.created_at < deletion_ts
+    {
         return false;
     }
 
@@ -343,8 +367,6 @@ fn ingest_one(
         event_id: req.event_id,
         pubkey: req.pubkey,
     };
-
-    let bucket_kind = BucketKind::classify(req.kind);
     let outcome = match bucket_kind {
         BucketKind::Ephemeral => eph.try_write(&payload, generation, g_floor, next_seq),
         BucketKind::Replaceable => rep.try_write(&payload, generation, g_floor, next_seq),
@@ -379,6 +401,42 @@ fn ingest_one(
     }
 }
 
+/// Look up an address-deletion timestamp for an incoming event.
+///
+/// Returns `Some(ts)` if there's a recorded deletion for this event's
+/// `(kind, pubkey, d_tag)`. `d_tag` is empty for replaceable kinds and
+/// extracted from the `d` tag for parameterized. Ephemeral kinds aren't
+/// addressable; we return `None` to skip the lookup entirely.
+fn lookup_address_deletion(
+    deletions: &DeletionState,
+    note: &NostrNoteView<'_>,
+    bucket_kind: BucketKind,
+    kind: u32,
+    pubkey: &[u8; 32],
+) -> Option<i64> {
+    let d_tag: Box<str> = match bucket_kind {
+        BucketKind::Replaceable => Box::from(""),
+        BucketKind::Parameterized => extract_d_tag(note),
+        BucketKind::Ephemeral => return None,
+    };
+    let key = (kind, *pubkey, d_tag);
+    deletions.deleted_addresses.get(&key).copied()
+}
+
+/// Mirror of `ParameterizedBucket::extract_d_tag` for use during the
+/// pre-bucket lookup. Inline rather than going through the bucket so
+/// `ingest_one` can decide before borrowing the bucket mutably.
+fn extract_d_tag(note: &NostrNoteView<'_>) -> Box<str> {
+    for row in note.tags.iter() {
+        if row.first().map(|s| s.as_ref()) == Some("d")
+            && let Some(v) = row.get(1)
+        {
+            return Box::from(v.as_ref());
+        }
+    }
+    Box::from("")
+}
+
 /// Apply a kind-5 deletion event to the in-memory indexes.
 ///
 /// For each `e` and `a` tag on the deletion event:
@@ -407,38 +465,37 @@ fn apply_kind5_deletion(
     for r in refs {
         match r {
             DeletionRef::EventId(target_id) => {
-                if try_remove_id(eph, BucketKind::Ephemeral, &target_id, author_pubkey, index_tx)
-                    || try_remove_id(
-                        rep,
-                        BucketKind::Replaceable,
-                        &target_id,
-                        author_pubkey,
-                        index_tx,
-                    )
-                    || try_remove_id(
-                        par,
-                        BucketKind::Parameterized,
-                        &target_id,
-                        author_pubkey,
-                        index_tx,
-                    )
-                {
-                    // Record after removal so a re-publish from any
-                    // shard is silently dropped.
-                    deletions.deleted_ids.insert(target_id);
-                } else {
-                    // Target not in storage (yet, or never). Still
-                    // record the deletion so a *future* publish of that
-                    // id is rejected — but only if the deletion event's
-                    // author matches what the future event would carry.
-                    // We don't know the future pubkey, so we record
-                    // unconditionally and rely on the same-pubkey check
-                    // at re-publish time. v1: insert and accept that a
-                    // bad-faith deletion of someone else's id can
-                    // suppress that pubkey's later publish. Acceptable
-                    // tradeoff vs. tracking pending deletions; revisit.
-                    deletions.deleted_ids.insert(target_id);
-                }
+                let removed = try_remove_id(
+                    eph,
+                    BucketKind::Ephemeral,
+                    &target_id,
+                    author_pubkey,
+                    index_tx,
+                ) || try_remove_id(
+                    rep,
+                    BucketKind::Replaceable,
+                    &target_id,
+                    author_pubkey,
+                    index_tx,
+                ) || try_remove_id(
+                    par,
+                    BucketKind::Parameterized,
+                    &target_id,
+                    author_pubkey,
+                    index_tx,
+                );
+                // Record the (id → deleter pubkey) regardless of whether
+                // the target was found:
+                //   - If found, ownership was just verified by try_remove_id;
+                //     a future republish from that same pubkey is suppressed.
+                //   - If not found (target not yet in storage, or never),
+                //     we still gate any future publish *from this same
+                //     pubkey* with this id. Eve can't poison Alice's id
+                //     because the suppression only fires when Eve herself
+                //     republishes that id — which she can't, since the id
+                //     binds the signing pubkey through the schnorr signature.
+                let _ = removed;
+                deletions.deleted_ids.insert(target_id, *author_pubkey);
             }
             DeletionRef::Address {
                 kind,
@@ -448,6 +505,37 @@ fn apply_kind5_deletion(
                 if pubkey != *author_pubkey {
                     continue;
                 }
+                // Route the address removal to the bucket the kind would
+                // have written to. NIP-16 replaceable: kind 0 / 3 /
+                // 10000..20000 → ReplaceableBucket; NIP-33 parameterized:
+                // 30000..40000 → ParameterizedBucket. Anything else
+                // shouldn't carry an `a` ref (ephemeral kinds aren't
+                // addressable), but the caller could still send one;
+                // we silently ignore it.
+                let target_bucket_kind = BucketKind::classify(kind);
+                let removed_slot = match target_bucket_kind {
+                    BucketKind::Replaceable => {
+                        rep.try_remove_address(kind, &pubkey, note.created_at)
+                    }
+                    BucketKind::Parameterized => {
+                        par.try_remove_address(kind, &pubkey, &d_tag, note.created_at)
+                    }
+                    BucketKind::Ephemeral => None,
+                };
+                if let Some(slot_idx) = removed_slot {
+                    push_with_backoff(
+                        index_tx,
+                        IndexUpdate {
+                            bucket: target_bucket_kind,
+                            slot_idx,
+                            meta: None,
+                        },
+                    );
+                }
+                // Record the address regardless of whether a slot was
+                // removed: a future re-publish of an event at this
+                // address with `created_at` older than this deletion
+                // must still be dropped on ingest.
                 let key = (kind, pubkey, d_tag);
                 let existing = deletions.deleted_addresses.get(&key).copied().unwrap_or(0);
                 if note.created_at > existing {

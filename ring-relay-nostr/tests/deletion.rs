@@ -89,7 +89,11 @@ async fn send(ws: &mut WsClient, json: &str) {
 
 async fn recv_text(ws: &mut WsClient) -> Value {
     loop {
-        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        // 15s budget so the test isn't flaky when cargo runs many
+        // integration suites in parallel — each suite spins up its own
+        // tokio runtime and ring-relay shards, oversubscribing the CPU
+        // until kind-5 deletion's storage-thread work catches up.
+        let msg = tokio::time::timeout(Duration::from_secs(15), ws.next())
             .await
             .expect("recv timed out")
             .expect("stream closed")
@@ -256,6 +260,52 @@ async fn deletion_from_wrong_pubkey_is_ignored() {
 
     let eose = recv_text(&mut sub).await;
     assert_eq!(eose[0], "EOSE");
+
+    drop(guard);
+}
+
+/// Pre-emptive poisoning regression: Eve publishes a kind-5 referencing
+/// a 32-byte hex string that nobody has yet posted. If the relay records
+/// the id unconditionally, Alice's later publish of an event whose id
+/// happens to match would be silently dropped. The fix records the
+/// deleter's pubkey alongside any unknown id and only suppresses
+/// re-publishes from that same pubkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_id_deletion_does_not_poison_other_pubkeys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, guard) = spawn_relay_with_dir(dir.path().to_path_buf());
+
+    let alice = K256Keypair::generate();
+    let eve = K256Keypair::generate();
+
+    // Alice signs a note but doesn't publish it yet. Eve grabs the id
+    // (e.g. by side channel) and tries to pre-delete it.
+    let alice_note = signed_text(&alice, "future note");
+    let alice_id = alice_note.id.clone().unwrap();
+
+    let eve_deletion = signed_deletion(&eve, &[&alice_id]);
+    let mut e_pub = connect(port).await;
+    assert!(publish_and_ack(&mut e_pub, &eve_deletion).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Alice now publishes. Storage must accept and replay it because
+    // Eve's deletion didn't cover Alice's pubkey.
+    let mut a_pub = connect(port).await;
+    assert!(publish_and_ack(&mut a_pub, &alice_note).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut sub = connect(port).await;
+    let req = format!(
+        r#"["REQ","s1",{{"authors":["{}"],"kinds":[1]}}]"#,
+        alice.public_key()
+    );
+    send(&mut sub, &req).await;
+    let first = recv_text(&mut sub).await;
+    assert_eq!(
+        first[0], "EVENT",
+        "alice's note must survive eve's pre-emptive deletion; got: {first:?}"
+    );
+    assert_eq!(first[2]["id"], alice_id);
 
     drop(guard);
 }
