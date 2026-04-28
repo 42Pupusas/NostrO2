@@ -235,6 +235,9 @@ fn worker_loop(
     shard_waker: Arc<OnceLock<std::thread::Thread>>,
 ) {
     while !shutdown.load(Ordering::Acquire) {
+        // SPMC has no pop_block in 0.8 — keep the park-poll fallback,
+        // but check shutdown between pops so a shutdown-unpark wakes
+        // us promptly.
         let Some(job) = jobs_rx.pop() else {
             std::thread::park_timeout(Duration::from_millis(10));
             continue;
@@ -267,29 +270,17 @@ fn worker_loop(
             verified,
         };
 
-        // Backpressure: if the shard hasn't drained results yet, spin
-        // briefly. Results-ring overflow means the shard can't keep up
-        // with our verify rate, which is *good* news on a perf bench.
-        push_result(&results_tx, result);
+        // Backpressure: park on the results ring if the shard hasn't
+        // drained yet. push_block uses the mpsc futex-style wake bitmap
+        // and bails out (Err) only when the shard's consumer drops —
+        // which means we're shutting down. Discard quietly in that case.
+        let _ = results_tx.push_block(result);
 
         // Wake the shard so it drains the result promptly. Without
         // this an epoll-parked shard would only see the verdict on
         // the next inbound TCP frame, dragging end-to-end latency.
         if let Some(t) = shard_waker.get() {
             t.unpark();
-        }
-    }
-}
-
-fn push_result(tx: &MpscProducer<VerifyResult>, mut msg: VerifyResult) {
-    let mut spins = 0u32;
-    loop {
-        match tx.push(msg) {
-            Ok(()) => return,
-            Err(returned) => {
-                msg = returned;
-                spins = crate::backoff::step(spins);
-            }
         }
     }
 }

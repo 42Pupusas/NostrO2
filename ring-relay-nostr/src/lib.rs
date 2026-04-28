@@ -251,10 +251,21 @@ impl NostrRelay {
                 storage_write_rx,
                 index_producer,
             )?;
-            let req_queue = Arc::new(storage::handle::ReqQueue::new());
+            // REQ jobs flow shards → readers via an MPMC ring. Capacity
+            // tracks the worst-case in-flight REQ population so producers
+            // park rather than fail.
+            let req_capacity = (config.max_clients * config.max_subs_per_conn).max(4);
+            let req_queue = storage::handle::ReqQueue::new(req_capacity);
+            let (req_consumers, req_producer_seed) = req_queue.into_consumers(n_readers);
+            // The reader pool keeps its consumers alive for the lifetime
+            // of the relay. We hold a single shard-side ReqTx behind an
+            // Arc so each shard can clone its own producer handle without
+            // needing the seed (and so the producer count stays accurate
+            // even on a zero-shard test config).
+            let req_tx = storage::handle::ReqTx(req_producer_seed);
             let (pool_sd, reader_threads) = storage::reader::ReaderPool::spawn(
                 engine.shared(),
-                Arc::clone(&req_queue),
+                req_consumers,
                 builder.sender(),
                 storage::reader::ReaderPoolConfig {
                     data_dir: sc.data_dir.clone(),
@@ -266,7 +277,7 @@ impl NostrRelay {
                 index_consumers,
             )?;
             (
-                Some((engine, req_queue)),
+                Some((engine, req_tx)),
                 Some(sd),
                 Some(thread_handle),
                 Some(pool_sd),
@@ -321,7 +332,11 @@ impl NostrRelay {
         // Spawn one reader thread per shard, each running a ShardDispatcher
         // inline on the I/O thread.
         let mut reader_threads = Vec::with_capacity(n);
-        let reader_wakers_arc: Arc<[std::thread::Thread]> = Arc::from(reader_thread_handles);
+        // The mpmc REQ ring's wake bitmap handles reader wakeups on push,
+        // so we no longer need to hand each shard the full reader-thread
+        // handle list. We still keep the Vec around so the relay can
+        // unpark readers on shutdown via the pool's StopFlag.
+        let _ = reader_thread_handles;
         for (i, accept_rx) in accept_rxs.into_iter().enumerate() {
             let sender = builder.sender();
             let cfg = Arc::clone(&config);
@@ -344,12 +359,14 @@ impl NostrRelay {
                 storage_thread_handle.as_ref(),
                 shard_write_tx.get_mut(i).and_then(Option::take),
             ) {
-                (Some((_engine, req_queue)), Some(storage_thread), Some(write_tx)) => {
+                (Some((_engine, req_tx_seed)), Some(storage_thread), Some(write_tx)) => {
                     Some(shard::ShardStorage {
                         write_tx,
-                        req_queue: Arc::clone(req_queue),
+                        // Per-shard producer clone — each clone gets its
+                        // own batch reservation cell, so shards don't
+                        // serialize on a shared producer state.
+                        req_tx: req_tx_seed.clone(),
                         storage_waker: storage_thread.clone(),
-                        reader_wakers: Arc::clone(&reader_wakers_arc),
                     })
                 }
                 _ => None,

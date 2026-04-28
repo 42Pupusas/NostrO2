@@ -1,15 +1,19 @@
 //! Handles the shard threads use to talk to the storage engine and reader
 //! pool.
 //!
-//! Each shard gets its own SPSC producer into a per-shard write ring
-//! drained by the storage thread. REQ jobs go to the reader pool via a
-//! shared MPSC (we use a simple Mutex<VecDeque> for v1 since REQ jobs are
-//! coarse-grained; the reader pool replaces this with something lock-free
-//! once it matters in profiles).
+//! Each shard gets its own MPSC producer handle into the shared write ring
+//! drained by the storage thread. REQ jobs flow through a shared MPMC ring
+//! (many shard producers, many reader consumers) so reader threads can
+//! `pop_block` directly instead of polling a Mutex<VecDeque> on a 1ms
+//! timer.
 
 use std::sync::Arc;
 
 use nostro2::NostrSubscription;
+use quetzalcoatl::capacity::Capacity;
+use quetzalcoatl::mpmc::{
+    Consumer as MpmcConsumer, Producer as MpmcProducer, RingBuffer as MpmcRingBuffer,
+};
 use quetzalcoatl::mpsc::{Consumer as MpscConsumer, Producer as MpscProducer};
 
 use super::index::SlotMeta;
@@ -76,23 +80,69 @@ impl WriteTx {
 /// Storage-thread side of the writes ring.
 pub struct WriteRx(pub MpscConsumer<WriteReq>);
 
-/// Simple lock-protected FIFO for REQ jobs. REQs are coarse-grained
-/// (one per subscribe) so contention here is tiny compared to EVENT
-/// ingest.
+/// MPMC REQ-job queue. Shards push, reader threads pop_block, capacity
+/// is sized to the relay's max in-flight REQ count. Cloning a [`ReqTx`]
+/// is cheap (Arc + tiny per-handle batch state); cloning a [`ReqRx`]
+/// stages a fresh starting scan offset so multiple readers don't
+/// thunder on slot 0.
+///
+/// Capacity must be `>= 4` (mpmc invariant); callers should pass at
+/// least `max_clients * max_subs_per_conn`.
 pub struct ReqQueue {
-    inner: std::sync::Mutex<std::collections::VecDeque<ReqJob>>,
+    tx: MpmcProducer<ReqJob>,
+    rx_seed: MpmcConsumer<ReqJob>,
 }
 
+/// Shard-side handle. `Clone` so each shard gets its own producer
+/// without sharing the per-handle batch reservation cell.
+#[derive(Clone)]
+pub struct ReqTx(pub MpmcProducer<ReqJob>);
+
+/// Reader-side handle. `Clone` so each reader thread gets its own
+/// consumer with a staggered scan cursor.
+#[derive(Clone)]
+pub struct ReqRx(pub MpmcConsumer<ReqJob>);
+
 impl ReqQueue {
-    pub fn new() -> Self {
-        Self {
-            inner: std::sync::Mutex::new(std::collections::VecDeque::new()),
+    pub fn new(capacity: usize) -> Self {
+        let (tx, rx_seed) =
+            MpmcRingBuffer::<ReqJob>::new(Capacity::at_least(capacity.max(4))).split();
+        Self { tx, rx_seed }
+    }
+
+    /// Distribute one [`ReqRx`] handle per reader thread, returning the
+    /// seed producer for the relay to clone per shard. Consumes the
+    /// consumer-seed on the last reader so producer/consumer counts
+    /// match the population exactly.
+    pub fn into_consumers(self, n: usize) -> (Vec<ReqRx>, MpmcProducer<ReqJob>) {
+        assert!(n >= 1, "ReqQueue requires at least one reader");
+        let mut out = Vec::with_capacity(n);
+        let mut seed = Some(self.rx_seed);
+        for i in 0..n {
+            let c = if i + 1 < n {
+                seed.as_ref().expect("seed live").clone()
+            } else {
+                seed.take().expect("seed live for last reader")
+            };
+            out.push(ReqRx(c));
         }
+        (out, self.tx)
     }
-    pub fn push(&self, job: ReqJob) {
-        self.inner.lock().unwrap().push_back(job);
+}
+
+impl ReqTx {
+    /// Submit a REQ. Blocks until a slot frees if the ring is full;
+    /// returns `Err(job)` only when every reader has dropped (no one
+    /// left to drain).
+    pub fn submit(&self, job: ReqJob) -> Result<(), ReqJob> {
+        self.0.push_block(job)
     }
-    pub fn pop(&self) -> Option<ReqJob> {
-        self.inner.lock().unwrap().pop_front()
+}
+
+impl ReqRx {
+    /// Block until a job arrives. Returns `None` only when every
+    /// shard has dropped its [`ReqTx`] AND the ring is empty.
+    pub fn next(&self) -> Option<ReqJob> {
+        self.0.pop_block()
     }
 }

@@ -33,7 +33,7 @@ use quetzalcoatl::broadcast::arc::{ArcConsumer, ArcProducer};
 use ring_relay_server::{AcceptStream, ReaderCore, ReaderEvent, ServerSender};
 
 use crate::protocol::ClientMessageView;
-use crate::storage::handle::{ReqJob, ReqQueue, WriteReq, WriteTx};
+use crate::storage::handle::{ReqJob, ReqTx, WriteReq, WriteTx};
 use crate::storage::slot::decode_hex32;
 use crate::verify_pool::{VerifyHandle, VerifyJob, VerifyResult};
 use crate::{RelayConfig, filter, protocol};
@@ -111,13 +111,14 @@ type ReplicaClient = HashMap<Arc<str>, Arc<[NostrSubscription]>>;
 /// when `Some`, EVENTs are pushed to the storage thread and REQs dispatch
 /// to the reader pool.
 ///
-/// `WriteTx` is an SPSC producer so it is `Send + !Sync`; the shard owns
-/// it outright (not behind `Arc`). The req queue is shared across shards.
+/// `WriteTx` is an MPSC producer so it is `Send + !Sync`; the shard owns
+/// it outright (not behind `Arc`). The REQ producer is per-shard too
+/// (cloned from the relay-level seed) so each shard gets a fresh batch
+/// reservation without contending on a single shared producer cell.
 pub(crate) struct ShardStorage {
     pub write_tx: WriteTx,
-    pub req_queue: Arc<ReqQueue>,
+    pub req_tx: ReqTx,
     pub storage_waker: std::thread::Thread,
-    pub reader_wakers: Arc<[std::thread::Thread]>,
 }
 
 /// Per-shard Nostr dispatcher. One instance per reader thread.
@@ -139,8 +140,6 @@ pub struct ShardDispatcher {
     repl_rx: Option<ArcConsumer<SubRepl>>,
     /// Storage plumbing; `None` → ephemeral mode.
     storage: Option<ShardStorage>,
-    /// Reader-pool round-robin cursor for REQ dispatch.
-    next_reader: usize,
     /// Schnorr-verify offload. `None` → verify inline on the I/O thread
     /// (legacy path, only used in tests). `Some` → push the parsed event
     /// to a dedicated worker and continue reading frames; the post-verify
@@ -168,7 +167,6 @@ impl ShardDispatcher {
             repl_tx,
             repl_rx,
             storage,
-            next_reader: 0,
             verify,
         }
     }
@@ -611,10 +609,11 @@ impl ShardDispatcher {
                 sub_id: Arc::clone(&sub_id_arc),
                 filters: Arc::clone(&filters_arc),
             };
-            storage.req_queue.push(job);
-            let reader_idx = self.next_reader % storage.reader_wakers.len();
-            self.next_reader = self.next_reader.wrapping_add(1);
-            storage.reader_wakers[reader_idx].unpark();
+            // Backpressure via mpmc push_block: blocks the shard if the
+            // reader pool is saturated rather than dropping the REQ.
+            // Returns Err(_) only when every reader has dropped, which
+            // means the relay is shutting down — discard quietly.
+            let _ = storage.req_tx.submit(job);
         } else {
             self.sender
                 .send_text(client_id, protocol::eose(&sub_id_arc));

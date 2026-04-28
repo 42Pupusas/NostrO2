@@ -60,7 +60,7 @@ tracing-test = "0.2"
 lru = "0.12"
 
 # Lock-free ring buffers
-quetzalcoatl = "0.7.1"
+quetzalcoatl = "0.8.0"
 
 # Native platform TCP
 tokio = { version = "^1.44" }

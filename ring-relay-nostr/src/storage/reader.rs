@@ -33,7 +33,7 @@ use quetzalcoatl::broadcast::arc::ArcConsumer;
 use ring_relay_server::ServerSender;
 
 use super::engine::SharedState;
-use super::handle::{IndexUpdate, ReqJob, ReqQueue};
+use super::handle::{IndexUpdate, ReqJob, ReqRx};
 use super::index::{BucketIndex, SlotMeta};
 use super::log::ReadOnlyLog;
 use super::slot::BucketKind;
@@ -73,23 +73,30 @@ pub struct ReaderPool;
 impl ReaderPool {
     /// Spawn the reader pool.
     ///
-    /// `index_consumers` must contain exactly `reader_threads` consumer
-    /// handles into the broadcast ring; each thread owns one. Capacity
-    /// for the ring is the caller's choice — see `bind`.
+    /// `req_consumers` and `index_consumers` must each have one entry per
+    /// reader thread; the count of `req_consumers` determines pool size.
     pub fn spawn(
         shared: Arc<SharedState>,
-        req_queue: Arc<ReqQueue>,
+        req_consumers: Vec<ReqRx>,
         sender: ServerSender,
         cfg: ReaderPoolConfig,
         index_consumers: Vec<ArcConsumer<IndexUpdate>>,
     ) -> std::io::Result<(ReaderPoolShutdown, Vec<std::thread::Thread>)> {
-        let reader_threads = index_consumers.len();
+        assert_eq!(
+            req_consumers.len(),
+            index_consumers.len(),
+            "req and index consumer counts must match",
+        );
+        let reader_threads = req_consumers.len();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::with_capacity(reader_threads);
         let mut thread_handles: Vec<std::thread::Thread> = Vec::with_capacity(reader_threads);
-        for (i, index_rx) in index_consumers.into_iter().enumerate() {
+        for (i, (req_rx, index_rx)) in req_consumers
+            .into_iter()
+            .zip(index_consumers.into_iter())
+            .enumerate()
+        {
             let shared_c = Arc::clone(&shared);
-            let q_c = Arc::clone(&req_queue);
             let sender_c = sender.clone();
             let sd_c = Arc::clone(&shutdown);
             let dir_c = cfg.data_dir.clone();
@@ -103,7 +110,7 @@ impl ReaderPool {
                     reader_loop(
                         i,
                         shared_c,
-                        q_c,
+                        req_rx,
                         sender_c,
                         sd_c,
                         dir_c,
@@ -163,7 +170,7 @@ impl ReaderState {
 fn reader_loop(
     reader_idx: usize,
     shared: Arc<SharedState>,
-    req_queue: Arc<ReqQueue>,
+    req_rx: ReqRx,
     sender: ServerSender,
     shutdown: Arc<AtomicBool>,
     data_dir: std::path::PathBuf,
@@ -202,20 +209,30 @@ fn reader_loop(
     let gen_slot: &AtomicU64 = &shared.reader_active_gens[reader_idx];
 
     while !shutdown.load(Ordering::Acquire) {
-        // Drain the broadcast ring every iteration, not only when a REQ
-        // arrives. The storage thread blocks (push_with_backoff) once the
-        // ring fills, so an idle reader that hasn't drained becomes a hard
-        // throughput cap on ingest. Draining on every tick keeps the ring
-        // a streaming buffer instead of a wall.
+        // Drain the broadcast ring before potentially parking on the
+        // REQ ring. The storage thread blocks (push_with_backoff) once
+        // the index ring fills, so an idle reader that hasn't drained
+        // becomes a hard throughput cap on ingest. We also drain again
+        // right after wake-up below, so this branch handles the
+        // common case of a reader that has been awake servicing
+        // REQs and now needs to catch up before the next pop_block.
         state.drain_updates();
 
-        let Some(job) = req_queue.pop() else {
-            // Short park so we keep draining promptly under heavy ingest.
-            // 50ms was fine when the ring was only relevant to REQs; with
-            // idle-drain it would let the ring back up between ticks.
-            std::thread::park_timeout(Duration::from_millis(1));
-            continue;
+        // Block until a REQ arrives or every shard's ReqTx has dropped.
+        // pop_block uses the ring's futex-style wake bitmap, so the
+        // shard side wakes us via push_block without needing the
+        // explicit `reader_wakers[..].unpark()` call we used to make.
+        // Shutdown is signalled by unparking the thread; pop_block's
+        // timed park reacts within ~200µs.
+        let Some(job) = req_rx.next() else {
+            // All shards have dropped — we're shutting down.
+            break;
         };
+
+        // Drain index updates again now that we've been woken — the
+        // REQ producer may have raced storage publishes that we want
+        // visible before we serve the request.
+        state.drain_updates();
 
         let g_req = shared.current_gen.load(Ordering::Acquire);
         gen_slot.store(g_req, Ordering::Release);
