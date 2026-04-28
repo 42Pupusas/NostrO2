@@ -114,6 +114,19 @@ impl BucketLog {
         self.file.sync_data()
     }
 
+    /// Read just the payload bytes at `idx`. Mirrors [`ReadOnlyLog::read_payload`]
+    /// but on the writable handle owned by the storage thread, used by
+    /// reopen-time helpers (e.g. NIP-09 deletion replay).
+    pub fn read_payload(&self, idx: usize, payload_len: u32) -> io::Result<Vec<u8>> {
+        assert!(idx < self.slot_count);
+        let off = self.slot_offset(idx) + SLOT_HEADER_SIZE as u64;
+        let mut buf = vec![0u8; payload_len as usize];
+        if payload_len > 0 {
+            self.file.read_exact_at(&mut buf, off)?;
+        }
+        Ok(buf)
+    }
+
     /// Clone the underlying file handle for read-only access from another
     /// thread (reader pool). The dup'd fd shares the kernel file offset,
     /// but we exclusively use positional I/O so that's fine.

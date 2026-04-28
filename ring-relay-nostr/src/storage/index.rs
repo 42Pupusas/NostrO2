@@ -254,6 +254,25 @@ impl BucketIndex {
         self.insert_slot(slot_idx, meta);
     }
 
+    /// Find the slot index whose `SlotMeta::event_id` matches `target`,
+    /// if any. NIP-09 deletion uses this to locate the slot to remove
+    /// from the bucket; lookup is via the existing `by_id_prefix` index
+    /// followed by a full 32-byte equality check.
+    #[must_use]
+    pub fn find_by_full_id(&self, target: &[u8; 32]) -> Option<u32> {
+        let mut prefix = [0u8; 8];
+        prefix.copy_from_slice(&target[..8]);
+        let candidates = self.by_id_prefix.get(&prefix)?;
+        for &slot_idx in candidates {
+            if let Some(meta) = &self.meta[slot_idx as usize]
+                && meta.event_id == *target
+            {
+                return Some(slot_idx);
+            }
+        }
+        None
+    }
+
     /// Pick the cheapest-to-scan index set for a given filter. If `authors`
     /// or `ids` or a tag filter is present, return the candidate slot set
     /// from the most selective one. Otherwise fall back to every live slot.

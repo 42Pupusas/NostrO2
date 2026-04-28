@@ -46,6 +46,91 @@ pub fn expiration_from_view(note: &NostrNoteView<'_>) -> Option<i64> {
     None
 }
 
+/// NIP-09 deletion target reference. A kind-5 event MAY reference targets
+/// either by event id (`e` tag) or by address (`a` tag). Addresses cover
+/// replaceable (NIP-16) and parameterized (NIP-33) kinds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeletionRef {
+    /// Hex-decoded event id (32 bytes).
+    EventId([u8; 32]),
+    /// Address tuple `(kind, pubkey, d_tag)`. `d_tag` is `""` for plain
+    /// replaceable; non-empty for parameterized.
+    Address {
+        kind: u32,
+        pubkey: [u8; 32],
+        d_tag: Box<str>,
+    },
+}
+
+/// Extract NIP-09 deletion targets from a kind-5 event view.
+///
+/// Walks `e` and `a` tags, decoding `e` values as 64-char hex and parsing
+/// `a` values as `"kind:pubkey:d_tag"`. Malformed entries are silently
+/// skipped — the spec doesn't define error semantics, and a single bad
+/// tag shouldn't void the whole deletion. The caller is responsible for
+/// the same-pubkey ownership check; this is just a parser.
+#[must_use]
+pub fn deletion_refs_from_view(note: &NostrNoteView<'_>) -> Vec<DeletionRef> {
+    let mut out = Vec::new();
+    for tag in note.tags.iter() {
+        let Some(name) = tag.first().map(AsRef::as_ref) else {
+            continue;
+        };
+        let Some(value) = tag.get(1).map(AsRef::as_ref) else {
+            continue;
+        };
+        match name {
+            "e" => {
+                if let Some(id) = decode_hex32_str(value) {
+                    out.push(DeletionRef::EventId(id));
+                }
+            }
+            "a" => {
+                if let Some(addr) = parse_address(value) {
+                    out.push(addr);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn decode_hex32_str(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let hi = hex_nibble(s.as_bytes()[i * 2])?;
+        let lo = hex_nibble(s.as_bytes()[i * 2 + 1])?;
+        *byte = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_address(s: &str) -> Option<DeletionRef> {
+    // Format: "<kind>:<64-hex pubkey>:<d_tag>"
+    let mut parts = s.splitn(3, ':');
+    let kind: u32 = parts.next()?.parse().ok()?;
+    let pubkey = decode_hex32_str(parts.next()?)?;
+    let d_tag = parts.next()?.to_owned().into_boxed_str();
+    Some(DeletionRef::Address {
+        kind,
+        pubkey,
+        d_tag,
+    })
+}
+
 /// Check whether `note` matches `filter` per NIP-01 semantics.
 ///
 /// All supplied fields are ANDed. Within a list field (authors, ids, kinds),

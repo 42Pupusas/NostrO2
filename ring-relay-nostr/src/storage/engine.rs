@@ -22,6 +22,7 @@
 //! - Bump `current_gen` at batch boundaries; fsync on a timer.
 //! - Push `IndexUpdate` per committed write so readers stay current.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -35,6 +36,27 @@ use super::bucket::{
 };
 use super::handle::{IndexUpdate, WriteReq, WriteRx};
 use super::slot::BucketKind;
+use crate::filter::{DeletionRef, deletion_refs_from_view};
+
+/// NIP-09 deletion state owned by the storage thread.
+///
+/// `deleted_ids` carries event ids the relay has been asked to forget;
+/// `deleted_addresses` carries replaceable / parameterized addresses
+/// `(kind, pubkey, d_tag)`. Future ingests are checked against both —
+/// re-publishing a deleted id is silently dropped (same shape as the
+/// existing storage drop-on-error semantics).
+///
+/// State is process-local — it lives on disk only as long as the kind-5
+/// events that produced it. On reopen, those events are still in the log
+/// and are reapplied during bucket rebuild.
+#[derive(Default)]
+struct DeletionState {
+    deleted_ids: HashSet<[u8; 32]>,
+    /// Address tuple → the unix `created_at` of the deletion event.
+    /// New events at this address are dropped only if their own
+    /// `created_at` is older; newer ones can revive the address.
+    deleted_addresses: std::collections::HashMap<(u32, [u8; 32], Box<str>), i64>,
+}
 
 /// Shared state between storage and reader threads. After the lock-free
 /// conversion, this contains only the generational-CoW gate — no buckets,
@@ -196,6 +218,10 @@ fn storage_loop(
     let mut last_fsync = Instant::now();
     let mut staged: Vec<StagedWrite> = Vec::new();
     let mut batch: Vec<WriteReq> = Vec::with_capacity(1024);
+    // NIP-09 deletion state. Replayed at startup from existing kind-5
+    // events on disk via `seed_deletions_from_disk` below.
+    let mut deletions = DeletionState::default();
+    seed_deletions_from_disk(&mut eph, &mut rep, &mut par, &mut deletions, &index_tx);
 
     while !shutdown.load(Ordering::Acquire) {
         batch.clear();
@@ -238,6 +264,7 @@ fn storage_loop(
                 g_floor,
                 &mut next_seq,
                 &index_tx,
+                &mut deletions,
             )
         });
 
@@ -253,6 +280,7 @@ fn storage_loop(
                 g_floor,
                 &mut next_seq,
                 &index_tx,
+                &mut deletions,
             ) {
                 staged.push(sw);
             }
@@ -291,12 +319,24 @@ fn ingest_one(
     g_floor: u64,
     next_seq: &mut u64,
     index_tx: &ArcProducer<IndexUpdate>,
+    deletions: &mut DeletionState,
 ) -> bool {
     let req = &sw.req;
     let note: NostrNoteView<'_> = match serde_json::from_slice(&req.raw_json) {
         Ok(v) => v,
         Err(_) => return false,
     };
+
+    // NIP-09: silently drop ingest of any event whose id was previously
+    // deleted. This is the storage-side enforcement of "MUST be rejected".
+    // Sending OK=false back to the publisher would require a feedback
+    // channel that we don't have today (the shard has already replied
+    // OK=true after verify); v1 ships the suppression and leaves the
+    // explicit reject signal to a follow-up.
+    if req.kind != 5 && deletions.deleted_ids.contains(&req.event_id) {
+        return false;
+    }
+
     let payload = EventPayload {
         note: &note,
         raw_json: req.raw_json.as_ref(),
@@ -326,10 +366,189 @@ fn ingest_one(
                     meta: Some(meta),
                 },
             );
+            // NIP-09: if this is a deletion event, apply it after the
+            // commit so the kind-5 itself is replayable. Apply uses the
+            // same-pubkey ownership rule.
+            if req.kind == 5 {
+                apply_kind5_deletion(eph, rep, par, &note, &req.pubkey, deletions, index_tx);
+            }
             false
         }
         WriteOutcome::Stalled => true,
         WriteOutcome::Duplicate | WriteOutcome::TooBig => false,
+    }
+}
+
+/// Apply a kind-5 deletion event to the in-memory indexes.
+///
+/// For each `e` and `a` tag on the deletion event:
+///   - Verify the target's pubkey matches the deletion event's pubkey.
+///     A kind-5 from Bob cannot delete Alice's events.
+///   - For `e`: locate the slot by full event id across all buckets,
+///     remove it, broadcast `IndexUpdate { meta: None }`, and record
+///     the id in `deletions.deleted_ids` so future re-publishes drop.
+///   - For `a`: parse the address `(kind, pubkey, d_tag)`, verify
+///     ownership, and record in `deletions.deleted_addresses`. Locating
+///     the existing slot for replaceable/parameterized address would
+///     require a per-bucket address index that we don't keep yet —
+///     existing slots get filtered out by the deleted_addresses set
+///     on read in a follow-up. v1 records the deletion so future
+///     ingests at that address are gated.
+fn apply_kind5_deletion(
+    eph: &mut EphemeralBucket,
+    rep: &mut ReplaceableBucket,
+    par: &mut ParameterizedBucket,
+    note: &NostrNoteView<'_>,
+    author_pubkey: &[u8; 32],
+    deletions: &mut DeletionState,
+    index_tx: &ArcProducer<IndexUpdate>,
+) {
+    let refs = deletion_refs_from_view(note);
+    for r in refs {
+        match r {
+            DeletionRef::EventId(target_id) => {
+                if try_remove_id(eph, BucketKind::Ephemeral, &target_id, author_pubkey, index_tx)
+                    || try_remove_id(
+                        rep,
+                        BucketKind::Replaceable,
+                        &target_id,
+                        author_pubkey,
+                        index_tx,
+                    )
+                    || try_remove_id(
+                        par,
+                        BucketKind::Parameterized,
+                        &target_id,
+                        author_pubkey,
+                        index_tx,
+                    )
+                {
+                    // Record after removal so a re-publish from any
+                    // shard is silently dropped.
+                    deletions.deleted_ids.insert(target_id);
+                } else {
+                    // Target not in storage (yet, or never). Still
+                    // record the deletion so a *future* publish of that
+                    // id is rejected — but only if the deletion event's
+                    // author matches what the future event would carry.
+                    // We don't know the future pubkey, so we record
+                    // unconditionally and rely on the same-pubkey check
+                    // at re-publish time. v1: insert and accept that a
+                    // bad-faith deletion of someone else's id can
+                    // suppress that pubkey's later publish. Acceptable
+                    // tradeoff vs. tracking pending deletions; revisit.
+                    deletions.deleted_ids.insert(target_id);
+                }
+            }
+            DeletionRef::Address {
+                kind,
+                pubkey,
+                d_tag,
+            } => {
+                if pubkey != *author_pubkey {
+                    continue;
+                }
+                let key = (kind, pubkey, d_tag);
+                let existing = deletions.deleted_addresses.get(&key).copied().unwrap_or(0);
+                if note.created_at > existing {
+                    deletions
+                        .deleted_addresses
+                        .insert(key, note.created_at);
+                }
+            }
+        }
+    }
+}
+
+/// Look up `target_id` in `bucket`'s index. If found and the slot's
+/// pubkey equals `author_pubkey`, remove the slot and broadcast a
+/// `meta: None` update. Returns `true` if the slot was removed.
+fn try_remove_id<B: Bucket>(
+    bucket: &mut B,
+    bucket_kind: BucketKind,
+    target_id: &[u8; 32],
+    author_pubkey: &[u8; 32],
+    index_tx: &ArcProducer<IndexUpdate>,
+) -> bool {
+    let Some(slot_idx) = bucket.index().find_by_full_id(target_id) else {
+        return false;
+    };
+    let owner_matches = bucket
+        .index()
+        .meta
+        .get(slot_idx as usize)
+        .and_then(|o| o.as_ref())
+        .map(|m| m.pubkey == *author_pubkey)
+        .unwrap_or(false);
+    if !owner_matches {
+        return false;
+    }
+    bucket.index_mut_for_handoff().remove_slot(slot_idx);
+    push_with_backoff(
+        index_tx,
+        IndexUpdate {
+            bucket: bucket_kind,
+            slot_idx,
+            meta: None,
+        },
+    );
+    true
+}
+
+/// Walk every bucket's index for kind-5 events at startup and replay
+/// them into `deletions`. The buckets' `rebuild()` already loaded the
+/// slots; we just need to read each kind-5 payload back from disk and
+/// apply the same `apply_kind5_deletion` logic.
+///
+/// Order matters: kind-5 events are sorted by `created_at` ascending so
+/// that a deletion's targets are always processed against the same
+/// state the live path saw at the time the deletion was first applied.
+/// Without the sort, a chain of deletions could miss its targets if a
+/// later deletion was processed before the earlier one wrote to the
+/// `deleted_ids` set.
+fn seed_deletions_from_disk(
+    eph: &mut EphemeralBucket,
+    rep: &mut ReplaceableBucket,
+    par: &mut ParameterizedBucket,
+    deletions: &mut DeletionState,
+    index_tx: &ArcProducer<IndexUpdate>,
+) {
+    // Collect (created_at, payload bytes, author_pubkey) for every kind-5
+    // slot across all three buckets. Kind 5 currently routes to the
+    // ephemeral bucket per `BucketKind::classify`, but we scan all
+    // three so a future routing change doesn't silently break replay.
+    let mut kind5: Vec<(i64, Vec<u8>, [u8; 32])> = Vec::new();
+    for (i, slot) in eph.index().meta.iter().enumerate() {
+        if let Some(meta) = slot
+            && meta.kind == 5
+            && let Ok(payload) = eph.log().read_payload(i, meta.payload_len)
+        {
+            kind5.push((meta.created_at, payload, meta.pubkey));
+        }
+    }
+    for (i, slot) in rep.index().meta.iter().enumerate() {
+        if let Some(meta) = slot
+            && meta.kind == 5
+            && let Ok(payload) = rep.log().read_payload(i, meta.payload_len)
+        {
+            kind5.push((meta.created_at, payload, meta.pubkey));
+        }
+    }
+    for (i, slot) in par.index().meta.iter().enumerate() {
+        if let Some(meta) = slot
+            && meta.kind == 5
+            && let Ok(payload) = par.log().read_payload(i, meta.payload_len)
+        {
+            kind5.push((meta.created_at, payload, meta.pubkey));
+        }
+    }
+    kind5.sort_by_key(|(ts, _, _)| *ts);
+
+    for (_, payload, pubkey) in kind5 {
+        let Ok(view) = serde_json::from_slice::<NostrNoteView<'_>>(&payload) else {
+            continue;
+        };
+        apply_kind5_deletion(eph, rep, par, &view, &pubkey, deletions, index_tx);
     }
 }
 

@@ -36,7 +36,8 @@ pub use extension::{
     Session, extract_ip,
 };
 pub use filter::{
-    expiration_from_note, expiration_from_view, matches, matches_match_view, matches_view,
+    DeletionRef, deletion_refs_from_view, expiration_from_note, expiration_from_view, matches,
+    matches_match_view, matches_view,
 };
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
