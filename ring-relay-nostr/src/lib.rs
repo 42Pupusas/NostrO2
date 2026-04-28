@@ -221,6 +221,14 @@ impl NostrRelay {
         // sized to `write_ring_capacity * n` so total in-flight buffering
         // matches the SPSC layout — only the contention shape changes.
         let mut shard_write_tx: Vec<Option<storage::handle::WriteTx>> = Vec::with_capacity(n);
+        // Per-shard ack rings (storage → one shard). Mirrors the verify
+        // pool's results-ring shape: one MPSC per shard plus a `OnceLock<Thread>`
+        // each shard publishes its own JoinHandle's Thread into. The
+        // storage thread holds the producers + wakers Vec, indexed by
+        // `WriteReq::source_shard`.
+        let mut shard_ack_rx: Vec<Option<storage::handle::AckRx>> = Vec::with_capacity(n);
+        let mut shard_ack_waker: Vec<Option<Arc<std::sync::OnceLock<std::thread::Thread>>>> =
+            Vec::with_capacity(n);
         let (
             storage_engine,
             storage_shutdown_opt,
@@ -239,6 +247,27 @@ impl NostrRelay {
             // Drop the seed producer so producer count == n exactly.
             drop(tx_seed);
             let storage_write_rx = storage::handle::WriteRx(rx);
+
+            // One ack ring per shard. Capacity = write_ring_capacity is
+            // generous: even at full ingest saturation the shard drains
+            // every loop pass, so the ring rarely fills past a few slots.
+            let mut ack_producers: Vec<quetzalcoatl::mpsc::Producer<storage::handle::StorageAck>> =
+                Vec::with_capacity(n);
+            let mut ack_wakers: Vec<Arc<std::sync::OnceLock<std::thread::Thread>>> =
+                Vec::with_capacity(n);
+            for _ in 0..n {
+                let (ack_tx, ack_rx) = quetzalcoatl::mpsc::RingBuffer::<
+                    storage::handle::StorageAck,
+                >::new(quetzalcoatl::capacity::Capacity::at_least(
+                    sc.write_ring_capacity,
+                ))
+                .split();
+                ack_producers.push(ack_tx);
+                shard_ack_rx.push(Some(storage::handle::AckRx(ack_rx)));
+                let waker = Arc::new(std::sync::OnceLock::new());
+                ack_wakers.push(Arc::clone(&waker));
+                shard_ack_waker.push(Some(waker));
+            }
 
             // Index-update broadcast ring: storage thread (single producer)
             // pushes one IndexUpdate per committed write; each reader thread
@@ -275,6 +304,8 @@ impl NostrRelay {
                 n_readers,
                 storage_write_rx,
                 index_producer,
+                ack_producers,
+                ack_wakers,
             )?;
             // REQ jobs flow shards → readers via an MPMC ring. Capacity
             // tracks the worst-case in-flight REQ population so producers
@@ -388,17 +419,25 @@ impl NostrRelay {
                 storage_engine.as_ref(),
                 storage_thread_handle.as_ref(),
                 shard_write_tx.get_mut(i).and_then(Option::take),
+                shard_ack_rx.get_mut(i).and_then(Option::take),
+                shard_ack_waker.get_mut(i).and_then(Option::take),
             ) {
-                (Some((_engine, req_tx_seed)), Some(storage_thread), Some(write_tx)) => {
-                    Some(shard::ShardStorage {
-                        write_tx,
-                        // Per-shard producer clone — each clone gets its
-                        // own batch reservation cell, so shards don't
-                        // serialize on a shared producer state.
-                        req_tx: req_tx_seed.clone(),
-                        storage_waker: storage_thread.clone(),
-                    })
-                }
+                (
+                    Some((_engine, req_tx_seed)),
+                    Some(storage_thread),
+                    Some(write_tx),
+                    Some(ack_rx),
+                    Some(ack_waker),
+                ) => Some(shard::ShardStorage {
+                    write_tx,
+                    // Per-shard producer clone — each clone gets its
+                    // own batch reservation cell, so shards don't
+                    // serialize on a shared producer state.
+                    req_tx: req_tx_seed.clone(),
+                    storage_waker: storage_thread.clone(),
+                    ack_rx,
+                    ack_waker,
+                }),
                 _ => None,
             };
 

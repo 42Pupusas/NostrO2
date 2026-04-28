@@ -24,16 +24,52 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use nostro2::NostrNoteView;
 use quetzalcoatl::broadcast::arc::ArcProducer;
+use quetzalcoatl::mpsc::Producer as MpscProducer;
 
 use super::StorageConfig;
 use super::bucket::{
     Bucket, EphemeralBucket, EventPayload, ParameterizedBucket, ReplaceableBucket, WriteOutcome,
 };
-use super::handle::{IndexUpdate, WriteReq, WriteRx};
+use super::handle::{AckOutcome, IndexUpdate, StorageAck, WriteReq, WriteRx};
+
+/// Push a verdict for `req` onto its source shard's MPSC ack ring,
+/// then unpark the shard so it drains promptly. The shard parks on
+/// its `ReaderCore` epoll, not on the ack ring, so an unpark is
+/// required — same shape as verify_pool's worker → shard wake.
+fn send_ack(
+    ack_txs: &[MpscProducer<StorageAck>],
+    shard_wakers: &[Arc<OnceLock<std::thread::Thread>>],
+    req: &WriteReq,
+    outcome: AckOutcome,
+) {
+    let idx = req.source_shard as usize;
+    let Some(tx) = ack_txs.get(idx) else {
+        return;
+    };
+    let ack = StorageAck {
+        client_id: req.client_id,
+        event_id_hex: Arc::clone(&req.event_id_hex),
+        outcome,
+    };
+    // Spin-push: an OK frame is small and the shard drains on every
+    // loop iteration, so this is rarely contended. If the ring is full
+    // (a pathological backpressure case), drop the ack — the publisher
+    // gets no OK, which is still better than blocking the storage
+    // thread on a single slow shard.
+    if tx.push(ack).is_err() {
+        return;
+    }
+    if let Some(waker) = shard_wakers.get(idx)
+        && let Some(thread) = waker.get()
+    {
+        thread.unpark();
+    }
+}
 use super::slot::BucketKind;
 use crate::filter::{DeletionRef, deletion_refs_from_view};
 
@@ -115,11 +151,20 @@ impl StorageEngine {
     /// `index_tx` is the producer side of the broadcast ring; the storage
     /// thread pushes `IndexUpdate` messages here for the reader pool to
     /// consume. The caller is responsible for sizing the ring.
+    /// `ack_txs` carries one MPSC producer per shard; storage routes
+    /// per-write verdicts via `WriteReq::source_shard` indexing into
+    /// this Vec. `shard_wakers` is the parallel `Vec<Arc<OnceLock<Thread>>>`
+    /// — a `Thread` handle is published into each `OnceLock` once the
+    /// corresponding shard's main loop starts; before then the storage
+    /// thread queues acks without waking, since a shard that hasn't
+    /// finished startup will drain its ring as soon as it does.
     pub fn spawn(
         config: &StorageConfig,
         reader_threads: usize,
         write_rx: WriteRx,
         index_tx: ArcProducer<IndexUpdate>,
+        ack_txs: Vec<MpscProducer<StorageAck>>,
+        shard_wakers: Vec<Arc<OnceLock<std::thread::Thread>>>,
     ) -> std::io::Result<(Self, StorageShutdown, std::thread::Thread)> {
         std::fs::create_dir_all(&config.data_dir)?;
         let eph_path = config.data_dir.join("ephemeral.log");
@@ -169,6 +214,8 @@ impl StorageEngine {
                     par,
                     next_seq,
                     fsync_interval,
+                    ack_txs,
+                    shard_wakers,
                 );
             })?;
         let thread = handle.thread().clone();
@@ -217,6 +264,8 @@ fn storage_loop(
     mut par: ParameterizedBucket,
     mut next_seq: u64,
     fsync_interval: Option<Duration>,
+    ack_txs: Vec<MpscProducer<StorageAck>>,
+    shard_wakers: Vec<Arc<OnceLock<std::thread::Thread>>>,
 ) {
     let mut last_fsync = Instant::now();
     let mut staged: Vec<StagedWrite> = Vec::new();
@@ -268,6 +317,8 @@ fn storage_loop(
                 &mut next_seq,
                 &index_tx,
                 &mut deletions,
+                &ack_txs,
+                &shard_wakers,
             )
         });
 
@@ -284,6 +335,8 @@ fn storage_loop(
                 &mut next_seq,
                 &index_tx,
                 &mut deletions,
+                &ack_txs,
+                &shard_wakers,
             ) {
                 staged.push(sw);
             }
@@ -311,7 +364,10 @@ struct StagedWrite {
 
 /// Try to ingest one write. Returns `true` if it should be re-staged
 /// (stalled by g_floor), `false` if committed or dropped. On commit,
-/// pushes an `IndexUpdate` so reader threads see the new slot.
+/// pushes an `IndexUpdate` so reader threads see the new slot. On every
+/// terminal outcome (commit, dup, drop, oversize) it also pushes a
+/// [`StorageAck`] back to the source shard so the publisher learns the
+/// real verdict.
 #[allow(clippy::too_many_arguments)]
 fn ingest_one(
     eph: &mut EphemeralBucket,
@@ -323,41 +379,59 @@ fn ingest_one(
     next_seq: &mut u64,
     index_tx: &ArcProducer<IndexUpdate>,
     deletions: &mut DeletionState,
+    ack_txs: &[MpscProducer<StorageAck>],
+    shard_wakers: &[Arc<OnceLock<std::thread::Thread>>],
 ) -> bool {
     let req = &sw.req;
     let note: NostrNoteView<'_> = match serde_json::from_slice(&req.raw_json) {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(_) => {
+            // Should not happen — the shard already parsed the same
+            // bytes via the verify pool. But be honest if it does.
+            send_ack(
+                ack_txs,
+                shard_wakers,
+                req,
+                AckOutcome::Rejected("invalid: malformed event"),
+            );
+            return false;
+        }
     };
 
-    // NIP-09: silently drop ingest of any event whose id was previously
-    // deleted *by its rightful owner*. The deleter's pubkey is recorded
-    // alongside the id, and we only suppress when this publish comes
-    // from that same pubkey — otherwise a kind-5 with an unknown id
-    // could pre-emptively poison a different publisher's future event.
-    // Sending OK=false back to the publisher would require a feedback
-    // channel that we don't have today (the shard has already replied
-    // OK=true after verify); v1 ships the suppression and leaves the
-    // explicit reject signal to a follow-up.
+    // NIP-09 id-target gating. The deleter's pubkey is recorded alongside
+    // the id; we only suppress when this publish comes from that same
+    // pubkey (schnorr-signature binding means Eve can't forge Alice's id,
+    // so Eve's pre-emptive deletion of Alice's id never trips here).
     if req.kind != 5
         && let Some(deleter) = deletions.deleted_ids.get(&req.event_id)
         && *deleter == req.pubkey
     {
+        send_ack(
+            ack_txs,
+            shard_wakers,
+            req,
+            AckOutcome::Rejected("blocked: event was deleted"),
+        );
         return false;
     }
 
     let bucket_kind = BucketKind::classify(req.kind);
 
-    // NIP-09 address-target enforcement: for replaceable / parameterized
-    // ingests, drop if the (kind, pubkey, d_tag) was deleted by a kind-5
-    // whose `created_at` is newer than this event. The deletion event's
-    // own pubkey check is enforced at apply time, so any address found
-    // here was deleted by its rightful owner.
+    // NIP-09 address-target enforcement. The deletion's own same-pubkey
+    // ownership check ran at apply time, so any address present here was
+    // deleted by its rightful owner. A *newer* event at the same address
+    // is allowed; only older ones are suppressed.
     if req.kind != 5
         && let Some(deletion_ts) =
             lookup_address_deletion(deletions, &note, bucket_kind, req.kind, &req.pubkey)
         && note.created_at < deletion_ts
     {
+        send_ack(
+            ack_txs,
+            shard_wakers,
+            req,
+            AckOutcome::Rejected("blocked: address was deleted"),
+        );
         return false;
     }
 
@@ -394,10 +468,28 @@ fn ingest_one(
             if req.kind == 5 {
                 apply_kind5_deletion(eph, rep, par, &note, &req.pubkey, deletions, index_tx);
             }
+            send_ack(ack_txs, shard_wakers, req, AckOutcome::Stored);
             false
         }
-        WriteOutcome::Stalled => true,
-        WriteOutcome::Duplicate | WriteOutcome::TooBig => false,
+        WriteOutcome::Stalled => {
+            // Re-staged for retry. No ack yet — the next ingest_one
+            // pass will land on Committed (or one of the drop paths)
+            // and ack then.
+            true
+        }
+        WriteOutcome::Duplicate => {
+            send_ack(ack_txs, shard_wakers, req, AckOutcome::Duplicate);
+            false
+        }
+        WriteOutcome::TooBig => {
+            send_ack(
+                ack_txs,
+                shard_wakers,
+                req,
+                AckOutcome::Rejected("invalid: payload exceeds max_payload"),
+            );
+            false
+        }
     }
 }
 

@@ -43,10 +43,52 @@ pub struct WriteReq {
     pub raw_json: Arc<[u8]>,
     /// Hex-decoded event id.
     pub event_id: [u8; 32],
+    /// Hex-encoded event id, kept here so the storage thread can build
+    /// `OK` ack frames without re-encoding 32 bytes back to hex per
+    /// commit. Shared `Arc<str>` from the verify worker.
+    pub event_id_hex: Arc<str>,
     /// Hex-decoded pubkey.
     pub pubkey: [u8; 32],
     /// The event's `kind`. Used to pick the bucket.
     pub kind: u32,
+    /// fd of the client that sent this EVENT — used to route the
+    /// commit / reject ack back to the right shard's session.
+    pub client_id: i32,
+    /// Source shard index. Storage uses this to route the ack into
+    /// that shard's MPSC results ring (mirrors `VerifyJob`).
+    pub source_shard: u16,
+}
+
+/// One commit / drop verdict the storage thread sends back to a shard
+/// after attempting to ingest a [`WriteReq`].
+///
+/// The shard turns these into NIP-01 `OK` frames for the publisher.
+/// Carries `event_id_hex` and `client_id` so the shard can dispatch
+/// without an event_id-keyed lookup.
+pub struct StorageAck {
+    pub client_id: i32,
+    pub event_id_hex: Arc<str>,
+    pub outcome: AckOutcome,
+}
+
+/// What the storage thread decided about a write.
+///
+/// Note: this is *commit-truthful*, not *fsync-truthful*. `Stored` fires
+/// once the in-memory bucket index has been updated and the slot bytes
+/// have been pwritten; the fsync may still be pending up to
+/// `fsync_interval_ms`. A crash between commit and fsync can lose the
+/// tail. Documented limitation; fsync-truthful OK requires batching the
+/// ack against fsync boundaries and is a follow-up.
+pub enum AckOutcome {
+    /// Slot committed. Send `OK=true`.
+    Stored,
+    /// Storage already had this event id (NIP-01 dedupe). Send
+    /// `OK=true` with a "duplicate" message — common relay behavior.
+    Duplicate,
+    /// Storage refused the write for the carried reason. Send
+    /// `OK=false` with the reason as the message field (e.g.
+    /// `"blocked: event was deleted"`, `"invalid: payload too large"`).
+    Rejected(&'static str),
 }
 
 /// One REQ queued for historical replay.
@@ -62,6 +104,16 @@ pub struct ReqJob {
     pub sub_id: Arc<str>,
     pub filters: Arc<[NostrSubscription]>,
 }
+
+/// Shard-side consumer of the ack ring. Drained at the top of every
+/// shard loop iteration before frame I/O so committed events get their
+/// `OK` before the next inbound frame triggers more work.
+///
+/// The producer side is held by the storage thread as a plain
+/// `MpscProducer<StorageAck>` — there's one per shard, indexed by
+/// `WriteReq::source_shard`, mirroring `verify_pool`'s per-shard
+/// results-ring topology.
+pub struct AckRx(pub MpscConsumer<StorageAck>);
 
 /// Per-shard producer side of the writes ring. `Clone` because every
 /// shard gets its own handle into the same shared MPSC ring.

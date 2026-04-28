@@ -75,6 +75,14 @@ pub(crate) struct ShardStorage {
     pub write_tx: WriteTx,
     pub req_tx: ReqTx,
     pub storage_waker: std::thread::Thread,
+    /// Per-shard MPSC consumer for storage commit / drop verdicts.
+    /// Drained at the top of every shard loop iteration; each ack
+    /// becomes an `OK` frame to the original publisher.
+    pub ack_rx: crate::storage::handle::AckRx,
+    /// Set once the shard's main loop starts. Storage thread reads
+    /// this to unpark us when an ack lands; without the unpark, the
+    /// shard would only see the verdict on the next inbound frame.
+    pub ack_waker: Arc<std::sync::OnceLock<std::thread::Thread>>,
 }
 
 /// Per-shard Nostr dispatcher. One instance per reader thread.
@@ -502,10 +510,50 @@ impl ShardDispatcher {
         self.verify = Some(handle);
     }
 
-    /// Post-verify path: emit OK to the publisher, fan out to local /
-    /// replicated subs, and queue persistence. Called either from
-    /// `drain_verify_results` (offload path) or directly from `on_event`
-    /// (legacy inline path).
+    /// Drain commit / drop verdicts the storage thread has emitted
+    /// since the last loop iteration; turn each into an `OK` frame to
+    /// the publisher. This is what makes `OK=true` truthful in storage
+    /// mode — the shard no longer fires the OK at verify time but
+    /// waits for the verdict to land here.
+    ///
+    /// `Stored` and `Duplicate` both produce `OK=true`. `Duplicate`
+    /// carries a non-empty message so a curious client can distinguish
+    /// the two; NIP-01 says relays SHOULD treat duplicates as success.
+    pub fn drain_storage_acks(&mut self) {
+        // Take the storage handle out so we can borrow self mutably
+        // for `dispatch_text` while we're inside the drain loop.
+        let Some(mut storage) = self.storage.take() else {
+            return;
+        };
+        while let Some(ack) = storage.ack_rx.0.pop() {
+            let id = ack.event_id_hex.as_ref();
+            match ack.outcome {
+                crate::storage::handle::AckOutcome::Stored => {
+                    self.dispatch_text(ack.client_id, protocol::ok(id, true, ""));
+                }
+                crate::storage::handle::AckOutcome::Duplicate => {
+                    self.dispatch_text(
+                        ack.client_id,
+                        protocol::ok(id, true, "duplicate: already have this event"),
+                    );
+                }
+                crate::storage::handle::AckOutcome::Rejected(reason) => {
+                    warn!(fd = ack.client_id, %id, reason, "storage rejected event");
+                    self.dispatch_text(ack.client_id, protocol::ok(id, false, reason));
+                }
+            }
+        }
+        self.storage = Some(storage);
+    }
+
+    /// Post-verify path: queue persistence (ack flows back via the
+    /// storage results ring), fan out live to subscribers. The publisher's
+    /// `OK` is sent only after the storage thread reports back via
+    /// [`Self::drain_storage_acks`] — that way `OK=true` is truthful
+    /// about whether the write actually committed, and `OK=false` carries
+    /// the real reason (deleted id, address-deleted, oversized, ring
+    /// overflow). Verify failure still goes out immediately because no
+    /// storage step is involved.
     fn complete_event(&mut self, result: VerifyResult) {
         let id = result.event_id_hex.as_ref();
         if !result.verified {
@@ -517,22 +565,41 @@ impl ShardDispatcher {
             return;
         }
 
-        self.dispatch_text(result.client_id, protocol::ok(id, true, ""));
-
         let note_bytes = result.raw_json;
 
-        // Storage: fire-and-forget; parsing + indexing happens on the
-        // storage thread. Drop persistence on ring overflow.
+        // Storage: parsing + indexing happens on the storage thread.
+        // The ack (commit / duplicate / reject) flows back via the
+        // storage results ring; the shard sends `OK` only once it
+        // hears the verdict — see `drain_storage_acks`.
         if let Some(storage) = &self.storage {
             let req = WriteReq {
                 raw_json: Arc::clone(&note_bytes),
                 event_id: result.event_id,
+                event_id_hex: Arc::clone(&result.event_id_hex),
                 pubkey: result.pubkey,
                 kind: result.kind,
+                client_id: result.client_id,
+                source_shard: self.owner_id as u16,
             };
             if storage.write_tx.try_push(req).is_ok() {
                 storage.storage_waker.unpark();
+            } else {
+                // Ring overflow: storage thread couldn't keep up. Tell
+                // the publisher honestly that we dropped it. This path
+                // is rare in practice — write_ring_capacity * shards
+                // gives plenty of headroom — but a sustained burst can
+                // hit it.
+                warn!(fd = result.client_id, %id, "storage write ring full; dropping event");
+                self.dispatch_text(
+                    result.client_id,
+                    protocol::ok(id, false, "error: storage backlogged"),
+                );
             }
+        } else {
+            // Ephemeral mode: no storage step, OK truthfully reflects
+            // the verify result. Same behavior the relay had before
+            // the truthful-OK change.
+            self.dispatch_text(result.client_id, protocol::ok(id, true, ""));
         }
 
         // The verify worker's pre-built `MatchView` is required for
@@ -788,6 +855,13 @@ pub(crate) fn run_shard(
     if let Some(handle) = verify.as_ref() {
         let _ = handle.shard_waker.set(std::thread::current());
     }
+    // Same wakeup discipline for the storage ack ring: storage thread
+    // emits OK / OK=false verdicts asynchronously, and we want them
+    // delivered to publishers without waiting for the next inbound
+    // frame to wake the epoll.
+    if let Some(s) = storage.as_ref() {
+        let _ = s.ack_waker.set(std::thread::current());
+    }
 
     let mut dispatcher = ShardDispatcher::new(
         config,
@@ -806,6 +880,12 @@ pub(crate) fn run_shard(
         // 1a. Drain verify-pool results so an EVENT verified on the
         //     previous loop turn fans out before we read more frames.
         dispatcher.drain_verify_results();
+        // 1b. Drain storage acks so a publisher whose write committed
+        //     (or got dropped) on the previous loop turn gets its
+        //     OK / OK=false before we read more frames. This is what
+        //     makes OK truthful: storage submits asynchronously and
+        //     reports back here, not at verify time.
+        dispatcher.drain_storage_acks();
 
         // 2. Accept any new clients on our SPSC ring.
         while let Some(client) = accept_rx.pop() {

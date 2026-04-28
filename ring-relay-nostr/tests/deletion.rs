@@ -184,8 +184,12 @@ async fn kind5_removes_referenced_event_from_replay() {
     drop(guard);
 }
 
+/// Re-publishing a deleted id now returns OK=false with a "blocked"
+/// reason (truthful OK). Previously the relay returned OK=true and
+/// silently dropped at the storage layer; that lie was closed by the
+/// storage→shard ack ring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn republish_of_deleted_id_is_silently_dropped() {
+async fn republish_of_deleted_id_returns_explicit_reject() {
     let dir = tempfile::tempdir().unwrap();
     let (port, guard) = spawn_relay_with_dir(dir.path().to_path_buf());
 
@@ -201,14 +205,24 @@ async fn republish_of_deleted_id_is_silently_dropped() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Republish the same kind-1 — relay still acks OK=true (the shard
-    // can't see the storage-thread state in v1), but storage drops it
-    // and a fresh REQ won't return it.
-    let resp = publish_and_ack(&mut publisher, &note).await;
-    let _ = resp; // accept either; the assertion is on the REQ side.
+    // Republish the same kind-1. The OK now truthfully reports the
+    // storage-side rejection.
+    send(
+        &mut publisher,
+        &serde_json::to_string(&("EVENT", &note)).unwrap(),
+    )
+    .await;
+    let resp = recv_text(&mut publisher).await;
+    assert_eq!(resp[0], "OK");
+    assert_eq!(resp[1], note_id);
+    assert_eq!(resp[2], false, "republish of deleted id must be rejected");
+    let reason = resp[3].as_str().unwrap_or("");
+    assert!(
+        reason.contains("deleted") || reason.contains("blocked"),
+        "expected 'blocked' / 'deleted' in OK reason, got: {reason}"
+    );
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
+    // And the REQ must not return the deleted event either.
     let mut sub = connect(port).await;
     let req = format!(
         r#"["REQ","s1",{{"authors":["{}"],"kinds":[1]}}]"#,
