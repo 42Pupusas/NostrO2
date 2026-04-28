@@ -35,7 +35,9 @@ pub use extension::{
     Extension, ExtensionAction, MessageRef, OutboundDecision, OutboundFrame, OutboundKind,
     Session, extract_ip,
 };
-pub use filter::{matches, matches_match_view, matches_view};
+pub use filter::{
+    expiration_from_note, expiration_from_view, matches, matches_match_view, matches_view,
+};
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
     ClientMessage, ClientMessageView, ParseError, event_from_serialized, parse, parse_view,

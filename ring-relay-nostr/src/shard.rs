@@ -639,6 +639,15 @@ impl ShardDispatcher {
         {
             return Err("invalid: created_at too far in the future");
         }
+        // NIP-40: reject events whose `expiration` tag is already in the
+        // past. Cheap to check here before the verify pool sees the event,
+        // since most expired-on-arrival events come from clock skew or
+        // replays and signatures verify is the expensive step.
+        if let Some(exp) = filter::expiration_from_view(note)
+            && exp <= now
+        {
+            return Err("invalid: event expired");
+        }
         Ok(())
     }
 

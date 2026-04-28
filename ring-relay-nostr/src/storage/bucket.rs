@@ -163,8 +163,9 @@ impl Bucket for EphemeralBucket {
         let rebuilt = self.log.iter_slots()?;
         let mut highest_slot_with_data: i32 = -1;
         for (slot_idx, slot, payload) in rebuilt {
-            let tags = tags_from_payload(&payload);
-            self.index.rebuild_from_disk(slot_idx as u32, &slot, tags);
+            let (tags, expiration) = tags_and_expiration_from_payload(&payload);
+            self.index
+                .rebuild_from_disk(slot_idx as u32, &slot, tags, expiration);
             if slot_idx as i32 > highest_slot_with_data {
                 highest_slot_with_data = slot_idx as i32;
             }
@@ -303,8 +304,9 @@ impl Bucket for ReplaceableBucket {
         let mut rebuilt: Vec<_> = rebuilt.into_iter().collect();
         rebuilt.sort_by_key(|(_, slot, _)| slot.seq.get());
         for (slot_idx, slot, payload) in rebuilt {
-            let tags = tags_from_payload(&payload);
-            self.index.rebuild_from_disk(slot_idx as u32, &slot, tags);
+            let (tags, expiration) = tags_and_expiration_from_payload(&payload);
+            self.index
+                .rebuild_from_disk(slot_idx as u32, &slot, tags, expiration);
             self.by_pubkey.insert(slot.pubkey, slot_idx as u32);
             self.lru.push_back(slot_idx as u32);
             used[slot_idx] = true;
@@ -466,7 +468,9 @@ impl Bucket for ParameterizedBucket {
             };
             let d_tag = Self::extract_d_tag(&note_view);
             let tags = extract_tags(&note_view);
-            self.index.rebuild_from_disk(slot_idx as u32, &slot, tags);
+            let expiration = crate::filter::expiration_from_view(&note_view);
+            self.index
+                .rebuild_from_disk(slot_idx as u32, &slot, tags, expiration);
             let key: ParamKey = (Box::new(slot.pubkey), slot.kind, d_tag);
             self.by_key.insert(key.clone(), slot_idx as u32);
             self.by_slot[slot_idx] = Some(key);
@@ -506,6 +510,7 @@ fn commit_write(
     let payload_len = payload.len();
 
     let tags = extract_tags(event.note);
+    let expiration = crate::filter::expiration_from_view(event.note);
 
     let slot = Slot {
         seq,
@@ -531,15 +536,22 @@ fn commit_write(
         pubkey: slot.pubkey,
         tags,
         payload_len: slot.payload_len,
+        expiration,
     };
     index.insert_slot(slot_idx, meta.clone());
     meta
 }
 
-fn tags_from_payload(payload: &[u8]) -> IndexedTags {
+/// Re-extract the indexable tags + NIP-40 expiration from a slot's
+/// payload. Used during rebuild after reopen so the in-memory `SlotMeta`
+/// matches what a fresh-write path would have set.
+fn tags_and_expiration_from_payload(payload: &[u8]) -> (IndexedTags, Option<i64>) {
     match serde_json::from_slice::<NostrNoteView<'_>>(payload) {
-        Ok(view) => extract_tags(&view),
-        Err(_) => Arc::from(Vec::new().into_boxed_slice()),
+        Ok(view) => (
+            extract_tags(&view),
+            crate::filter::expiration_from_view(&view),
+        ),
+        Err(_) => (Arc::from(Vec::new().into_boxed_slice()), None),
     }
 }
 

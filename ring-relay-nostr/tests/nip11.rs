@@ -54,7 +54,7 @@ fn nip11_serves_info_document() {
         .map(|(_, b)| b)
         .expect("body delimiter");
     let v: serde_json::Value = serde_json::from_str(body).expect("body is JSON");
-    assert_eq!(v["supported_nips"], serde_json::json!([1, 11]));
+    assert_eq!(v["supported_nips"], serde_json::json!([1, 11, 40]));
 
     shutdown.shutdown();
 }

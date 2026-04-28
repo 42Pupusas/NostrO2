@@ -74,7 +74,9 @@ impl RelayInfo {
         Self {
             software: Some("https://github.com/42Pupusas/NostrO2".into()),
             version: Some(env!("CARGO_PKG_VERSION").into()),
-            supported_nips: vec![1, 11],
+            // 1: NIP-01 core. 11: this info doc. 40: expiration tag is
+            // honored on ingest and skipped on REQ replay.
+            supported_nips: vec![1, 11, 40],
             ..Self::default()
         }
     }
@@ -130,7 +132,7 @@ mod tests {
     fn minimal_serialises_compactly() {
         let info = RelayInfo::minimal();
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["supported_nips"], serde_json::json!([1, 11]));
+        assert_eq!(json["supported_nips"], serde_json::json!([1, 11, 40]));
         assert!(json.get("name").is_none());
     }
 

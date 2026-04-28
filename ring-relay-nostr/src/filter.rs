@@ -4,6 +4,48 @@ use nostro2::{NostrNote, NostrNoteView, NostrSubscription};
 
 use crate::verify_pool::MatchView;
 
+/// NIP-40 expiration tag scan.
+///
+/// Returns the unix timestamp from the first well-formed
+/// `["expiration", "<seconds>"]` tag, or `None` if absent or malformed.
+/// The spec allows multiple expiration tags but doesn't define merge
+/// semantics — first-wins matches what most relays in the wild do.
+///
+/// # Examples
+/// ```
+/// # use nostro2::NostrNote;
+/// # use ring_relay_nostr::expiration_from_note;
+/// let mut n = NostrNote::default();
+/// n.tags.add_custom_tag("expiration", "1700000000");
+/// assert_eq!(expiration_from_note(&n), Some(1_700_000_000));
+/// ```
+#[must_use]
+pub fn expiration_from_note(note: &NostrNote) -> Option<i64> {
+    for tag in note.tags.iter() {
+        if tag.first().map(String::as_str) == Some("expiration")
+            && let Some(v) = tag.get(1)
+            && let Ok(ts) = v.parse::<i64>()
+        {
+            return Some(ts);
+        }
+    }
+    None
+}
+
+/// View counterpart to [`expiration_from_note`].
+#[must_use]
+pub fn expiration_from_view(note: &NostrNoteView<'_>) -> Option<i64> {
+    for tag in note.tags.iter() {
+        if tag.first().map(AsRef::as_ref) == Some("expiration")
+            && let Some(v) = tag.get(1).map(AsRef::as_ref)
+            && let Ok(ts) = v.parse::<i64>()
+        {
+            return Some(ts);
+        }
+    }
+    None
+}
+
 /// Check whether `note` matches `filter` per NIP-01 semantics.
 ///
 /// All supplied fields are ANDed. Within a list field (authors, ids, kinds),
@@ -223,6 +265,43 @@ mod tests {
         let note = note_kind(1);
         let filter = NostrSubscription::default();
         assert!(matches(&note, &filter));
+    }
+
+    #[test]
+    fn expiration_present_returns_ts() {
+        let mut note = note_kind(1);
+        note.tags.add_custom_tag("expiration", "1700000000");
+        assert_eq!(expiration_from_note(&note), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn expiration_absent_returns_none() {
+        let note = note_kind(1);
+        assert!(expiration_from_note(&note).is_none());
+    }
+
+    #[test]
+    fn expiration_malformed_value_returns_none() {
+        let mut note = note_kind(1);
+        note.tags.add_custom_tag("expiration", "not-a-number");
+        assert!(expiration_from_note(&note).is_none());
+    }
+
+    #[test]
+    fn expiration_first_wins() {
+        let mut note = note_kind(1);
+        note.tags.add_custom_tag("expiration", "1700000000");
+        note.tags.add_custom_tag("expiration", "1800000000");
+        assert_eq!(expiration_from_note(&note), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn expiration_view_matches_owned() {
+        let mut note = note_kind(1);
+        note.tags.add_custom_tag("expiration", "1700000000");
+        let json = serde_json::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = serde_json::from_str(&json).unwrap();
+        assert_eq!(expiration_from_note(&note), expiration_from_view(&view));
     }
 
     #[test]

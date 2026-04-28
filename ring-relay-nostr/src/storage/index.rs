@@ -40,6 +40,10 @@ pub struct SlotMeta {
     /// single-letter tag NIP-01 blesses. Storage trims anything else.
     pub tags: IndexedTags,
     pub payload_len: u32,
+    /// NIP-40 expiration unix timestamp, if the event carried an
+    /// `["expiration", "<seconds>"]` tag. Reader scans skip slots whose
+    /// expiration is past at scan time. `None` means no expiration.
+    pub expiration: Option<i64>,
 }
 
 impl SlotMeta {
@@ -226,8 +230,16 @@ impl BucketIndex {
 
     /// Rebuild `SlotMeta` from a decoded on-disk `Slot` plus its payload,
     /// for startup index recovery. The payload is re-parsed into a view so
-    /// we can extract tags identically to the fresh-write path.
-    pub fn rebuild_from_disk(&mut self, slot_idx: u32, slot: &Slot, tags: IndexedTags) {
+    /// we can extract tags identically to the fresh-write path. The caller
+    /// also passes the NIP-40 expiration extracted from the same view, so
+    /// reopen-after-crash sees the same expiration filter as fresh writes.
+    pub fn rebuild_from_disk(
+        &mut self,
+        slot_idx: u32,
+        slot: &Slot,
+        tags: IndexedTags,
+        expiration: Option<i64>,
+    ) {
         let meta = SlotMeta {
             seq: slot.seq,
             generation: slot.generation,
@@ -237,6 +249,7 @@ impl BucketIndex {
             pubkey: slot.pubkey,
             tags,
             payload_len: slot.payload_len,
+            expiration,
         };
         self.insert_slot(slot_idx, meta);
     }
@@ -353,6 +366,7 @@ mod tests {
             pubkey: [pk; 32],
             tags: Arc::from(Vec::new().into_boxed_slice()),
             payload_len: 0,
+            expiration: None,
         }
     }
 

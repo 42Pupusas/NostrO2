@@ -434,9 +434,18 @@ fn scan_bucket(
         .filter_map(|i| index.meta[i as usize].as_ref().map(|m| (i, m.clone())))
         .collect();
 
+    // NIP-40: drop expired slots from REQ scans without evicting them on
+    // disk. A future sweeper can purge persistently; for now, hide-on-read
+    // is the correct semantics (the spec says relays MAY keep them but
+    // SHOULD NOT serve them).
+    let now = nostro2::NostrNote::now();
     let mut filtered: Vec<(u32, SlotMeta)> = candidates
         .into_iter()
-        .filter(|(_, m)| m.generation <= g_req && m.matches(filter))
+        .filter(|(_, m)| {
+            m.generation <= g_req
+                && m.expiration.is_none_or(|exp| exp > now)
+                && m.matches(filter)
+        })
         .collect();
     filtered.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
     if let Some(limit) = filter_limit {
