@@ -36,8 +36,8 @@ pub use extension::{
     Session, extract_ip,
 };
 pub use filter::{
-    DeletionRef, deletion_refs_from_view, expiration_from_note, expiration_from_view, matches,
-    matches_match_view, matches_view,
+    DeletionRef, deletion_refs_from_view, expiration_from_note, expiration_from_view,
+    leading_zero_bits, matches, matches_match_view, matches_view,
 };
 pub use info::{Limitation, RelayInfo};
 pub use protocol::{
@@ -115,6 +115,12 @@ pub struct RelayConfig {
     /// the matching header is parsed; behind a trusted proxy this is the
     /// real client. Untrusted deployments should leave this `None`.
     pub trusted_ip_header: Option<String>,
+    /// NIP-13 minimum proof-of-work difficulty. Events whose id has
+    /// fewer leading zero bits than this are rejected with `OK=false
+    /// "pow: insufficient difficulty"`. `0` (the default) disables the
+    /// check. The value is also surfaced in the NIP-11 limitation
+    /// document so well-behaved clients can pre-mine.
+    pub min_pow_difficulty: u32,
 }
 
 impl Default for RelayConfig {
@@ -127,6 +133,7 @@ impl Default for RelayConfig {
         let max_event_tags = Some(500);
         let max_subid_length = Some(64);
 
+        let min_pow_difficulty: u32 = 0;
         let info = RelayInfo::minimal().with_limits(Limitation {
             max_message_length: max_message_length.map(|n| n as u32),
             max_subscriptions: Some(max_subs_per_conn as u32),
@@ -134,6 +141,11 @@ impl Default for RelayConfig {
             max_subid_length: max_subid_length.map(|n| n as u32),
             max_event_tags: max_event_tags.map(|n| n as u32),
             max_content_length: max_content_length.map(|n| n as u32),
+            min_pow_difficulty: if min_pow_difficulty == 0 {
+                None
+            } else {
+                Some(min_pow_difficulty)
+            },
             ..Limitation::default()
         });
 
@@ -155,6 +167,7 @@ impl Default for RelayConfig {
             tls: None,
             extensions: Vec::new(),
             trusted_ip_header: None,
+            min_pow_difficulty,
         }
     }
 }

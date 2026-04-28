@@ -32,6 +32,29 @@ pub fn expiration_from_note(note: &NostrNote) -> Option<i64> {
     None
 }
 
+/// Count the leading zero bits in a 32-byte event id, NIP-13 style.
+///
+/// "Difficulty" in NIP-13 is the number of leading zero bits of the
+/// raw 32-byte event id (which is the SHA-256 of the canonical event
+/// serialization). 8 bits = the first byte is `0x00`, 12 bits = the
+/// first byte is `0x00` and the high nibble of the second is too, etc.
+///
+/// All-zero ids return 256 (theoretical only — sha256 collisions are
+/// not a concern at this layer).
+#[must_use]
+pub fn leading_zero_bits(id: &[u8; 32]) -> u32 {
+    let mut total = 0u32;
+    for &b in id {
+        if b == 0 {
+            total += 8;
+            continue;
+        }
+        total += b.leading_zeros();
+        return total;
+    }
+    total
+}
+
 /// View counterpart to [`expiration_from_note`].
 #[must_use]
 pub fn expiration_from_view(note: &NostrNoteView<'_>) -> Option<i64> {
@@ -350,6 +373,37 @@ mod tests {
         let note = note_kind(1);
         let filter = NostrSubscription::default();
         assert!(matches(&note, &filter));
+    }
+
+    #[test]
+    fn leading_zero_bits_works() {
+        // All zeros: 256 bits.
+        let all_zero = [0u8; 32];
+        assert_eq!(leading_zero_bits(&all_zero), 256);
+        // First byte = 0xFF: 0 bits.
+        let mut id = [0u8; 32];
+        id[0] = 0xFF;
+        assert_eq!(leading_zero_bits(&id), 0);
+        // First byte = 0x80: 0 bits (high bit set).
+        let mut id = [0u8; 32];
+        id[0] = 0x80;
+        assert_eq!(leading_zero_bits(&id), 0);
+        // First byte = 0x01: 7 bits.
+        let mut id = [0u8; 32];
+        id[0] = 0x01;
+        assert_eq!(leading_zero_bits(&id), 7);
+        // First byte 0x00, second 0x80: 8 bits.
+        let mut id = [0u8; 32];
+        id[1] = 0x80;
+        assert_eq!(leading_zero_bits(&id), 8);
+        // First byte 0x00, second 0x0F: 12 bits.
+        let mut id = [0u8; 32];
+        id[1] = 0x0F;
+        assert_eq!(leading_zero_bits(&id), 12);
+        // First two bytes zero, third 0x40: 17 bits.
+        let mut id = [0u8; 32];
+        id[2] = 0x40;
+        assert_eq!(leading_zero_bits(&id), 17);
     }
 
     #[test]

@@ -434,7 +434,7 @@ impl ShardDispatcher {
         // Cheap pre-checks (length, tag count, drift). The expensive
         // schnorr verify is *not* done here; it gets offloaded if we have
         // a verify pool, or done inline as a fallback in the legacy path.
-        if let Err(reason) = self.pre_validate_event(note) {
+        if let Err(reason) = self.pre_validate_event(note, &id_bytes) {
             self.dispatch_text(client_id, protocol::ok(id, false, reason));
             return;
         }
@@ -683,7 +683,11 @@ impl ShardDispatcher {
     /// expensive schnorr verify. Splits out so the verify-pool path can
     /// run this on the I/O thread (rejecting obvious junk early without
     /// burdening the worker), then defer the schnorr math.
-    fn pre_validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
+    fn pre_validate_event(
+        &self,
+        note: &NostrNoteView<'_>,
+        id_bytes: &[u8; 32],
+    ) -> Result<(), &'static str> {
         if let Some(max) = self.config.max_content_length
             && note.content.len() > max
         {
@@ -715,13 +719,26 @@ impl ShardDispatcher {
         {
             return Err("invalid: event expired");
         }
+        // NIP-13: minimum proof-of-work. Counts leading zero bits on
+        // the raw 32-byte event id. Runs before schnorr verify because
+        // the bit count is essentially free and ids that don't meet the
+        // bar can't be cheaply forged anyway (the id is the sha256 of
+        // the canonical serialization). 0 disables.
+        let min_pow = self.config.min_pow_difficulty;
+        if min_pow > 0 && filter::leading_zero_bits(id_bytes) < min_pow {
+            return Err("pow: insufficient difficulty");
+        }
         Ok(())
     }
 
     #[cfg(test)]
     #[allow(dead_code)]
-    fn validate_event(&self, note: &NostrNoteView<'_>) -> Result<(), &'static str> {
-        self.pre_validate_event(note)?;
+    fn validate_event(
+        &self,
+        note: &NostrNoteView<'_>,
+        id_bytes: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        self.pre_validate_event(note, id_bytes)?;
         if !note.verify() {
             return Err("invalid: bad signature or id");
         }
