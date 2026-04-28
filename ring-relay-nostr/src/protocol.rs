@@ -22,6 +22,9 @@ pub enum ClientMessage {
     Close {
         sub_id: String,
     },
+    /// NIP-42 AUTH response: a kind-22242 event signed by the claiming
+    /// pubkey, carrying the challenge the relay issued on connect.
+    Auth(NostrNote),
     /// Well-formed JSON array but unknown verb — worth a NOTICE.
     Unknown(String),
 }
@@ -52,6 +55,13 @@ pub enum ClientMessageView<'a> {
     },
     Close {
         sub_id: &'a str,
+    },
+    /// NIP-42 AUTH. Same shape as `Event` (raw JSON of the kind-22242
+    /// event plus a parsed view) so the AUTH validator can inspect tags
+    /// without re-parsing.
+    Auth {
+        note: NostrNoteView<'a>,
+        raw: &'a RawValue,
     },
     Unknown(&'a str),
 }
@@ -193,6 +203,13 @@ impl<'de, 'cell> Visitor<'de> for ClientMessageVisitor<'cell> {
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessage::Close { sub_id })
             }
+            "AUTH" => {
+                let note: NostrNote = seq
+                    .next_element()?
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("AUTH missing event")))?;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessage::Auth(note))
+            }
             _ => {
                 // Unknown verb: drain remaining elements so the full frame is
                 // consumed, then return Unknown.
@@ -261,6 +278,15 @@ impl<'de: 'a, 'cell, 'a> Visitor<'de> for ClientMessageViewVisitor<'cell, 'a> {
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessageView::Close { sub_id })
             }
+            "AUTH" => {
+                let raw: &'a RawValue = seq
+                    .next_element()?
+                    .ok_or_else(|| self.fail(ParseError::BadPayload("AUTH missing event")))?;
+                let note: NostrNoteView<'a> = serde_json::from_str(raw.get())
+                    .map_err(|_| self.fail(ParseError::BadPayload("AUTH event")))?;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ClientMessageView::Auth { note, raw })
+            }
             other => {
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(ClientMessageView::Unknown(other))
@@ -295,6 +321,14 @@ pub fn closed(sub_id: &str, message: &str) -> String {
 #[must_use]
 pub fn notice(message: &str) -> String {
     serde_json::to_string(&("NOTICE", message)).expect("NOTICE serialization cannot fail")
+}
+
+/// Encode `["AUTH", challenge]` per NIP-42. Sent by the relay as soon
+/// as a client connects; the client must reply with a kind-22242 event
+/// signed by the claimed pubkey, carrying `relay` and `challenge` tags.
+#[must_use]
+pub fn auth_challenge(challenge: &str) -> String {
+    serde_json::to_string(&("AUTH", challenge)).expect("AUTH challenge serialization cannot fail")
 }
 
 /// Serialize a note to its JSON object form for reuse across a fan-out pass.
@@ -416,9 +450,24 @@ mod tests {
 
     #[test]
     fn parse_unknown_verb() {
-        match parse(r#"["AUTH","challenge"]"#).unwrap() {
-            ClientMessage::Unknown(verb) => assert_eq!(verb, "AUTH"),
+        // COUNT (NIP-45) is intentionally not implemented yet, so it
+        // travels as Unknown until a future extension claims it.
+        match parse(r#"["COUNT","sub1",{}]"#).unwrap() {
+            ClientMessage::Unknown(verb) => assert_eq!(verb, "COUNT"),
             _ => panic!("expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_event() {
+        // AUTH carries a kind-22242 event object.
+        let note_json = r#"{"pubkey":"a","created_at":1,"kind":22242,"tags":[["relay","wss://x"],["challenge","abc"]],"content":"","id":"b","sig":"c"}"#;
+        let msg = format!(r#"["AUTH",{note_json}]"#);
+        match parse(&msg).unwrap() {
+            ClientMessage::Auth(note) => {
+                assert_eq!(note.kind, 22242);
+            }
+            other => panic!("expected Auth, got {other:?}"),
         }
     }
 
@@ -516,9 +565,23 @@ mod tests {
             ClientMessageView::Close { sub_id } => assert_eq!(sub_id, "s2"),
             _ => panic!("expected Close"),
         }
-        match parse_view(r#"["AUTH","c"]"#).unwrap() {
-            ClientMessageView::Unknown(v) => assert_eq!(v, "AUTH"),
+        // COUNT travels as Unknown until a future extension claims it.
+        match parse_view(r#"["COUNT","s1",{}]"#).unwrap() {
+            ClientMessageView::Unknown(v) => assert_eq!(v, "COUNT"),
             _ => panic!("expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn parse_view_auth_event() {
+        let note_json = r#"{"pubkey":"a","created_at":1,"kind":22242,"tags":[["relay","wss://x"],["challenge","abc"]],"content":"","id":"b","sig":"c"}"#;
+        let msg = format!(r#"["AUTH",{note_json}]"#);
+        match parse_view(&msg).unwrap() {
+            ClientMessageView::Auth { note, raw } => {
+                assert_eq!(note.kind, 22242);
+                assert_eq!(raw.get(), note_json);
+            }
+            other => panic!("expected Auth, got {other:?}"),
         }
     }
 

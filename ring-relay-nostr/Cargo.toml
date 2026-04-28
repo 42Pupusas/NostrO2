@@ -22,6 +22,11 @@ serde_json = { workspace = true, features = ["raw_value"] }
 quetzalcoatl = { workspace = true }
 # Structured logging. Library only emits events; the binary owns the subscriber.
 tracing = { workspace = true }
+# Cryptographic randomness for NIP-42 AUTH challenges. We only call
+# OsRng — the schnorr-binding makes the challenge merely a freshness
+# nonce, not a cryptographic secret, but cheap-and-correct beats
+# clever-but-deterministic.
+rand = { workspace = true }
 
 [features]
 default = []

@@ -164,8 +164,12 @@ pub enum MessageRef<'a> {
     Close {
         sub_id: &'a str,
     },
-    /// Any verb that's not part of NIP-01. AUTH and COUNT will land here
-    /// until a future extension claims them.
+    /// NIP-42 AUTH response (kind-22242 event). Same shape as `Event`
+    /// for the extension's purposes; the dispatcher's AUTH validator
+    /// runs after extensions get their look.
+    Auth(&'a NostrNoteView<'a>),
+    /// Any verb that's not part of NIP-01 or NIP-42. COUNT lands here
+    /// until a future extension claims it.
     Unknown(&'a str),
 }
 

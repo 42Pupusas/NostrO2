@@ -121,6 +121,54 @@ pub struct RelayConfig {
     /// check. The value is also surfaced in the NIP-11 limitation
     /// document so well-behaved clients can pre-mine.
     pub min_pow_difficulty: u32,
+    /// NIP-42 AUTH configuration. `None` (the default) disables AUTH
+    /// entirely — the relay never sends the `["AUTH", challenge]`
+    /// frame and ignores any inbound `AUTH` verb. `Some` activates
+    /// AUTH per [`AuthConfig`].
+    pub auth: Option<AuthConfig>,
+}
+
+/// NIP-42 AUTH configuration. Activate by setting [`RelayConfig::auth`].
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    /// The `wss://` (or `ws://`) URL the relay identifies as. Inbound
+    /// AUTH events MUST carry a `relay` tag whose value matches this
+    /// URL exactly — otherwise it could be a replay from a different
+    /// relay's challenge. The comparison is case-insensitive on host
+    /// and case-sensitive on path (per RFC 3986).
+    pub relay_url: String,
+    /// Tolerance window around the AUTH event's `created_at`, in
+    /// seconds. NIP-42 mandates rejecting events whose `created_at`
+    /// is more than 10 minutes from `now`. Default: 600.
+    pub max_clock_skew_secs: i64,
+    /// Gate REQ / EVENT on auth status. `None` = advisory mode (relay
+    /// issues the challenge but doesn't refuse unauthed clients).
+    /// See [`AuthGate`].
+    pub gate: Option<AuthGate>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            relay_url: String::new(),
+            max_clock_skew_secs: 600,
+            gate: None,
+        }
+    }
+}
+
+/// What unauthed clients are not allowed to do. NIP-42 mandates the
+/// relay reply with `auth-required:` prefixed messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthGate {
+    /// REQ from unauthed clients → `CLOSED "auth-required: ..."`.
+    /// EVENT still flows.
+    Read,
+    /// EVENT from unauthed clients → `OK=false "auth-required: ..."`.
+    /// REQ still flows.
+    Write,
+    /// Both gated.
+    All,
 }
 
 impl Default for RelayConfig {
@@ -168,6 +216,7 @@ impl Default for RelayConfig {
             extensions: Vec::new(),
             trusted_ip_header: None,
             min_pow_difficulty,
+            auth: None,
         }
     }
 }

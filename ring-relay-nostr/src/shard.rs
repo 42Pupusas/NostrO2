@@ -41,7 +41,42 @@ use crate::protocol::ClientMessageView;
 use crate::storage::handle::{ReqJob, ReqTx, WriteReq, WriteTx};
 use crate::storage::slot::decode_hex32;
 use crate::verify_pool::{VerifyHandle, VerifyJob, VerifyResult, snapshot_match_view};
-use crate::{RelayConfig, filter, protocol};
+use crate::{AuthGate, RelayConfig, filter, protocol};
+
+/// Generate a fresh 16-byte challenge string for NIP-42 AUTH. Hex
+/// encoded so it's safe to include verbatim in a JSON array. We pull
+/// from `OsRng` rather than a deterministic source because cheap and
+/// unpredictable beats clever and deterministic — the schnorr
+/// signature is what actually binds the AUTH; the challenge just
+/// proves the AUTH was minted *for this connection* rather than
+/// replayed.
+fn generate_auth_challenge() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    let mut out = String::with_capacity(32);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &b in &buf {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+/// Compare two relay URLs per NIP-42's "must match" rule.
+///
+/// Loose equality: case-insensitive scheme + host, case-sensitive
+/// path. Trailing slashes are normalized so `wss://r.example` and
+/// `wss://r.example/` compare equal. We don't do full URL
+/// normalization (port elision, etc.) — operators should set
+/// `relay_url` to exactly the URL clients connect to.
+fn relay_url_matches(expected: &str, got: &str) -> bool {
+    fn normalize(s: &str) -> String {
+        let s = s.trim_end_matches('/');
+        s.to_ascii_lowercase()
+    }
+    normalize(expected) == normalize(got)
+}
 
 /// A sub-replication message broadcast from one shard to all others.
 pub(crate) enum SubRepl {
@@ -113,6 +148,12 @@ pub struct ShardDispatcher {
     /// cloned once per shard at construction; the slice is read-only on
     /// the hot path, so an empty list reduces to a single length check.
     extensions: Arc<[Arc<dyn Extension>]>,
+    /// Outbound frames produced inside `on_connect` (e.g. NIP-42 AUTH
+    /// challenge) that must be sent *after* `ServerSender::register`
+    /// runs in the accept loop — otherwise the writer doesn't yet
+    /// know about the fd and silently drops the frame. Drained per
+    /// fd by `take_post_register_frame`.
+    post_register_frames: HashMap<i32, String>,
 }
 
 impl ShardDispatcher {
@@ -138,7 +179,15 @@ impl ShardDispatcher {
             storage,
             verify,
             extensions,
+            post_register_frames: HashMap::new(),
         }
+    }
+
+    /// Pull any frame `on_connect` enqueued for `fd`. Called by
+    /// `run_shard` immediately after `ServerSender::register(fd, ...)`
+    /// so the writer is ready to receive.
+    pub(crate) fn take_post_register_frame(&mut self, fd: i32) -> Option<String> {
+        self.post_register_frames.remove(&fd)
     }
 
     /// Drain any pending replication messages from peers, applying them to
@@ -251,6 +300,19 @@ impl ShardDispatcher {
             .and_then(|h| extension::extract_ip(headers, h));
 
         let mut session = Session::new(client_id, remote_ip);
+        // NIP-42: if AUTH is configured, mint a per-connection challenge
+        // and stash it on the session before extensions run. Extensions
+        // can read the challenge but shouldn't rewrite it.
+        if self.config.auth.is_some() {
+            let challenge = generate_auth_challenge();
+            let frame = protocol::auth_challenge(&challenge);
+            session.auth_challenge = Some(challenge.into_boxed_str());
+            // Defer the actual send: `core.accept` fires `Connected`
+            // before `sender.register(fd, ...)` runs, so writing now
+            // would land on an unregistered fd and silently drop. The
+            // accept loop drains this map right after `register`.
+            self.post_register_frames.insert(client_id, frame);
+        }
         for ext in self.extensions.iter() {
             ext.on_connect(&mut session);
         }
@@ -371,6 +433,7 @@ impl ShardDispatcher {
                     filters: filters.as_slice(),
                 },
                 ClientMessageView::Close { sub_id } => MessageRef::Close { sub_id },
+                ClientMessageView::Auth { note, .. } => MessageRef::Auth(note),
                 ClientMessageView::Unknown(verb) => MessageRef::Unknown(verb),
             };
             let outcome = if let Some(session) = self.clients.get_mut(&client_id) {
@@ -401,6 +464,10 @@ impl ShardDispatcher {
                 debug!(fd = client_id, %sub_id, "close received");
                 self.on_close_sub(client_id, sub_id);
             }
+            ClientMessageView::Auth { note, .. } => {
+                debug!(fd = client_id, "auth attempt");
+                self.on_auth(client_id, &note);
+            }
             ClientMessageView::Unknown(verb) => {
                 debug!(fd = client_id, %verb, "unsupported verb");
                 self.dispatch_text(
@@ -413,6 +480,23 @@ impl ShardDispatcher {
 
     fn on_event(&mut self, client_id: i32, note: &NostrNoteView<'_>, note_json: &str) {
         let id = note.id.as_deref().unwrap_or("");
+
+        // NIP-42: write-side auth gate. Refuse before any decode work so
+        // unauthed publishers don't even pay for the hex check.
+        if matches!(
+            self.config.auth.as_ref().and_then(|a| a.gate),
+            Some(AuthGate::Write | AuthGate::All)
+        ) && self
+            .clients
+            .get(&client_id)
+            .is_none_or(|s| s.authed_pubkey.is_none())
+        {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: this relay requires AUTH for EVENT"),
+            );
+            return;
+        }
 
         // Decode hex up front. Both the verify-pool and storage paths
         // need raw bytes, and we refuse to carry zero-byte fallbacks
@@ -763,6 +847,25 @@ impl ShardDispatcher {
             return;
         }
 
+        // NIP-42: read-side auth gate. If `auth.gate` requires auth for
+        // reads and this connection hasn't authed yet, refuse the REQ
+        // with `auth-required:` per the spec. The client should reply
+        // by signing the AUTH challenge and re-issuing the REQ.
+        if matches!(
+            self.config.auth.as_ref().and_then(|a| a.gate),
+            Some(AuthGate::Read | AuthGate::All)
+        ) && self
+            .clients
+            .get(&client_id)
+            .is_none_or(|s| s.authed_pubkey.is_none())
+        {
+            self.dispatch_text(
+                client_id,
+                protocol::closed(sub_id, "auth-required: this relay requires AUTH for REQ"),
+            );
+            return;
+        }
+
         let sub_id_arc: Arc<str> = Arc::from(sub_id);
         let filters_arc: Arc<[NostrSubscription]> = Arc::from(filters.into_boxed_slice());
 
@@ -842,6 +945,138 @@ impl ShardDispatcher {
             });
         }
     }
+
+    /// Validate a NIP-42 AUTH event sent by the client.
+    ///
+    /// Per NIP-42 the event must be:
+    ///   - kind 22242
+    ///   - signed (id matches sha256 of canonical form, schnorr valid)
+    ///   - signed by the pubkey it claims (implicit from the verify)
+    ///   - carrying a `relay` tag whose value matches our `relay_url`
+    ///   - carrying a `challenge` tag matching the one we issued
+    ///   - `created_at` within `max_clock_skew_secs` of `now`
+    ///
+    /// On success we stash the hex-decoded pubkey in
+    /// [`Session::authed_pubkey`] and reply `OK=true`. On any failure
+    /// we reply `OK=false "auth-required: <reason>"` (NIP-42 mandates
+    /// the prefix). The connection stays open either way.
+    fn on_auth(&mut self, client_id: i32, note: &NostrNoteView<'_>) {
+        let id = note.id.as_deref().unwrap_or("");
+
+        let Some(auth_cfg) = self.config.auth.as_ref() else {
+            // AUTH wasn't enabled — should not happen because we'd
+            // never have sent a challenge, but be defensive.
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: AUTH not enabled"),
+            );
+            return;
+        };
+
+        if note.kind != 22242 {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: AUTH event must be kind 22242"),
+            );
+            return;
+        }
+
+        // Schnorr verify happens here inline; AUTH is rare so we don't
+        // bother offloading to the verify pool.
+        if !note.verify() {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: bad signature or id"),
+            );
+            return;
+        }
+
+        let now = NostrNote::now();
+        if (note.created_at - now).abs() > auth_cfg.max_clock_skew_secs {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: created_at outside skew window"),
+            );
+            return;
+        }
+
+        // Walk tags exactly once. We need the relay URL and the
+        // challenge — first match wins for each.
+        let mut got_relay: Option<&str> = None;
+        let mut got_challenge: Option<&str> = None;
+        for row in note.tags.iter() {
+            let Some(name) = row.first().map(AsRef::as_ref) else {
+                continue;
+            };
+            let Some(value) = row.get(1).map(AsRef::as_ref) else {
+                continue;
+            };
+            match name {
+                "relay" if got_relay.is_none() => got_relay = Some(value),
+                "challenge" if got_challenge.is_none() => got_challenge = Some(value),
+                _ => {}
+            }
+        }
+
+        let Some(relay_tag) = got_relay else {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: missing relay tag"),
+            );
+            return;
+        };
+        if !relay_url_matches(&auth_cfg.relay_url, relay_tag) {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: relay tag does not match"),
+            );
+            return;
+        }
+
+        let Some(challenge_tag) = got_challenge else {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: missing challenge tag"),
+            );
+            return;
+        };
+        let session_challenge = self
+            .clients
+            .get(&client_id)
+            .and_then(|s| s.auth_challenge.as_deref());
+        let Some(expected) = session_challenge else {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: no challenge issued"),
+            );
+            return;
+        };
+        if challenge_tag != expected {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: challenge mismatch"),
+            );
+            return;
+        }
+
+        let Some(pk_bytes) = decode_hex32(note.pubkey.as_ref()) else {
+            self.dispatch_text(
+                client_id,
+                protocol::ok(id, false, "auth-required: malformed pubkey"),
+            );
+            return;
+        };
+
+        if let Some(session) = self.clients.get_mut(&client_id) {
+            session.authed_pubkey = Some(pk_bytes);
+            // The challenge can't be reused — a NIP-42 challenge is
+            // one-shot. Clearing it forces any future re-AUTH to use a
+            // fresh challenge (which we'd issue on the next connect).
+            session.auth_challenge = None;
+        }
+        debug!(fd = client_id, pubkey = %note.pubkey.as_ref(), "auth accepted");
+        self.dispatch_text(client_id, protocol::ok(id, true, ""));
+    }
 }
 
 /// Reader-thread entry point: drive a [`ReaderCore`] and dispatch every
@@ -910,6 +1145,11 @@ pub(crate) fn run_shard(
             let deflate = client.deflate.clone();
             core.accept(client, |event| dispatcher.handle(event));
             sender.register(fd, deflate);
+            // NIP-42 challenge (and any future on_connect outbound) goes
+            // out *after* register so the writer knows the fd.
+            if let Some(frame) = dispatcher.take_post_register_frame(fd) {
+                sender.send_text(fd, frame);
+            }
         }
 
         if core.is_idle() {

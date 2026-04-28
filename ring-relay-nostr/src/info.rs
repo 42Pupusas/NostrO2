@@ -77,8 +77,10 @@ impl RelayInfo {
             // 1: NIP-01 core. 9: deletion via kind-5 (storage mode).
             // 11: this info doc. 13: optional proof-of-work via
             // `min_pow_difficulty`. 40: expiration tag is honored on
-            // ingest and skipped on REQ replay.
-            supported_nips: vec![1, 9, 11, 13, 40],
+            // ingest and skipped on REQ replay. 42: AUTH challenge
+            // is issued on connect when `RelayConfig::auth` is set;
+            // gating is opt-in via `AuthGate`.
+            supported_nips: vec![1, 9, 11, 13, 40, 42],
             ..Self::default()
         }
     }
@@ -134,7 +136,10 @@ mod tests {
     fn minimal_serialises_compactly() {
         let info = RelayInfo::minimal();
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["supported_nips"], serde_json::json!([1, 9, 11, 13, 40]));
+        assert_eq!(
+            json["supported_nips"],
+            serde_json::json!([1, 9, 11, 13, 40, 42])
+        );
         assert!(json.get("name").is_none());
     }
 
