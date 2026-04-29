@@ -1,6 +1,5 @@
-use nostro2::{NostrKeypair, NostrSigner};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nostro2::NostrNote;
+use nostro2::{NostrKeypair, NostrNote, NostrSigner};
 use nostro2_signer::K256Keypair;
 
 // Note: This benchmark previously compared secp256k1 vs k256 performance.

@@ -25,7 +25,10 @@ async fn main() {
     use nostro2::NostrRelayEvent;
     use std::time::{Duration, Instant};
 
-    println!("Connecting to {} relays via tokio-tungstenite...", TEST_RELAYS.len());
+    println!(
+        "Connecting to {} relays via tokio-tungstenite...",
+        TEST_RELAYS.len()
+    );
 
     let pool = nostro2_relay::NostrPool::new(TEST_RELAYS);
 

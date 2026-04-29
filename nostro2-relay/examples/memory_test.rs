@@ -58,6 +58,9 @@ async fn main() {
     println!("\n=== Final Results ===");
     println!("Total events: {}", event_count);
     println!("Total time: {:?}", elapsed);
-    println!("Average rate: {:.1} events/sec", event_count as f64 / elapsed.as_secs_f64());
+    println!(
+        "Average rate: {:.1} events/sec",
+        event_count as f64 / elapsed.as_secs_f64()
+    );
     println!("\nCheck 'top' or 'ps' output above for memory/CPU usage");
 }

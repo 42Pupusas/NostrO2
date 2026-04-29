@@ -9,15 +9,25 @@ readme = "../README.md"
 homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
+[features]
+default = ["k256"]
+# These features only forward to `nostro2` so that `note.verify()` (which is
+# itself feature-gated on a curve) is available from inside the NIP impls.
+# `nostro2-nips` does not link any curve crate of its own — Schnorr signing
+# goes through the `NostrSigner` trait, ECDH through `NostrKeypair`, and
+# verification through `NostrNote::verify`. The HKDF/HMAC/SHA2 primitives
+# used by NIP-04/NIP-44 come from their own RustCrypto crates.
+k256 = ["nostro2/k256"]
+secp256k1 = ["nostro2/secp256k1"]
+
 [dependencies]
 base64.workspace = true
 chacha20.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
-k256.workspace = true
 libaes.workspace = true
-nostro2.workspace = true
+nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
 rand.workspace = true
 rand_core.workspace = true
@@ -30,4 +40,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 bech32.workspace = true
+# Tests need a concrete keypair to exercise the trait-bounded NIP impls;
+# `NipTester` in `lib.rs` wraps `k256::schnorr::SigningKey` for that.
+# Production code in this crate has no curve dependency.
+k256.workspace = true
 

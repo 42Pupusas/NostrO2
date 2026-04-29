@@ -53,7 +53,9 @@ impl NostrPool {
             let url = (*url).to_string();
             let reconnect_config = reconnect_config.clone();
             tokio::task::spawn(async move {
-                if let Ok(relay) = crate::relay::NostrRelay::with_reconnect(&url, reconnect_config).await {
+                if let Ok(relay) =
+                    crate::relay::NostrRelay::with_reconnect(&url, reconnect_config).await
+                {
                     loop {
                         tokio::select! {
                             Ok(msg) = sink.recv() => {

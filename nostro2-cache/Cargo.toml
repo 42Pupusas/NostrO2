@@ -13,3 +13,10 @@ keywords = ["nostr", "cache", "lru", "deduplication"]
 [dependencies]
 lru = "0.12"
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "deduplication"
+harness = false
+

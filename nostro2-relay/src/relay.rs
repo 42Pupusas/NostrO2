@@ -53,8 +53,8 @@ impl ReconnectConfig {
             return Duration::from_secs(0);
         }
 
-        let delay_secs = self.initial_delay.as_secs_f64()
-            * self.backoff_multiplier.powf(f64::from(attempt));
+        let delay_secs =
+            self.initial_delay.as_secs_f64() * self.backoff_multiplier.powf(f64::from(attempt));
         Duration::from_secs_f64(delay_secs.min(self.max_delay.as_secs_f64()))
     }
 }
@@ -217,7 +217,10 @@ impl NostrRelay {
 
             if config.max_retries > 0 && attempt >= config.max_retries {
                 // Max retries reached
-                eprintln!("Max reconnection attempts ({}) reached for {}", config.max_retries, url);
+                eprintln!(
+                    "Max reconnection attempts ({}) reached for {}",
+                    config.max_retries, url
+                );
                 break;
             }
 

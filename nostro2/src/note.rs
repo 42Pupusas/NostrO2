@@ -215,6 +215,7 @@ impl NostrNote {
         Some(id_bytes)
     }
     /// Returns the signature as a byte array
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn sig_bytes(&self) -> Option<[u8; 64]> {
         let mut sig_bytes = [0_u8; 64];
@@ -266,16 +267,17 @@ impl NostrNote {
     /// `sig` in place.
     ///
     /// # Errors
-    /// Returns an error if id serialization or signing fails.
+    /// Returns [`crate::errors::NostrErrors::SerdeError`] if id serialization
+    /// fails, or [`crate::errors::NostrErrors::Signer`] wrapping the
+    /// backend's [`nostro2_traits::SignerError`] if signing fails (hardware
+    /// wallet rejection, NIP-46 transport error, etc.).
     pub fn sign_with<S: nostro2_traits::NostrSigner + ?Sized>(
         &mut self,
         signer: &S,
     ) -> Result<(), crate::errors::NostrErrors> {
         self.pubkey = signer.public_key();
         let id = self.serialize_id_raw()?;
-        let sig = signer
-            .sign_prehash(&id)
-            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let sig = signer.sign_prehash(&id)?;
         self.sig = Some(hex::encode(sig));
         Ok(())
     }
@@ -347,7 +349,10 @@ impl NostrNote {
     }
     /// Verify the note's signature and content
     ///
-    /// Returns true if both the signature and content hash are valid
+    /// Returns true if both the signature and content hash are valid.
+    /// Available only when a curve backend feature (`k256` or `secp256k1`)
+    /// is enabled — parse-only consumers can build `nostro2` without one.
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[must_use]
     #[inline]
     pub fn verify(&self) -> bool {

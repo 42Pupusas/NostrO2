@@ -79,9 +79,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
             content: self
                 .nip_44_encrypt(
                     &Nip46Request {
-                        id: rand::thread_rng()
-                            .gen_range(0..=u8::MAX)
-                            .to_string(),
+                        id: rand::thread_rng().gen_range(0..=u8::MAX).to_string(),
                         method,
                         params,
                     }
@@ -133,7 +131,7 @@ impl<T: nostro2::NostrSigner + crate::Nip44 + ?Sized> Nip46 for T {}
 mod tests {
     use super::*;
     use crate::{tests::NipTester, Nip44};
-    use nostro2::NostrSigner;
+    use nostro2::{NostrKeypair, NostrSigner};
 
     #[test]
     fn nip46_request() {

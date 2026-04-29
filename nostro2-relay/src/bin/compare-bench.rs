@@ -68,9 +68,20 @@ async fn bench_sequential_insertions(num_events: usize) {
     let lru_time = start.elapsed();
     let lru_size = seen_lru.len();
 
-    println!("  HashSet: {} ({} events stored)", format_duration(hash_time.as_nanos()), hash_size);
-    println!("  LRU:     {} ({} events stored)", format_duration(lru_time.as_nanos()), lru_size);
-    println!("  Difference: {:.2}%", ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0);
+    println!(
+        "  HashSet: {} ({} events stored)",
+        format_duration(hash_time.as_nanos()),
+        hash_size
+    );
+    println!(
+        "  LRU:     {} ({} events stored)",
+        format_duration(lru_time.as_nanos()),
+        lru_size
+    );
+    println!(
+        "  Difference: {:.2}%",
+        ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0
+    );
 }
 
 async fn bench_duplicate_detection(num_events: usize) {
@@ -102,11 +113,17 @@ async fn bench_duplicate_detection(num_events: usize) {
 
     println!("  HashSet: {}", format_duration(hash_time.as_nanos()));
     println!("  LRU:     {}", format_duration(lru_time.as_nanos()));
-    println!("  Difference: {:.2}%", ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0);
+    println!(
+        "  Difference: {:.2}%",
+        ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0
+    );
 }
 
 async fn bench_lookups(num_events: usize, num_lookups: usize) {
-    println!("\n=== Lookup Performance ({} events, {} lookups) ===", num_events, num_lookups);
+    println!(
+        "\n=== Lookup Performance ({} events, {} lookups) ===",
+        num_events, num_lookups
+    );
 
     // Pre-populate both
     let seen_hash = SeenNotesHashSet::new();
@@ -134,13 +151,25 @@ async fn bench_lookups(num_events: usize, num_lookups: usize) {
     }
     let lru_time = start.elapsed();
 
-    println!("  HashSet: {} per lookup", format_duration(hash_time.as_nanos() / num_lookups as u128));
-    println!("  LRU:     {} per lookup", format_duration(lru_time.as_nanos() / num_lookups as u128));
-    println!("  Difference: {:.2}%", ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0);
+    println!(
+        "  HashSet: {} per lookup",
+        format_duration(hash_time.as_nanos() / num_lookups as u128)
+    );
+    println!(
+        "  LRU:     {} per lookup",
+        format_duration(lru_time.as_nanos() / num_lookups as u128)
+    );
+    println!(
+        "  Difference: {:.2}%",
+        ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0
+    );
 }
 
 async fn bench_concurrent_insertions(num_tasks: usize, ops_per_task: usize) {
-    println!("\n=== Concurrent Insertions ({} tasks, {} ops each) ===", num_tasks, ops_per_task);
+    println!(
+        "\n=== Concurrent Insertions ({} tasks, {} ops each) ===",
+        num_tasks, ops_per_task
+    );
 
     // Benchmark HashSet
     let seen_hash = SeenNotesHashSet::new();
@@ -186,7 +215,10 @@ async fn bench_concurrent_insertions(num_tasks: usize, ops_per_task: usize) {
 
     println!("  HashSet: {}", format_duration(hash_time.as_nanos()));
     println!("  LRU:     {}", format_duration(lru_time.as_nanos()));
-    println!("  Difference: {:.2}%", ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0);
+    println!(
+        "  Difference: {:.2}%",
+        ((lru_time.as_nanos() as f64 / hash_time.as_nanos() as f64) - 1.0) * 100.0
+    );
 }
 
 async fn bench_memory_growth() {
@@ -215,11 +247,22 @@ async fn bench_memory_growth() {
         let lru_time = start.elapsed();
         let lru_len = seen_lru.len();
 
-        println!("    HashSet: {} (stores {} events)", format_duration(hash_time.as_nanos()), hash_len);
-        println!("    LRU:     {} (stores {} events, capped at 100K)", format_duration(lru_time.as_nanos()), lru_len);
+        println!(
+            "    HashSet: {} (stores {} events)",
+            format_duration(hash_time.as_nanos()),
+            hash_len
+        );
+        println!(
+            "    LRU:     {} (stores {} events, capped at 100K)",
+            format_duration(lru_time.as_nanos()),
+            lru_len
+        );
 
         if size > 100_000 {
-            println!("    Memory saved by LRU: ~{} events not stored", hash_len - lru_len);
+            println!(
+                "    Memory saved by LRU: ~{} events not stored",
+                hash_len - lru_len
+            );
         }
     }
 }

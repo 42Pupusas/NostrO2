@@ -27,7 +27,7 @@ thiserror = "2.0.16"
 # `k256` or `secp256k1` at the top of the dep tree — see the `compile_error!`
 # in `nostro2/src/lib.rs`.
 nostro2 = { path = "nostro2", version = "0.5.0", default-features = false }
-nostro2-nips = { path = "nips", version = "0.2.0" }
+nostro2-nips = { path = "nips", version = "0.2.0", default-features = false }
 nostro2-signer = { path = "nostro2-signer", version = "0.3.0", default-features = false }
 
 # nostro2-cache = { path = "nostro2-cache" }
@@ -67,4 +67,7 @@ tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roo
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
 

@@ -3,7 +3,7 @@
 //! Prereq: `cargo run --release --example relay -p ring-relay-nostr` in another terminal.
 //! Run:    `cargo run -p nostro2-relay --example local_relay`
 
-use nostro2::{NostrRelayEvent, NostrSigner, NostrSubscription};
+use nostro2::{NostrKeypair, NostrRelayEvent, NostrSubscription};
 use nostro2_relay::NostrRelay;
 use nostro2_signer::K256Keypair;
 use std::time::Duration;
@@ -48,7 +48,10 @@ async fn main() {
                 println!("OK id={id} ok={ok} msg=\"{msg}\"");
             }
             Ok(Some(NostrRelayEvent::NewNote(_, sub_id, n))) => {
-                println!("NewNote sub={sub_id} id={:?} content=\"{}\"", n.id, n.content);
+                println!(
+                    "NewNote sub={sub_id} id={:?} content=\"{}\"",
+                    n.id, n.content
+                );
             }
             Ok(Some(NostrRelayEvent::EndOfSubscription(_, sub_id))) => {
                 println!("EOSE sub={sub_id}");

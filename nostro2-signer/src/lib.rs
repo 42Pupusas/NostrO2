@@ -104,10 +104,13 @@
 // Mirror the `nostro2` invariant: pick exactly one curve backend. Enabling
 // both `k256` and `secp256k1` would compile two `Nip04`/`Nip44`/etc.
 // impls, conflict with the upstream `compile_error!`, and have no useful
-// "both" semantic.
+// "both" semantic. Enabling neither leaves no concrete keypair type; we
+// reject that too rather than silently exporting an empty crate.
 #[cfg(all(feature = "k256", feature = "secp256k1"))]
+compile_error!("features `k256` and `secp256k1` are mutually exclusive; pick exactly one");
+#[cfg(not(any(feature = "k256", feature = "secp256k1")))]
 compile_error!(
-    "features `k256` and `secp256k1` are mutually exclusive; pick exactly one"
+    "exactly one of `k256` or `secp256k1` must be enabled; default = [\"k256\"] picks one for you"
 );
 
 pub mod errors;
@@ -116,9 +119,9 @@ pub mod ext;
 pub mod k256_keypair;
 #[cfg(feature = "secp256k1")]
 pub mod secp256k1_keypair;
-pub extern crate nostro2;
-pub extern crate nostro2_nips;
-pub extern crate nostro2_traits;
+pub use nostro2;
+pub use nostro2_nips;
+pub use nostro2_traits;
 
 pub use bip39::Language;
 pub use ext::KeypairExt;

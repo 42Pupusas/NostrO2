@@ -43,7 +43,9 @@ pub type Result<T> = std::result::Result<T, SignerError>;
 ///
 /// Implementors can be: in-memory keypairs, hardware wallets, NIP-46 remote
 /// signers, browser extensions. The trait does not assume the implementor
-/// holds the raw secret bytes (that's [`NostrKeypair`]).
+/// holds the raw secret bytes (that's [`NostrKeypair`]) or that fresh keys
+/// can be conjured locally (that's also [`NostrKeypair`]). It is therefore
+/// dyn-compatible — `Box<dyn NostrSigner>` is a valid type.
 pub trait NostrSigner {
     /// Sign a 32-byte prehash and return the 64-byte Schnorr signature.
     ///
@@ -55,11 +57,6 @@ pub trait NostrSigner {
     /// Return the x-only public key as 32 raw bytes.
     fn pubkey_bytes(&self) -> [u8; 32];
 
-    /// Generate a new random signer.
-    fn generate() -> Self
-    where
-        Self: Sized;
-
     /// Return the public key as a 64-character lowercase hex string.
     #[inline]
     fn public_key(&self) -> String {
@@ -68,13 +65,21 @@ pub trait NostrSigner {
 }
 
 /// Extended interface for signers that hold raw secret material in process,
-/// adding key export and ECDH.
+/// adding key export, ECDH, and local key generation.
 ///
 /// Remote signers (NIP-46), hardware wallets, and any signer that *cannot*
 /// hand out the secret bytes should implement [`NostrSigner`] only.
 pub trait NostrKeypair: NostrSigner {
     /// Return the raw 32-byte secret key.
     fn secret_bytes(&self) -> [u8; 32];
+
+    /// Generate a fresh random keypair.
+    ///
+    /// In-process only — hardware wallets and NIP-46 remote signers cannot
+    /// satisfy this and so do not implement [`NostrKeypair`].
+    fn generate() -> Self
+    where
+        Self: Sized;
 
     /// Derive the ECDH shared point with a peer's x-only public key. Returns
     /// the 32-byte X coordinate of the shared point — the same value NIP-04
@@ -97,8 +102,7 @@ pub trait NostrKeypair: NostrSigner {
     /// valid curve point.
     fn shared_point(&self, peer_pubkey: &str) -> Result<[u8; 32]> {
         let mut buf = [0_u8; 32];
-        hex::decode_to_slice(peer_pubkey, &mut buf)
-            .map_err(|_| SignerError::InvalidPublicKey)?;
+        hex::decode_to_slice(peer_pubkey, &mut buf).map_err(|_| SignerError::InvalidPublicKey)?;
         self.ecdh_x(&buf)
     }
 }

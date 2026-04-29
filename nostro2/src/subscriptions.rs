@@ -35,9 +35,12 @@ pub struct NostrSubscription {
     pub until: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// `#p`/`#e`/etc. tag filters. Backed by `BTreeMap` (not `HashMap`) so
+    /// the JSON serialization order is deterministic across runs — required
+    /// for the `nostro2-cache` filter dedup key and useful for snapshot tests.
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
+    pub tags: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 impl TryFrom<serde_json::Value> for NostrSubscription {
     type Error = serde_json::Error;
@@ -64,19 +67,14 @@ impl NostrSubscription {
         Self::default()
     }
 
-    /// Add a tag filter
+    /// Add a tag filter. Repeated calls with the same tag append to its
+    /// value list (`#p` → multi-author OR semantics, per NIP-01).
     pub fn add_tag(&mut self, tag: &str, value: &str) {
-        if let Some(tags) = &mut self.tags {
-            if let Some(tag_values) = tags.get_mut(tag) {
-                tag_values.push(value.to_string());
-            } else {
-                tags.insert(tag.to_string(), vec![value.to_string()]);
-            }
-        } else {
-            let mut tags = std::collections::HashMap::new();
-            tags.insert(tag.to_string(), vec![value.to_string()]);
-            self.tags = Some(tags);
-        }
+        self.tags
+            .get_or_insert_with(std::collections::BTreeMap::new)
+            .entry(tag.to_string())
+            .or_default()
+            .push(value.to_string());
     }
 
     /// Set authors filter (replaces existing)
@@ -158,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_filter_tags() {
-        let mut tags = std::collections::HashMap::new();
+        let mut tags = std::collections::BTreeMap::new();
         tags.insert("#p".to_string(), vec!["value1".to_string()]);
         tags.insert("#q".to_string(), vec!["value2".to_string()]);
         let filter = NostrSubscription {

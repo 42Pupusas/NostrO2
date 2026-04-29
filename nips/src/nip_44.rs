@@ -301,7 +301,7 @@ impl<T: nostro2::NostrKeypair + ?Sized> Nip44 for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostro2::NostrSigner;
+    use nostro2::{NostrKeypair, NostrSigner};
 
     #[test]
     fn test_encrypt_decrypt_success() {

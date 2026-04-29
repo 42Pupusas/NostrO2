@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -8,9 +8,9 @@ struct SeenNotes(Arc<Mutex<lru::LruCache<Option<String>, ()>>>);
 
 impl SeenNotes {
     fn new(capacity: usize) -> Self {
-        Self(Arc::new(Mutex::new(
-            lru::LruCache::new(std::num::NonZeroUsize::new(capacity).unwrap())
-        )))
+        Self(Arc::new(Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(capacity).unwrap(),
+        ))))
     }
 
     async fn add(&self, id: Option<String>) -> bool {
@@ -120,28 +120,32 @@ fn bench_concurrent_insertions(c: &mut Criterion) {
     group.sample_size(20); // Reduce sample size for slower concurrent tests
 
     for num_tasks in [2, 4, 8, 16].iter() {
-        group.bench_with_input(BenchmarkId::new("tasks", num_tasks), num_tasks, |b, &num_tasks| {
-            b.to_async(&runtime).iter(|| async move {
-                let seen = SeenNotes::new(100_000);
-                let tasks: Vec<_> = (0..num_tasks)
-                    .map(|task_id| {
-                        let seen = seen.clone();
-                        tokio::spawn(async move {
-                            for i in 0..1000 {
-                                let id = generate_event_id(task_id * 1000 + i);
-                                seen.add(id).await;
-                            }
+        group.bench_with_input(
+            BenchmarkId::new("tasks", num_tasks),
+            num_tasks,
+            |b, &num_tasks| {
+                b.to_async(&runtime).iter(|| async move {
+                    let seen = SeenNotes::new(100_000);
+                    let tasks: Vec<_> = (0..num_tasks)
+                        .map(|task_id| {
+                            let seen = seen.clone();
+                            tokio::spawn(async move {
+                                for i in 0..1000 {
+                                    let id = generate_event_id(task_id * 1000 + i);
+                                    seen.add(id).await;
+                                }
+                            })
                         })
-                    })
-                    .collect();
+                        .collect();
 
-                for task in tasks {
-                    task.await.unwrap();
-                }
+                    for task in tasks {
+                        task.await.unwrap();
+                    }
 
-                black_box(seen)
-            });
-        });
+                    black_box(seen)
+                });
+            },
+        );
     }
 
     group.finish();
@@ -162,37 +166,41 @@ fn bench_concurrent_mixed_operations(c: &mut Criterion) {
             seen
         });
 
-        group.bench_with_input(BenchmarkId::new("read_write", num_tasks), num_tasks, |b, &num_tasks| {
-            b.to_async(&runtime).iter(|| {
-                let seen = seen.clone();
-                async move {
-                    let tasks: Vec<_> = (0..num_tasks)
-                        .map(|task_id| {
-                            let seen = seen.clone();
-                            tokio::spawn(async move {
-                                for i in 0..500 {
-                                    if i % 2 == 0 {
-                                        // Write operation
-                                        let id = generate_event_id(task_id * 1000 + i);
-                                        seen.add(id).await;
-                                    } else {
-                                        // Read operation
-                                        let id = generate_event_id(i);
-                                        seen.contains(&id).await;
+        group.bench_with_input(
+            BenchmarkId::new("read_write", num_tasks),
+            num_tasks,
+            |b, &num_tasks| {
+                b.to_async(&runtime).iter(|| {
+                    let seen = seen.clone();
+                    async move {
+                        let tasks: Vec<_> = (0..num_tasks)
+                            .map(|task_id| {
+                                let seen = seen.clone();
+                                tokio::spawn(async move {
+                                    for i in 0..500 {
+                                        if i % 2 == 0 {
+                                            // Write operation
+                                            let id = generate_event_id(task_id * 1000 + i);
+                                            seen.add(id).await;
+                                        } else {
+                                            // Read operation
+                                            let id = generate_event_id(i);
+                                            seen.contains(&id).await;
+                                        }
                                     }
-                                }
+                                })
                             })
-                        })
-                        .collect();
+                            .collect();
 
-                    for task in tasks {
-                        task.await.unwrap();
+                        for task in tasks {
+                            task.await.unwrap();
+                        }
+
+                        black_box(seen)
                     }
-
-                    black_box(seen)
-                }
-            });
-        });
+                });
+            },
+        );
     }
 
     group.finish();
@@ -225,15 +233,19 @@ fn bench_insertion_single_op(c: &mut Criterion) {
             });
         });
 
-        group.bench_with_input(BenchmarkId::new("lookup_at_size", size), size, |b, &size| {
-            b.to_async(&runtime).iter(|| {
-                let seen = seen.clone();
-                async move {
-                    let id = generate_event_id(size / 2);
-                    black_box(seen.contains(&id).await)
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("lookup_at_size", size),
+            size,
+            |b, &size| {
+                b.to_async(&runtime).iter(|| {
+                    let seen = seen.clone();
+                    async move {
+                        let id = generate_event_id(size / 2);
+                        black_box(seen.contains(&id).await)
+                    }
+                });
+            },
+        );
     }
 
     group.finish();
@@ -267,26 +279,30 @@ fn bench_lru_eviction(c: &mut Criterion) {
 
     // Test cache behavior when exceeding capacity
     for capacity in [100, 1000, 5000].iter() {
-        group.bench_with_input(BenchmarkId::new("exceed_capacity", capacity), capacity, |b, &capacity| {
-            b.to_async(&runtime).iter(|| async move {
-                let seen = SeenNotes::new(capacity);
+        group.bench_with_input(
+            BenchmarkId::new("exceed_capacity", capacity),
+            capacity,
+            |b, &capacity| {
+                b.to_async(&runtime).iter(|| async move {
+                    let seen = SeenNotes::new(capacity);
 
-                // Fill cache to capacity
-                for i in 0..capacity {
-                    seen.add(generate_event_id(i)).await;
-                }
+                    // Fill cache to capacity
+                    for i in 0..capacity {
+                        seen.add(generate_event_id(i)).await;
+                    }
 
-                // Add more events (should evict old ones)
-                for i in capacity..(capacity * 2) {
-                    seen.add(generate_event_id(i)).await;
-                }
+                    // Add more events (should evict old ones)
+                    for i in capacity..(capacity * 2) {
+                        seen.add(generate_event_id(i)).await;
+                    }
 
-                // Verify cache size is still at capacity
-                let len = seen.len().await;
-                assert_eq!(len, capacity);
-                black_box(len)
-            });
-        });
+                    // Verify cache size is still at capacity
+                    let len = seen.len().await;
+                    assert_eq!(len, capacity);
+                    black_box(len)
+                });
+            },
+        );
     }
 
     group.finish();
@@ -298,18 +314,22 @@ fn bench_cache_size_impact(c: &mut Criterion) {
 
     // Compare performance with different cache sizes
     for capacity in [1000, 10_000, 50_000, 100_000].iter() {
-        group.bench_with_input(BenchmarkId::new("insertions", capacity), capacity, |b, &capacity| {
-            b.to_async(&runtime).iter(|| async move {
-                let seen = SeenNotes::new(capacity);
+        group.bench_with_input(
+            BenchmarkId::new("insertions", capacity),
+            capacity,
+            |b, &capacity| {
+                b.to_async(&runtime).iter(|| async move {
+                    let seen = SeenNotes::new(capacity);
 
-                // Insert half the capacity
-                for i in 0..(capacity / 2) {
-                    seen.add(generate_event_id(i)).await;
-                }
+                    // Insert half the capacity
+                    for i in 0..(capacity / 2) {
+                        seen.add(generate_event_id(i)).await;
+                    }
 
-                black_box(seen.len().await)
-            });
-        });
+                    black_box(seen.len().await)
+                });
+            },
+        );
     }
 
     group.finish();

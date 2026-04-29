@@ -87,7 +87,9 @@ fn print_usage() {
     println!("  quick-bench-custom                    # Use all defaults");
     println!("  quick-bench-custom 50000              # 50K cache");
     println!("  quick-bench-custom 50000 1000000      # 50K cache, 1M events");
-    println!("  quick-bench-custom 10000 100000 8 0.8 # 10K cache, 100K events, 8 tasks, 80% reads");
+    println!(
+        "  quick-bench-custom 10000 100000 8 0.8 # 10K cache, 100K events, 8 tasks, 80% reads"
+    );
 }
 
 #[tokio::main]
@@ -99,21 +101,13 @@ async fn main() {
         return;
     }
 
-    let cache_size = args.get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10_000);
+    let cache_size = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10_000);
 
-    let num_events = args.get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100_000);
+    let num_events = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100_000);
 
-    let num_tasks = args.get(3)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4);
+    let num_tasks = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4);
 
-    let read_write_ratio: f64 = args.get(4)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.5);
+    let read_write_ratio: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
 
     if cache_size == 0 || num_events == 0 || num_tasks == 0 {
         eprintln!("Error: cache_size, num_events, and num_tasks must be > 0");

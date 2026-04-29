@@ -47,21 +47,23 @@ impl NostrSigner for Secp256k1Keypair {
     fn pubkey_bytes(&self) -> [u8; 32] {
         self.0.x_only_public_key().0.serialize()
     }
-
-    fn generate() -> Self {
-        let mut secret = [0_u8; 32];
-        loop {
-            getrandom::fill(&mut secret).expect("getrandom failed");
-            if let Ok(sk) = secp256k1::SecretKey::from_slice(&secret) {
-                return Self(secp256k1::Keypair::from_secret_key(SECP256K1, &sk));
-            }
-        }
-    }
 }
 
 impl NostrKeypair for Secp256k1Keypair {
     fn secret_bytes(&self) -> [u8; 32] {
         self.0.secret_key().secret_bytes()
+    }
+
+    fn generate() -> Self {
+        // See `K256Keypair::generate` for the bounded-retry rationale.
+        let mut secret = [0_u8; 32];
+        for _ in 0..3 {
+            getrandom::fill(&mut secret).expect("getrandom failed");
+            if let Ok(sk) = secp256k1::SecretKey::from_slice(&secret) {
+                return Self(secp256k1::Keypair::from_secret_key(SECP256K1, &sk));
+            }
+        }
+        panic!("secp256k1::SecretKey::from_slice rejected three CSPRNG draws — RNG is broken");
     }
 
     fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {

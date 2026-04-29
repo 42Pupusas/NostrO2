@@ -17,4 +17,10 @@ pub enum NostrErrors {
     InvalidPublicKey,
     #[error("Invalid signature")]
     InvalidSignature,
+    /// Wraps a backend signer failure surfaced through [`sign_with`]
+    /// ([`crate::NostrNote::sign_with`]). Captures hardware-wallet rejection,
+    /// NIP-46 transport errors, etc. — anything more specific than
+    /// [`Self::InvalidSignature`].
+    #[error("Signer error: {0}")]
+    Signer(#[from] nostro2_traits::SignerError),
 }

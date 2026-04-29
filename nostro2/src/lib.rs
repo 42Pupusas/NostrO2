@@ -54,12 +54,10 @@
 //! ```rust
 //! use nostro2::NostrTags;
 //!
-//! let tags = NostrTags::new()
-//!     .with_pubkey("abc123...", None)
-//!     .with_event("event123...")
-//!     .with_tag("t", "nostr");
-//!
-//! // Tags behave like Vec
+//! let mut tags = NostrTags::new();
+//! tags.add_pubkey_tag("abc123...", None);
+//! tags.add_event_tag("event123...");
+//! tags.add_custom_tag("t", "nostr");
 //! assert_eq!(tags.len(), 3);
 //! ```
 //!
@@ -98,11 +96,12 @@
 // The `k256` and `secp256k1` features pick the verification backend at
 // compile time. Enabling both is a configuration error: every backend
 // supports the same Schnorr scheme, so two impls would collide and there
-// is no sensible "both" semantic.
+// is no sensible "both" semantic. Enabling neither is allowed — the data
+// types and zero-copy view stay available, but `NostrNote::verify` and
+// `NostrNoteView::verify` are gated out (parse-only consumers like
+// `nostro2-relay` don't need to verify locally).
 #[cfg(all(feature = "k256", feature = "secp256k1"))]
-compile_error!(
-    "features `k256` and `secp256k1` are mutually exclusive; pick exactly one"
-);
+compile_error!("features `k256` and `secp256k1` are mutually exclusive; pick exactly one");
 
 pub mod errors;
 mod note;
@@ -113,10 +112,10 @@ pub mod validation;
 pub mod view;
 
 pub use note::{NostrNote, NostrNoteBuilder};
-pub use view::{NostrNoteView, TagsView};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
-pub use tags::{NostrTag, NostrTags};
+pub use tags::NostrTags;
+pub use view::{NostrNoteView, TagsView};
 
 /// Re-export of the signer traits. Defined in `nostro2-traits` so protocol
 /// crates (`nostro2-nips`) and signer impls (`nostro2-signer`) can share the
@@ -255,15 +254,13 @@ mod tests {
 
     #[test]
     fn test_with_timestamp() {
-        let note = NostrNote::text_note("Hello")
-            .with_timestamp(1_234_567_890);
+        let note = NostrNote::text_note("Hello").with_timestamp(1_234_567_890);
         assert_eq!(note.created_at, 1_234_567_890);
     }
 
     #[test]
     fn test_with_content() {
-        let note = NostrNote::with_kind(1)
-            .with_content("New content");
+        let note = NostrNote::with_kind(1).with_content("New content");
         assert_eq!(note.content, "New content");
     }
 

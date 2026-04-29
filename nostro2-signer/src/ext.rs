@@ -52,10 +52,7 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if the mnemonic is invalid or the entropy is not a
     /// valid scalar.
-    fn from_mnemonic(
-        mnemonic: &str,
-        language: bip39::Language,
-    ) -> Result<Self, NostrKeypairError> {
+    fn from_mnemonic(mnemonic: &str, language: bip39::Language) -> Result<Self, NostrKeypairError> {
         let mnemonic = bip39::Mnemonic::parse_in(language, mnemonic)?;
         let entropy = mnemonic.to_entropy();
         let bytes: &[u8; 32] = entropy

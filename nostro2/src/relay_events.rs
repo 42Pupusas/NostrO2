@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::subscriptions::NostrSubscription;
 
-    /// Two consecutive `From` conversions must produce distinct sub_ids.
+    /// Two consecutive `From` conversions must produce distinct `sub_id`s.
     /// The previous implementation read a clock; on wasm (millisecond
     /// precision) and tightly on native (nanosecond precision) it could
     /// hand back duplicates.

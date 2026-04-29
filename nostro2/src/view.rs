@@ -376,6 +376,9 @@ impl NostrNoteView<'_> {
     }
 
     /// Verify the note's content hash and signature. Returns true iff both pass.
+    /// Available only when a curve backend feature (`k256` or `secp256k1`)
+    /// is enabled.
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[must_use]
     pub fn verify(&self) -> bool {
         let Some(stored) = self.id_bytes() else {
@@ -393,7 +396,9 @@ impl NostrNoteView<'_> {
     #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
-        let id = self.id_bytes().ok_or(crate::errors::NostrErrors::MissingId)?;
+        let id = self
+            .id_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingId)?;
         let sig = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
@@ -410,7 +415,9 @@ impl NostrNoteView<'_> {
     #[cfg(feature = "secp256k1")]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey, SECP256K1};
-        let id = self.id_bytes().ok_or(crate::errors::NostrErrors::MissingId)?;
+        let id = self
+            .id_bytes()
+            .ok_or(crate::errors::NostrErrors::MissingId)?;
         let sig_bytes = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
@@ -521,8 +528,7 @@ mod tests {
         // `\"` inside content forces serde_json to unescape into its
         // scratch buffer, so we can't borrow that field. Must still parse,
         // still round-trip, just via Cow::Owned.
-        let json =
-            r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi \"there\"","id":"b","sig":"c"}"#;
+        let json = r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi \"there\"","id":"b","sig":"c"}"#;
         let view: NostrNoteView<'_> = serde_json::from_str(json).unwrap();
         assert_eq!(view.content.as_ref(), "hi \"there\"");
         assert!(matches!(view.content, Cow::Owned(_)));
@@ -534,8 +540,7 @@ mod tests {
         // Produce a real signed note via the owned path, then verify the
         // view recomputes the same id bytes.
         let mut note = crate::NostrNote {
-            pubkey: "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d"
-                .into(),
+            pubkey: "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d".into(),
             created_at: 1_700_000_000,
             kind: 1,
             content: "canonical test".into(),

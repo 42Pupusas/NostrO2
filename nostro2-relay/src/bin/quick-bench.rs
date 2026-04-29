@@ -112,7 +112,10 @@ fn bench_lookups(iterations: usize) {
 }
 
 async fn bench_concurrent_insertions(num_tasks: usize, ops_per_task: usize) {
-    println!("\n=== Concurrent Insertions ({} tasks, {} ops each) ===", num_tasks, ops_per_task);
+    println!(
+        "\n=== Concurrent Insertions ({} tasks, {} ops each) ===",
+        num_tasks, ops_per_task
+    );
 
     for cache_size in [10_000, 100_000] {
         let seen = SeenNotes::new(cache_size);
@@ -148,7 +151,10 @@ async fn bench_concurrent_insertions(num_tasks: usize, ops_per_task: usize) {
 }
 
 async fn bench_mixed_workload(num_tasks: usize, ops_per_task: usize) {
-    println!("\n=== Mixed Workload ({} tasks, {} ops each) ===", num_tasks, ops_per_task);
+    println!(
+        "\n=== Mixed Workload ({} tasks, {} ops each) ===",
+        num_tasks, ops_per_task
+    );
 
     let seen = SeenNotes::new(100_000);
 

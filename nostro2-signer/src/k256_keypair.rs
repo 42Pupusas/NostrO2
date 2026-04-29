@@ -39,30 +39,38 @@ impl Default for K256Keypair {
 
 impl NostrSigner for K256Keypair {
     fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
-        let sig = PrehashSigner::sign_prehash(&self.0, id)
-            .map_err(|_| SignerError::InvalidSignature)?;
+        let sig =
+            PrehashSigner::sign_prehash(&self.0, id).map_err(|_| SignerError::InvalidSignature)?;
         Ok(sig.to_bytes())
     }
 
     fn pubkey_bytes(&self) -> [u8; 32] {
         self.0.verifying_key().to_bytes().into()
     }
+}
+
+impl NostrKeypair for K256Keypair {
+    fn secret_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes().into()
+    }
 
     fn generate() -> Self {
+        // `from_bytes` rejects the scalar zero and values ≥ curve order. Both
+        // are negligible for a CSPRNG (probability ~2^-128 per attempt), but
+        // we cap the loop instead of spinning forever — if `getrandom` ever
+        // returned the same garbage twice in a row (broken kernel RNG), an
+        // unbounded loop would hang. Three tries is far past any realistic
+        // failure; if it really does fail thrice the system is too broken to
+        // be silently retrying anyway.
         let mut secret = [0_u8; 32];
-        loop {
+        for _ in 0..3 {
             getrandom::fill(&mut secret).expect("getrandom failed");
             let field_bytes = k256::FieldBytes::from(secret);
             if let Ok(sk) = k256::schnorr::SigningKey::from_bytes(&field_bytes) {
                 return Self(sk);
             }
         }
-    }
-}
-
-impl NostrKeypair for K256Keypair {
-    fn secret_bytes(&self) -> [u8; 32] {
-        self.0.to_bytes().into()
+        panic!("k256::SigningKey::from_bytes rejected three CSPRNG draws — RNG is broken");
     }
 
     fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {
@@ -73,12 +81,15 @@ impl NostrKeypair for K256Keypair {
         compressed[1..].copy_from_slice(peer_xonly);
         let public_key = k256::PublicKey::from_sec1_bytes(&compressed)
             .map_err(|_| SignerError::InvalidPublicKey)?;
+        // Round-trip through SecretKey because `schnorr::SigningKey` doesn't
+        // expose its inner `NonZeroScalar` publicly. The bytes came from our
+        // own valid signing key, so this parse cannot fail in practice — if
+        // it does, the k256 API has changed under us, not anything the user
+        // can fix at runtime.
         let secret_key = k256::SecretKey::from_slice(&self.0.to_bytes())
-            .map_err(|_| SignerError::InvalidSignature)?;
-        let shared = k256::ecdh::diffie_hellman(
-            secret_key.to_nonzero_scalar(),
-            public_key.as_affine(),
-        );
+            .unwrap_or_else(|_| unreachable!("our own signing key bytes are always valid"));
+        let shared =
+            k256::ecdh::diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
         let mut point = [0_u8; 32];
         point.copy_from_slice(shared.raw_secret_bytes().as_slice());
         Ok(point)

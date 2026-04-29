@@ -227,7 +227,7 @@ mod tests {
     use crate::tests::NipTester;
 
     use super::*;
-    use nostro2::{NostrNote, NostrSigner};
+    use nostro2::{NostrKeypair, NostrNote, NostrSigner};
 
     fn make_test_note(content: &str) -> NostrNote {
         NostrNote {

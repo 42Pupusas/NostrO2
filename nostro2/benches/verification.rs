@@ -1,6 +1,5 @@
-use nostro2::NostrSigner;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nostro2::NostrNote;
+use nostro2::{NostrKeypair, NostrNote};
 use nostro2_signer::K256Keypair;
 
 /// Create a properly signed note for benchmarking verification

@@ -62,14 +62,11 @@ pub trait Nip17: crate::nip_59::Nip59 {
             kind: 10050,
             ..nostro2::NostrNote::new()
         };
-        let mut relay_tags = vec![];
-        relay_tags.push("relay".to_string());
-        for relay in relays {
-            relay_tags.push((*relay).to_string());
-        }
-        note.tags.0.push(relay_tags);
-        note.sign_with(self)
-            .map_err(Nip17Error::SigningError)?;
+        let mut relay_row = Vec::with_capacity(relays.len() + 1);
+        relay_row.push("relay".to_string());
+        relay_row.extend(relays.iter().map(|r| (*r).to_string()));
+        note.tags.add_row(relay_row);
+        note.sign_with(self).map_err(Nip17Error::SigningError)?;
         Ok(note)
     }
 }
@@ -78,7 +75,7 @@ impl<T: crate::nip_59::Nip59 + ?Sized> Nip17 for T {}
 
 #[cfg(test)]
 mod tests {
-    use nostro2::NostrSigner;
+    use nostro2::{NostrKeypair, NostrSigner};
 
     use super::*;
     use crate::{nip_59::Nip59, tests::NipTester};

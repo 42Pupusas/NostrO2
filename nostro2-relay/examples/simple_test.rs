@@ -74,6 +74,9 @@ async fn main() {
     println!("\n=== RESULTS ===");
     println!("Total events: {}", event_count);
     println!("Total time: {:?}", total_time);
-    println!("Events/sec: {:.1}", event_count as f64 / total_time.as_secs_f64());
+    println!(
+        "Events/sec: {:.1}",
+        event_count as f64 / total_time.as_secs_f64()
+    );
     println!("\nNote: Async pool doesn't track per-relay distribution");
 }

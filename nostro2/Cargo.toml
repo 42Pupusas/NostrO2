@@ -29,4 +29,20 @@ nostro2-traits.workspace = true
 ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
 
+[dev-dependencies]
+criterion.workspace = true
+nostro2-signer = { workspace = true }
+
+[[bench]]
+name = "verification"
+harness = false
+
+[[bench]]
+name = "serialization"
+harness = false
+
+[[bench]]
+name = "subscription"
+harness = false
+
 
