@@ -29,9 +29,7 @@ hmac.workspace = true
 libaes.workspace = true
 nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
-rand.workspace = true
-rand_core.workspace = true
-getrandom = "0.4"
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

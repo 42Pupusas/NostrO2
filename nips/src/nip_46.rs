@@ -1,4 +1,13 @@
-use rand::Rng;
+/// Pull a single byte of OS entropy and render it as a NIP-46 request id.
+///
+/// Replaces a dependency on `rand` 0.8 (which dragged in `rand_core` 0.6 and
+/// `rand_chacha`) for what was effectively `OsRng → u8`. `getrandom` is
+/// already in our tree for IV/nonce generation, so this is a free trim.
+fn fresh_request_id() -> String {
+    let mut b = [0_u8; 1];
+    getrandom::fill(&mut b).expect("getrandom failed");
+    b[0].to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,7 +88,7 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
             content: self
                 .nip_44_encrypt(
                     &Nip46Request {
-                        id: rand::thread_rng().gen_range(0..=u8::MAX).to_string(),
+                        id: fresh_request_id(),
                         method,
                         params,
                     }

@@ -65,10 +65,18 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// Try every supported encoding (nsec → hex → mnemonic in English then
     /// Spanish) and return the first that parses.
     ///
+    /// The mnemonic fallback only tries English and Spanish — those are the
+    /// languages this crate compiles support for (see `bip39` features in
+    /// `Cargo.toml`). For other BIP-39 languages, call
+    /// [`from_mnemonic`](Self::from_mnemonic) directly with the right
+    /// [`bip39::Language`].
+    ///
     /// # Errors
     /// Returns `InvalidKey` if no encoding matches.
     fn from_any(value: &str) -> Result<Self, NostrKeypairError> {
-        if value.starts_with("nsec") {
+        // `nsec1` is the bech32 HRP + separator. `starts_with("nsec")` would
+        // also match strings like "nsection" and waste a decode attempt.
+        if value.starts_with("nsec1") {
             if let Ok(kp) = Self::from_nsec(value) {
                 return Ok(kp);
             }

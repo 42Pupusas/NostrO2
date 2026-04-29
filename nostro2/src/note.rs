@@ -227,7 +227,10 @@ impl NostrNote {
         Some(sig_bytes)
     }
     /// Decode the stored `pubkey` hex into raw bytes. Returns `None` if the
-    /// field is not exactly 64 hex characters.
+    /// field is not exactly 64 hex characters. Used by the curve-backend
+    /// verifiers; gated to suppress the dead-code warning when neither curve
+    /// feature is enabled (parse-only consumers like `nostro2-relay`).
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn pubkey_bytes(&self) -> Option<[u8; 32]> {
         let mut out = [0_u8; 32];
@@ -337,6 +340,8 @@ impl NostrNote {
     ///
     /// Rebuilds the note and rehashes the content to verify the id.
     /// Compares raw bytes to avoid hex encoding overhead.
+    /// Only used by `verify`, which is itself curve-feature-gated.
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn verify_content(&self) -> bool {
         let Some(stored_id) = self.id_bytes() else {

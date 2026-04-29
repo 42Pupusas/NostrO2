@@ -2,39 +2,42 @@
 //!
 //! This module contains all error types that can be returned by keypair and signing operations.
 
-/// Errors that can occur when working with Nostr keypairs and cryptographic operations
+/// Errors that can occur when working with Nostr keypairs and cryptographic operations.
+///
+/// `Display` is `transparent` for every wrapped error type — the user-facing
+/// message is the leaf error's message, not "Nostr error: Signer error: …"
+/// chained. The variant name is still useful for matching; `Debug` still
+/// shows the chain.
 #[derive(Debug, thiserror::Error)]
 pub enum NostrKeypairError {
-    #[error("Invalid key")]
+    #[error("invalid key")]
     InvalidKey,
-    #[error("Bech32 decode error {0}")]
+    #[error(transparent)]
     Bech32DecodeError(#[from] bech32::DecodeError),
-    #[error("Bech32 encode error {0}")]
+    #[error(transparent)]
     Bech32EncodeError(#[from] bech32::EncodeError),
-    #[error("Hex decode error {0}")]
+    #[error(transparent)]
     HexDecodeError(#[from] hex::FromHexError),
-    #[error("Invalid hrp")]
+    #[error("invalid hrp")]
     HrpParseError,
-    #[error("Nostr error {0}")]
+    #[error(transparent)]
     Nip01Error(#[from] nostro2::errors::NostrErrors),
-    #[error("Nip04 error {0}")]
+    #[error(transparent)]
     Nip04Error(#[from] nostro2_nips::Nip04Error),
-    #[error("Nip44 error {0}")]
+    #[error(transparent)]
     Nip44Error(#[from] nostro2_nips::Nip44Error),
-    #[error("Nip59 error {0}")]
+    #[error(transparent)]
     Nip59Error(#[from] nostro2_nips::Nip59Error),
     #[cfg(feature = "k256")]
-    #[error("K256 error {0}")]
+    #[error(transparent)]
     K256Error(#[from] k256::elliptic_curve::Error),
     #[cfg(feature = "secp256k1")]
-    #[error("Secp256k1 error {0}")]
+    #[error(transparent)]
     Secp256k1Error(#[from] secp256k1::Error),
-    #[error("Conversion error {0}")]
-    ConversionError(#[from] std::convert::Infallible),
-    #[error("Shared secret error")]
+    #[error("shared secret error")]
     SharedSecretError,
-    #[error("Not extractable")]
+    #[error("not extractable")]
     NotExtractable,
-    #[error("BIP39 error {0}")]
+    #[error(transparent)]
     Bip39Error(#[from] bip39::Error),
 }

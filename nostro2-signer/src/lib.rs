@@ -45,12 +45,12 @@
 //! ### Signing Notes
 //!
 //! ```ignore
-//! use nostro2::{NostrNote, NoteSignerExt, NostrSigner};
+//! use nostro2::{NostrNote, NostrSigner};
 //! use nostro2_signer::K256Keypair;
 //!
 //! let keypair = K256Keypair::generate();
 //! let mut note = NostrNote::text_note("Hello, Nostr!");
-//! keypair.sign_nostr_note(&mut note)?;
+//! note.sign_with(&keypair)?;
 //! assert!(note.verify());
 //! # Ok::<(), nostro2::errors::NostrErrors>(())
 //! ```
@@ -58,7 +58,7 @@
 //! ### Encryption (NIP-44)
 //!
 //! ```ignore
-//! use nostro2::{NostrNote, NoteSignerExt, NostrSigner};
+//! use nostro2::{NostrNote, NostrSigner};
 //! use nostro2_nips::Nip44;
 //! use nostro2_signer::K256Keypair;
 //!
@@ -68,12 +68,12 @@
 //!
 //! let bob_pk = bob.public_key();
 //! alice.nip44_encrypt_note(&mut dm, &bob_pk)?;
-//! alice.sign_nostr_note(&mut dm)?;
+//! dm.sign_with(&alice)?;
 //!
 //! let alice_pk = alice.public_key();
 //! let decrypted = bob.nip44_decrypt_note(&dm, &alice_pk)?;
 //! assert_eq!(decrypted, "Secret message");
-//! # Ok::<(), nostro2_nips::Nip44Error>(())
+//! # Ok::<(), nostro2_signer::errors::NostrKeypairError>(())
 //! ```
 //!
 //! ### Gift Wrapping (NIP-59)

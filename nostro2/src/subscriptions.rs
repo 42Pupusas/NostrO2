@@ -148,6 +148,112 @@ impl NostrSubscription {
         self.add_tag(tag, value);
         self
     }
+
+    /// Test whether a note matches this filter under NIP-01 semantics.
+    ///
+    /// Filter semantics, lifted from NIP-01:
+    /// - For each scalar list (`ids`, `authors`, `kinds`), the note's value
+    ///   must be in the list (OR within the list).
+    /// - For tag filters (`#e`, `#p`, `#t`, …), the note must carry at least
+    ///   one tag row whose first cell matches the letter after `#` and
+    ///   whose second cell is in the filter list.
+    /// - `since` / `until` are inclusive timestamp bounds.
+    /// - `limit` is a result-set cap, not a per-note predicate, so this
+    ///   method ignores it. Apply `limit` at the consumer level after
+    ///   collecting matches.
+    /// - Fields that are `None` are wildcards (always match).
+    ///
+    /// Returns `true` iff every present field is satisfied. Used by relays
+    /// and caches to filter incoming events; previously every consumer
+    /// reimplemented this, which is why it's now in the library.
+    /// Returns `true` if every filter field is `None` — i.e. the wire-format
+    /// filter is `{}` and matches every event. Useful for callers who want
+    /// to skip iteration entirely (e.g. fan out to every cached event)
+    /// instead of running [`matches`](Self::matches) per note.
+    #[must_use]
+    #[inline]
+    pub const fn is_wildcard(&self) -> bool {
+        self.ids.is_none()
+            && self.authors.is_none()
+            && self.kinds.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
+            && self.tags.is_none()
+    }
+
+    #[must_use]
+    pub fn matches(&self, note: &crate::NostrNote) -> bool {
+        // Wildcard fast path: a `{}` filter accepts every event. Saves the
+        // six `is_some` branches on the hot loop in relays/caches that iterate
+        // over a stream with a default subscription.
+        if self.is_wildcard() {
+            return true;
+        }
+        if let Some(ids) = &self.ids {
+            let Some(id) = note.id.as_deref() else {
+                return false;
+            };
+            if !ids.iter().any(|s| s == id) {
+                return false;
+            }
+        }
+        if let Some(authors) = &self.authors {
+            if !authors.iter().any(|a| a == &note.pubkey) {
+                return false;
+            }
+        }
+        if let Some(kinds) = &self.kinds {
+            if !kinds.contains(&note.kind) {
+                return false;
+            }
+        }
+        // `since` / `until` use `u64` in the wire format but `created_at` is
+        // `i64`. A note with negative `created_at` cannot satisfy a `since`
+        // bound; clamp via try_from.
+        if let Some(since) = self.since {
+            let Ok(ts) = u64::try_from(note.created_at) else {
+                return false;
+            };
+            if ts < since {
+                return false;
+            }
+        }
+        if let Some(until) = self.until {
+            let Ok(ts) = u64::try_from(note.created_at) else {
+                return false;
+            };
+            if ts > until {
+                return false;
+            }
+        }
+        if let Some(tags) = &self.tags {
+            for (key, values) in tags {
+                // Per NIP-01, tag filter keys are `#x` where `x` is the tag
+                // letter. Skip anything that doesn't match that shape — it's
+                // either a typo on the wire or a non-tag field (we use
+                // `#[serde(flatten)]`, so unknown keys land here).
+                let Some(letter) = key.strip_prefix('#') else {
+                    continue;
+                };
+                let any = note.tags.iter().any(|row| {
+                    let Some(name) = row.first() else {
+                        return false;
+                    };
+                    if name != letter {
+                        return false;
+                    }
+                    let Some(value) = row.get(1) else {
+                        return false;
+                    };
+                    values.iter().any(|v| v == value)
+                });
+                if !any {
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +315,86 @@ mod tests {
         let filter = NostrSubscription::new().kind(1).kind(4).kinds(vec![0, 3]);
 
         assert_eq!(filter.kinds, Some(vec![0, 3]));
+    }
+
+    fn note(pubkey: &str, kind: u32, ts: i64) -> crate::NostrNote {
+        crate::NostrNote {
+            id: Some("a".repeat(64)),
+            pubkey: pubkey.to_string(),
+            created_at: ts,
+            kind,
+            content: String::new(),
+            sig: Some("b".repeat(128)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matches_default_filter_accepts_anything() {
+        assert!(NostrSubscription::default().matches(&note("a", 1, 100)));
+    }
+
+    #[test]
+    fn matches_author_kind_and_time() {
+        let f = NostrSubscription::new()
+            .author("alice")
+            .kind(1)
+            .since(50)
+            .until(150);
+        assert!(f.matches(&note("alice", 1, 100)));
+        assert!(!f.matches(&note("bob", 1, 100)), "wrong author");
+        assert!(!f.matches(&note("alice", 2, 100)), "wrong kind");
+        assert!(!f.matches(&note("alice", 1, 49)), "before since");
+        assert!(!f.matches(&note("alice", 1, 151)), "after until");
+        assert!(f.matches(&note("alice", 1, 50)), "since is inclusive");
+        assert!(f.matches(&note("alice", 1, 150)), "until is inclusive");
+    }
+
+    #[test]
+    fn matches_negative_created_at_fails_since() {
+        // i64 → u64 try_from fails for negative values; spec doesn't
+        // contemplate this, but we treat it as "out of bound."
+        let f = NostrSubscription::new().since(0);
+        assert!(!f.matches(&note("a", 1, -1)));
+    }
+
+    #[test]
+    fn matches_ids_requires_present_id() {
+        let mut n = note("a", 1, 100);
+        n.id = Some("dead".repeat(16));
+        let f = NostrSubscription::new().id(n.id.clone().unwrap());
+        assert!(f.matches(&n));
+        n.id = None;
+        assert!(!f.matches(&n), "missing id field cannot match an ids filter");
+    }
+
+    #[test]
+    fn matches_p_tag_filter() {
+        let mut n = note("alice", 1, 100);
+        n.tags.add_pubkey_tag("bob", None);
+        n.tags.add_custom_tag("t", "rust");
+        let f = NostrSubscription::new().tag("#p", "bob");
+        assert!(f.matches(&n));
+        let f = NostrSubscription::new().tag("#p", "carol");
+        assert!(!f.matches(&n));
+        let f = NostrSubscription::new().tag("#t", "rust");
+        assert!(f.matches(&n));
+    }
+
+    #[test]
+    fn matches_multiple_tag_filters_are_anded() {
+        let mut n = note("a", 1, 100);
+        n.tags.add_pubkey_tag("bob", None);
+        n.tags.add_custom_tag("t", "rust");
+        let mut f = NostrSubscription::new();
+        f.add_tag("#p", "bob");
+        f.add_tag("#t", "rust");
+        assert!(f.matches(&n));
+        f.add_tag("#t", "go"); // OR within #t — bob still has rust, still matches
+        assert!(f.matches(&n));
+        let mut f2 = NostrSubscription::new();
+        f2.add_tag("#p", "bob");
+        f2.add_tag("#t", "go");
+        assert!(!f2.matches(&n), "missing #t=go must fail");
     }
 }

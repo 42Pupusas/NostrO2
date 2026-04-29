@@ -44,8 +44,10 @@ libaes = "0.7"
 # k256 = { version = "0.13.4", features = ["schnorr", "ecdh"] }
 k256 = { path = "../../forfun/elliptic-curves/k256", features = ["schnorr", "ecdh"] }
 secp256k1 = { version = "0.29", features = ["rand", "global-context", "hashes"] }
-rand = "0.8"
-rand_core = "0.6"
+# Single OS-entropy crate shared by every nostro2 crate. `rand`/`rand_core`
+# used to be here too — they were trait/PRNG layers we never used (one stray
+# `gen_range` call in nip_46, since converted to `getrandom::fill`).
+getrandom = "0.4"
 sha2 = "0.10"
 zeroize = "1.8"
 

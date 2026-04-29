@@ -290,4 +290,30 @@ mod tests {
         assert_eq!(note.created_at, 1_234_567_890);
         assert_eq!(note.tags.len(), 5);
     }
+
+    /// Locks the `sign_with` → `verify` round-trip from the *consumer* side.
+    /// The per-backend tests in `nostro2-signer` would still pass if a
+    /// refactor in `note.rs` changed the canonical prehash tuple in a way
+    /// that's invisible to the signer crate but breaks downstream verifiers.
+    /// This test is the canary for that case — it exercises the same path
+    /// every external caller uses (`note.sign_with(&kp)` then `note.verify()`).
+    ///
+    /// Gated to `feature = "k256"` because `nostro2`'s dev-dependency on
+    /// `nostro2-signer` is pinned to the k256 backend (see Cargo.toml).
+    #[cfg(feature = "k256")]
+    #[test]
+    fn sign_with_then_verify_round_trips() {
+        use nostro2_signer::nostro2_traits::NostrKeypair as _;
+        let kp = nostro2_signer::K256Keypair::generate();
+
+        let mut note = NostrNote::text_note("round trip");
+        note.tags.add_custom_tag("t", "nostr");
+        note.tags.add_pubkey_tag(&"a".repeat(64), None);
+
+        note.sign_with(&kp).expect("sign");
+        assert!(note.verify(), "freshly signed note must verify");
+        // Mutating any field after signing must invalidate the note.
+        note.content.push('!');
+        assert!(!note.verify(), "tampered content must not verify");
+    }
 }

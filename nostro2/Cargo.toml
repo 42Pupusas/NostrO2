@@ -31,11 +31,12 @@ js-sys = "0.3"
 
 [dev-dependencies]
 criterion.workspace = true
-nostro2-signer = { workspace = true }
-
-[[bench]]
-name = "verification"
-harness = false
+# Workspace-level `nostro2-signer` has `default-features = false`, so we
+# pin a curve feature here for the dev-dep used by the integration test in
+# `lib.rs::tests::sign_with_then_verify_round_trips`. The mirror under
+# `--no-default-features --features secp256k1` is exercised by
+# `nostro2-signer`'s own tests; we don't double-test it here.
+nostro2-signer = { workspace = true, features = ["k256"] }
 
 [[bench]]
 name = "serialization"

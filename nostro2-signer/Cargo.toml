@@ -26,8 +26,7 @@ secp256k1 = { workspace = true, optional = true }
 nostro2.workspace = true
 nostro2-nips.workspace = true
 nostro2-traits.workspace = true
-rand_core.workspace = true
-getrandom = "0.4"
+getrandom.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
@@ -35,6 +34,6 @@ zeroize.workspace = true
 criterion.workspace = true
 
 [[bench]]
-name = "crypto_comparison"
+name = "crypto"
 harness = false
 

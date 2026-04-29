@@ -10,7 +10,14 @@ pub enum RelayEventTag {
     Req,
     Closed,
 }
-// FROM RELAY TO CLIENT
+// FROM RELAY TO CLIENT.
+//
+// Variants map 1:1 to NIP-01 / NIP-42 frames. WebSocket Ping/Pong frames are
+// transport-layer (RFC 6455 control frames) and are handled by the WebSocket
+// implementation, not surfaced as a Nostr-protocol event — there is no
+// `Ping`/`Pong`/`Close` variant here on purpose. A previous shape included
+// `Ping` and a `Close(String)`; the latter was a parser landmine because
+// `#[serde(untagged)]` made any bare JSON string deserialize into it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Hash)]
 #[serde(untagged)]
 pub enum NostrRelayEvent {
@@ -19,8 +26,6 @@ pub enum NostrRelayEvent {
     EndOfSubscription(RelayEventTag, String),
     ClosedSubscription(RelayEventTag, String),
     Notice(RelayEventTag, String),
-    Ping,
-    Close(String),
     Auth(RelayEventTag, String),
 }
 impl std::str::FromStr for NostrRelayEvent {
@@ -36,6 +41,8 @@ impl TryFrom<&[u8]> for NostrRelayEvent {
     }
 }
 
+// FROM CLIENT TO RELAY. WebSocket Pong is a transport-layer control frame —
+// not a Nostr message — so there is no `Pong` variant here.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum NostrClientEvent {
@@ -47,7 +54,6 @@ pub enum NostrClientEvent {
     ),
     CloseSubscriptionEvent(RelayEventTag, String),
     AuthEvent(RelayEventTag, crate::note::NostrNote),
-    Pong,
 }
 impl NostrClientEvent {
     #[must_use]
