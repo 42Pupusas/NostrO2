@@ -40,6 +40,8 @@ pub trait Nip17: crate::nip_59::Nip59 {
     /// Can fail while sealing or encrypting.
     fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::NostrNote, Nip17Error>
     where
+        // Forwards to `Nip59::giftwrap`, which spawns a throwaway keypair via
+        // `NostrKeypair::generate` and so requires `Self: Sized`.
         Self: Sized,
     {
         let mut dm_note = nostro2::NostrNote {

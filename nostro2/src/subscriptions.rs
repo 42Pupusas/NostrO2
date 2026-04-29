@@ -36,8 +36,10 @@ pub struct NostrSubscription {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     /// `#p`/`#e`/etc. tag filters. Backed by `BTreeMap` (not `HashMap`) so
-    /// the JSON serialization order is deterministic across runs — required
-    /// for the `nostro2-cache` filter dedup key and useful for snapshot tests.
+    /// the JSON serialization order is deterministic across runs — keeps the
+    /// REQ wire bytes byte-stable for snapshot tests and gives downstream
+    /// consumers a reliable hash key when they want to dedupe identical
+    /// subscriptions.
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<std::collections::BTreeMap<String, Vec<String>>>,

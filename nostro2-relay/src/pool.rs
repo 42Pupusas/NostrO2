@@ -60,7 +60,7 @@ impl NostrPool {
                         tokio::select! {
                             Ok(msg) = sink.recv() => {
                                 if let Err(e) = relay.send(msg) {
-                                    eprintln!("Failed to send message: {e}");
+                                    log::warn!("relay send failed: {e}");
                                 }
                             },
                             Some(msg) = relay.recv() => {
@@ -70,18 +70,18 @@ impl NostrPool {
                                     if let Some(ref id) = note.id {
                                         if seen.insert(id.clone()) {
                                             if let Err(e) = stream_send.send(msg.clone()) {
-                                                eprintln!("Failed to send message: {e}");
+                                                log::warn!("pool stream send failed: {e}");
                                             }
                                         }
                                     }
                                     continue;
                                 }
                                 if let Err(e) = stream_send.send(msg) {
-                                    eprintln!("Failed to send message: {e}");
+                                    log::warn!("pool stream send failed: {e}");
                                 }
                             },
                             else => {
-                                eprintln!("Relay connection closed");
+                                log::info!("relay connection closed");
                                 break;
                             }
 
@@ -96,7 +96,8 @@ impl NostrPool {
         }
     }
 
-    /// Create a new relay pool with a custom deduplication cache size.
+    /// Create a new relay pool with a custom deduplication cache size and
+    /// default reconnection settings.
     ///
     /// # Arguments
     /// * `relays` - Array of relay WebSocket URLs to connect to
@@ -111,55 +112,7 @@ impl NostrPool {
     /// ```
     #[must_use]
     pub fn with_cache_size(relays: &[&str], cache_size: usize) -> Self {
-        let (stream_tx, stream) =
-            tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
-        let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
-        let seen = nostro2_cache::Cache::new(cache_size);
-        for url in relays {
-            let mut sink = sink_rx.resubscribe();
-            let stream_send = stream_tx.clone();
-            let seen = seen.clone();
-            let url = (*url).to_string();
-            tokio::task::spawn(async move {
-                if let Ok(relay) = crate::relay::NostrRelay::new(&url).await {
-                    loop {
-                        tokio::select! {
-                            Ok(msg) = sink.recv() => {
-                                if let Err(e) = relay.send(msg) {
-                                    eprintln!("Failed to send message: {e}");
-                                }
-                            },
-                            Some(msg) = relay.recv() => {
-                                if let nostro2::NostrRelayEvent::NewNote(.., ref note) =
-                                    msg
-                                {
-                                    if let Some(ref id) = note.id {
-                                        if seen.insert(id.clone()) {
-                                            if let Err(e) = stream_send.send(msg.clone()) {
-                                                eprintln!("Failed to send message: {e}");
-                                            }
-                                        }
-                                    }
-                                    continue;
-                                }
-                                if let Err(e) = stream_send.send(msg) {
-                                    eprintln!("Failed to send message: {e}");
-                                }
-                            },
-                            else => {
-                                eprintln!("Relay connection closed");
-                                break;
-                            }
-
-                        }
-                    }
-                }
-            });
-        }
-        Self {
-            stream: std::sync::Arc::new(tokio::sync::RwLock::new(stream)),
-            sink,
-        }
+        Self::with_config(relays, cache_size, &crate::relay::ReconnectConfig::default())
     }
     /// Sends a message to all relays in the pool.
     ///

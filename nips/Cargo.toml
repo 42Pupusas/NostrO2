@@ -10,13 +10,16 @@ homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 [features]
+# `nostro2-nips` calls `NostrNote::verify()` (curve-gated in `nostro2`),
+# so it must forward a curve to `nostro2`. The default mirrors the
+# historical behaviour. Consumers who want `secp256k1` should set
+# `default-features = false` and pick the `secp256k1` feature here.
+# These features only forward to `nostro2` — `nostro2-nips` does not
+# link any curve crate of its own. Schnorr signing goes through the
+# `NostrSigner` trait, ECDH through `NostrKeypair`, and verification
+# through `NostrNote::verify`. The HKDF/HMAC/SHA2 primitives used by
+# NIP-04/NIP-44 come from their own RustCrypto crates.
 default = ["k256"]
-# These features only forward to `nostro2` so that `note.verify()` (which is
-# itself feature-gated on a curve) is available from inside the NIP impls.
-# `nostro2-nips` does not link any curve crate of its own — Schnorr signing
-# goes through the `NostrSigner` trait, ECDH through `NostrKeypair`, and
-# verification through `NostrNote::verify`. The HKDF/HMAC/SHA2 primitives
-# used by NIP-04/NIP-44 come from their own RustCrypto crates.
 k256 = ["nostro2/k256"]
 secp256k1 = ["nostro2/secp256k1"]
 

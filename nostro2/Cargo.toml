@@ -11,7 +11,14 @@ homepage = "https://github.com/42Pupusas/NostrO2.git"
 documentation = "https://docs.rs/nostro2/latest/nostro2/"
 
 [features]
-default = ["k256"]
+# No default backend. Cargo unifies features across the dep graph, so
+# defaulting to a curve here would silently force *every* downstream
+# consumer of `nostro2` to use that curve unless they remembered to set
+# `default-features = false`. Picking up the curve via a sibling crate
+# (e.g. `nostro2-signer`'s default) is fine — that's an explicit choice
+# by whichever crate the consumer reached for. The `compile_error!` in
+# `lib.rs` enforces that you do not pick both.
+default = []
 k256 = ["dep:k256"]
 secp256k1 = ["dep:secp256k1"]
 

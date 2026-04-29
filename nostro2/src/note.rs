@@ -506,9 +506,18 @@ impl NostrNoteBuilder {
 }
 
 #[cfg(target_arch = "wasm32")]
-impl From<NostrNote> for js_sys::wasm_bindgen::JsValue {
-    fn from(note: NostrNote) -> Self {
-        let json = serde_json::to_string(&note).expect("Failed to serialize NostrNote.");
-        js_sys::JSON::parse(&json).expect("Failed to parse NostrNote.")
+impl TryFrom<NostrNote> for js_sys::wasm_bindgen::JsValue {
+    // `js_sys::Error` is the natural error type on the wasm boundary —
+    // it lands as a JS `Error` in the host without needing a separate
+    // wrapper enum. Callers convert via `?` in functions returning
+    // `Result<_, JsValue>`.
+    type Error = js_sys::wasm_bindgen::JsValue;
+    fn try_from(note: NostrNote) -> Result<Self, Self::Error> {
+        let json = serde_json::to_string(&note).map_err(|e| {
+            Self::Error::from(js_sys::Error::new(&format!("serialize NostrNote: {e}")))
+        })?;
+        js_sys::JSON::parse(&json).map_err(|_| {
+            Self::Error::from(js_sys::Error::new("parse NostrNote JSON in JS engine"))
+        })
     }
 }

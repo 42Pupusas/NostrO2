@@ -19,7 +19,6 @@ pub use nip_46::*;
 pub use nip_59::*;
 #[cfg(test)]
 mod tests {
-    use k256::schnorr::signature::hazmat::PrehashSigner;
     use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
 
     /// Test-only keypair that wraps k256 directly. Not part of the public API.
@@ -56,10 +55,18 @@ mod tests {
     }
 
     impl NostrSigner for NipTester {
+        // Mirrors `K256Keypair::sign_prehash`: BIP-340 §3.2 aux randomness must
+        // be freshly drawn per call. The deterministic `PrehashSigner::sign_prehash`
+        // path is *not* what production uses and must not be copied here, even
+        // for tests — a developer reading this file as a template would inherit
+        // the wrong invariant.
         fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
+            let mut aux_rand = [0_u8; 32];
+            getrandom::fill(&mut aux_rand)
+                .map_err(|e| SignerError::Backend(format!("getrandom: {e}")))?;
             let sig = self
                 .0
-                .sign_prehash(id)
+                .sign_raw(id, &aux_rand)
                 .map_err(|_| SignerError::InvalidSignature)?;
             Ok(sig.to_bytes())
         }

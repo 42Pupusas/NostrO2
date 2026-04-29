@@ -5,7 +5,26 @@
 //! group runs both impls back-to-back so the report tables show them
 //! side-by-side.
 //!
-//! Coverage map — keep this honest if you add or remove benches:
+//! ## Curve-backend caveat — read before quoting numbers
+//!
+//! The `nostr` crate is hard-wired to libsecp256k1 (C). `nostro2`'s
+//! curve is a feature flag on this harness:
+//!
+//! - default `--features k256` → pure-Rust on the nostro2 side, C on
+//!   the nostr side. Crypto-heavy groups (`keygen`, `signing`,
+//!   `verification`, `nip44_*`, `full_roundtrip`) are NOT a like-for-like
+//!   library comparison under this default — they include a C-vs-Rust
+//!   curve gap.
+//! - `--no-default-features --features secp256k1` → both sides on
+//!   libsecp256k1. Use this when comparing protocol/data-structure
+//!   overhead, which is the comparison this harness actually exists for.
+//!
+//! Wire-format / matcher / view groups (`event_serialize`,
+//! `event_deserialize`, `view_parse`, `filter_match`,
+//! `tag_construction`, `serialize_by_content_size`) don't touch the
+//! curve and are fair under either feature.
+//!
+//! ## Coverage map — keep this honest if you add or remove benches
 //!
 //! - keygen / signing / verification           (per-op crypto)
 //! - event JSON serialize / deserialize        (wire format)
@@ -179,15 +198,20 @@ fn bench_view_parse(c: &mut Criterion) {
 // ── Filter match (subscription matcher) ───────────────────────────
 //
 // Both libraries expose a per-event predicate. We feed each 1000 notes
-// of mixed pubkey/kind so neither implementation can short-circuit
-// after the first event. nostro2's `matches` is the method shipped in
-// the previous commit; `Filter::match_event` is what nostr-sdk calls
+// of mixed kind so neither implementation can short-circuit after the
+// first event. nostro2's `matches` is the method shipped in the
+// previous commit; `Filter::match_event` is what nostr-sdk calls
 // internally on every cached event.
+//
+// The filter (`kind=1`, time window) doesn't read author or id, so the
+// workload is symmetric: same kind distribution, same content lengths,
+// signed by a single keypair on each side. Don't add author variance
+// here unless the filter starts checking authors — uneven setup work
+// across the two halves makes the report numbers harder to trust.
 
 fn bench_filter_match(c: &mut Criterion) {
-    // Build 1000 nostro2 notes.
     let kp = Nostro2Keypair::generate();
-    let mut nostro2_notes: Vec<nostro2::NostrNote> = (0..1000)
+    let nostro2_notes: Vec<nostro2::NostrNote> = (0..1000)
         .map(|i| {
             let mut n = nostro2::NostrNote::text_note(format!("note {i}"));
             n.kind = if i % 3 == 0 { 1 } else { 7 };
@@ -195,19 +219,11 @@ fn bench_filter_match(c: &mut Criterion) {
             n
         })
         .collect();
-    // Re-stamp pubkey on a third of them so author filter has variance.
-    for (i, n) in nostro2_notes.iter_mut().enumerate() {
-        if i % 7 == 0 {
-            n.pubkey = format!("{:064x}", i);
-            n.id = None; // invalidates id, but matcher doesn't recompute it
-        }
-    }
     let nostro2_filter = nostro2::NostrSubscription::new()
         .kind(1)
         .since(0)
         .until(u64::MAX >> 1);
 
-    // Build the same workload for nostr.
     let nostr_keys = nostr::Keys::generate();
     let nostr_events: Vec<nostr::Event> = (0..1000)
         .map(|i| {

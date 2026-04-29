@@ -17,6 +17,7 @@ rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots"
 
 [dependencies]
 futures-util.workspace = true
+log = "0.4"
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-tungstenite = { version = "0.26", default-features = false }
 

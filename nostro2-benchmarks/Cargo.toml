@@ -6,11 +6,15 @@ publish = false
 description = "Cross-library benchmark harness comparing nostro2 to the upstream `nostr` crate."
 
 [features]
-# Pick the curve the bench harness exercises. `k256` is the default to
-# match `nostro2-signer`'s own default; flip with
-# `--no-default-features --features secp256k1` to compare nostr's libsecp
-# numbers against nostro2 *also* on libsecp, isolating the JSON/protocol
-# differences from the curve-backend gap.
+# Default backend is `k256` (pure Rust). The upstream `nostr` crate uses
+# libsecp256k1 (a C implementation), so out-of-the-box the crypto bench
+# numbers (keygen / signing / verification) are comparing pure-Rust to C
+# — that gap is real and worth knowing, but it is *not* a like-for-like
+# library comparison. Run the harness with
+# `--no-default-features --features secp256k1` to put both sides on the
+# same C backend and isolate the JSON/protocol/data-structure diff.
+# Until that flag is set, treat any "nostro2 vs nostr" crypto delta as
+# "k256 (pure Rust) vs libsecp256k1 (C)" plus protocol overhead.
 default = ["k256"]
 k256 = [
     "nostro2/k256",

@@ -105,6 +105,8 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         peer_pubkey: &str,
     ) -> Result<nostro2::NostrNote, Nip59Error>
     where
+        // Calls `Self::generate()` for the throwaway keypair below;
+        // `NostrKeypair::generate` is `Self: Sized` and propagates here.
         Self: Sized,
     {
         let throwaway_key = Self::generate();
@@ -135,10 +137,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         &self,
         rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
-    ) -> Result<nostro2::NostrNote, Nip59Error>
-    where
-        Self: Sized,
-    {
+    ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
@@ -167,6 +166,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         peer_pubkey: &str,
     ) -> Result<nostro2::NostrNote, Nip59Error>
     where
+        // Same reason as `giftwrap`: `Self::generate()` for the throwaway key.
         Self: Sized,
     {
         let throwaway_key = Self::generate();
@@ -198,10 +198,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
         d_tag: &str,
-    ) -> Result<nostro2::NostrNote, Nip59Error>
-    where
-        Self: Sized,
-    {
+    ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,

@@ -131,17 +131,29 @@ mod tests {
 
     use super::note::NostrNote;
 
-    // Created and verified the signature of a note.
+    // An unsigned note — no `id`, no `sig` — must not verify, and the
+    // failure must hold even if `id` is later filled in but `sig` isn't.
+    // Both gates protect the same invariant: `verify()` only returns true
+    // for fully signed notes.
     #[test]
-    fn test_create_note() {
+    fn unsigned_note_does_not_verify() {
         let content_of_note = "- .... .. ... / .. ... / .- / -- . ... ... .- --. .";
-        let unsigned_note = NostrNote {
+        let mut note = NostrNote {
             pubkey: PUB.into(),
             kind: 300,
             content: content_of_note.into(),
             ..Default::default()
         };
-        assert!(!unsigned_note.verify());
+        assert!(!note.verify(), "unsigned note must not verify");
+
+        // Even with a freshly computed id (but no sig), it still must not verify.
+        note.serialize_id().expect("id serialization");
+        assert!(note.id.is_some());
+        assert!(note.sig.is_none());
+        assert!(
+            !note.verify(),
+            "id-only note (no sig) must still fail verification"
+        );
     }
 
     #[test]

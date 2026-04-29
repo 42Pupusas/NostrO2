@@ -216,39 +216,34 @@ impl NostrRelay {
             }
 
             if config.max_retries > 0 && attempt >= config.max_retries {
-                // Max retries reached
-                eprintln!(
-                    "Max reconnection attempts ({}) reached for {}",
-                    config.max_retries, url
+                log::warn!(
+                    "max reconnection attempts ({}) reached for {url}",
+                    config.max_retries
                 );
                 break;
             }
 
-            // Calculate backoff delay
             let delay = config.next_delay(attempt);
             if delay.as_secs() == 0 {
                 break;
             }
 
-            eprintln!(
-                "Connection to {} lost, reconnecting in {:?} (attempt {})",
-                url,
-                delay,
+            log::info!(
+                "connection to {url} lost, reconnecting in {delay:?} (attempt {})",
                 attempt + 1
             );
             tokio::time::sleep(delay).await;
 
-            // Attempt to reconnect
             match Self::connect(&url).await {
                 Ok(websocket) => {
-                    eprintln!("Successfully reconnected to {url}");
+                    log::info!("reconnected to {url}");
                     let (sink, stream) = futures_util::StreamExt::split(websocket);
                     current_sink = sink;
                     current_stream = stream;
-                    attempt = 0; // Reset attempt counter on successful reconnection
+                    attempt = 0;
                 }
                 Err(e) => {
-                    eprintln!("Failed to reconnect to {url}: {e}");
+                    log::warn!("failed to reconnect to {url}: {e}");
                     attempt += 1;
                 }
             }
