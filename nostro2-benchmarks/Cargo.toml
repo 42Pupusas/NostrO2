@@ -3,44 +3,43 @@ name = "nostro2-benchmarks"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Cross-library benchmark harness comparing nostro2 to the upstream `nostr` crate."
+
+[features]
+# Pick the curve the bench harness exercises. `k256` is the default to
+# match `nostro2-signer`'s own default; flip with
+# `--no-default-features --features secp256k1` to compare nostr's libsecp
+# numbers against nostro2 *also* on libsecp, isolating the JSON/protocol
+# differences from the curve-backend gap.
+default = ["k256"]
+k256 = [
+    "nostro2/k256",
+    "nostro2-signer/k256",
+    "nostro2-nips/k256",
+]
+secp256k1 = [
+    "nostro2/secp256k1",
+    "nostro2-signer/secp256k1",
+    "nostro2-nips/secp256k1",
+]
 
 [dependencies]
-nostro2.workspace = true
-nostro2-signer.workspace = true
-nostro2-cache.workspace = true
+# nothing — this crate ships no library code, only bench targets.
+
+[dev-dependencies]
+# Workspace deps land with default-features = false (so consumers can pick
+# k256 or secp256k1). The features above forward whichever curve was picked
+# at build time; do not pin one here.
+nostro2 = { workspace = true }
+nostro2-signer = { workspace = true }
+nostro2-nips = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["full"] }
-futures-util.workspace = true
-nostr = "0.44"
-nostr-sdk = "0.44"
-nostro2-relay = { path = "../nostro2-relay" }
-ring-relay-client = { path = "../../ring-relay/ring-relay-client" }
-
-[[bench]]
-name = "verification"
-harness = false
-
-[[bench]]
-name = "serialization"
-harness = false
-
-[[bench]]
-name = "subscription"
-harness = false
-
-[[bench]]
-name = "crypto_comparison"
-harness = false
-
-[[bench]]
-name = "deduplication"
-harness = false
+# External yardstick. Pinned to the same major as last time we updated this
+# harness; bump in lockstep with substantive comparison changes so the
+# numbers in commit history stay interpretable. `nip44` is opt-in upstream.
+nostr = { version = "0.44", features = ["nip44"] }
 
 [[bench]]
 name = "nostr_comparison"
 harness = false
-
-[[bin]]
-name = "relay_comparison"
-path = "src/bin/relay_comparison.rs"

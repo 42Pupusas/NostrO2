@@ -4,11 +4,11 @@ resolver="2"
 members = [
     "nips",
     "nostro2", "nostro2-cache",
+    "nostro2-benchmarks",
     "nostro2-relay",
     "nostro2-signer",
     "nostro2-traits",
 ]
-exclude = ["nostro2-benchmarks"]
 
 [workspace.dependencies.nostro2-traits]
 path = "nostro2-traits"
