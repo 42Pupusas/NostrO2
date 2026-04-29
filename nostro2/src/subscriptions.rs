@@ -149,27 +149,10 @@ impl NostrSubscription {
         self
     }
 
-    /// Test whether a note matches this filter under NIP-01 semantics.
-    ///
-    /// Filter semantics, lifted from NIP-01:
-    /// - For each scalar list (`ids`, `authors`, `kinds`), the note's value
-    ///   must be in the list (OR within the list).
-    /// - For tag filters (`#e`, `#p`, `#t`, …), the note must carry at least
-    ///   one tag row whose first cell matches the letter after `#` and
-    ///   whose second cell is in the filter list.
-    /// - `since` / `until` are inclusive timestamp bounds.
-    /// - `limit` is a result-set cap, not a per-note predicate, so this
-    ///   method ignores it. Apply `limit` at the consumer level after
-    ///   collecting matches.
-    /// - Fields that are `None` are wildcards (always match).
-    ///
-    /// Returns `true` iff every present field is satisfied. Used by relays
-    /// and caches to filter incoming events; previously every consumer
-    /// reimplemented this, which is why it's now in the library.
     /// Returns `true` if every filter field is `None` — i.e. the wire-format
-    /// filter is `{}` and matches every event. Useful for callers who want
-    /// to skip iteration entirely (e.g. fan out to every cached event)
-    /// instead of running [`matches`](Self::matches) per note.
+    /// filter is `{}` and matches every event. Lets relay/cache hot loops
+    /// skip per-note iteration entirely when a default subscription is in
+    /// effect.
     #[must_use]
     #[inline]
     pub const fn is_wildcard(&self) -> bool {
@@ -181,11 +164,25 @@ impl NostrSubscription {
             && self.tags.is_none()
     }
 
+    /// Test whether a note matches this filter under NIP-01 semantics.
+    ///
+    /// Filter semantics, lifted from NIP-01:
+    /// - For each scalar list (`ids`, `authors`, `kinds`), the note's value
+    ///   must be in the list (OR within the list).
+    /// - For tag filters (`#e`, `#p`, `#t`, …), the note must carry at least
+    ///   one tag row whose first cell matches the letter after `#` and
+    ///   whose second cell is in the filter list.
+    /// - `since` / `until` are inclusive timestamp bounds.
+    /// - `limit` is a result-set cap, not a per-note predicate; ignored here.
+    /// - Fields that are `None` are wildcards (always match).
+    ///
+    /// One-shot use: linear scans over each value list / each tag row. For
+    /// repeated matching against the same filter (relay fan-out, cache
+    /// scans), call [`Self::compile`] once and match through the resulting
+    /// [`CompiledSubscription`] — that swaps every `iter().any(==)` for a
+    /// `HashSet::contains` and pre-strips invalid tag keys.
     #[must_use]
     pub fn matches(&self, note: &crate::NostrNote) -> bool {
-        // Wildcard fast path: a `{}` filter accepts every event. Saves the
-        // six `is_some` branches on the hot loop in relays/caches that iterate
-        // over a stream with a default subscription.
         if self.is_wildcard() {
             return true;
         }
@@ -228,10 +225,9 @@ impl NostrSubscription {
         }
         if let Some(tags) = &self.tags {
             for (key, values) in tags {
-                // Per NIP-01, tag filter keys are `#x` where `x` is the tag
-                // letter. Skip anything that doesn't match that shape — it's
-                // either a typo on the wire or a non-tag field (we use
-                // `#[serde(flatten)]`, so unknown keys land here).
+                // Per NIP-01, tag filter keys are `#x`. Anything else is
+                // either a typo on the wire or a non-tag field landed here
+                // by `#[serde(flatten)]`; skip silently.
                 let Some(letter) = key.strip_prefix('#') else {
                     continue;
                 };
@@ -250,6 +246,124 @@ impl NostrSubscription {
                 if !any {
                     return false;
                 }
+            }
+        }
+        true
+    }
+
+    /// Pre-compute a fast matcher for this subscription. Builds `HashSet`s
+    /// over the value lists and pre-strips the `#` prefix from tag keys
+    /// (dropping any key that doesn't have it) so the per-note hot path is
+    /// allocation-free hash lookups.
+    ///
+    /// Cost: one alloc per filter field that is `Some`. Win: O(1) lookups
+    /// instead of O(n) on every note. Worth it any time the same filter is
+    /// matched against more than a handful of notes — i.e. always for relay
+    /// fan-out and cache scans.
+    #[must_use]
+    pub fn compile(&self) -> CompiledSubscription {
+        CompiledSubscription::from(self)
+    }
+}
+
+/// Hash-indexed mirror of [`NostrSubscription`] for repeat matching against
+/// many notes. Build once via [`NostrSubscription::compile`]; reuse for the
+/// life of the subscription.
+#[derive(Debug, Clone, Default)]
+pub struct CompiledSubscription {
+    wildcard: bool,
+    ids: Option<std::collections::HashSet<String>>,
+    authors: Option<std::collections::HashSet<String>>,
+    kinds: Option<std::collections::HashSet<u32>>,
+    since: Option<u64>,
+    until: Option<u64>,
+    /// `(letter, allowed values)` — `letter` is the post-`#` tag name (e.g.
+    /// `"p"`, `"e"`). Filter entries whose key didn't start with `#` were
+    /// dropped at compile time, so this list is the canonical NIP-01 set.
+    tags: Vec<(String, std::collections::HashSet<String>)>,
+}
+
+impl From<&NostrSubscription> for CompiledSubscription {
+    fn from(sub: &NostrSubscription) -> Self {
+        let tags = sub.tags.as_ref().map_or_else(Vec::new, |t| {
+            t.iter()
+                .filter_map(|(k, v)| {
+                    k.strip_prefix('#')
+                        .map(|letter| (letter.to_string(), v.iter().cloned().collect()))
+                })
+                .collect()
+        });
+        Self {
+            wildcard: sub.is_wildcard(),
+            ids: sub.ids.as_ref().map(|v| v.iter().cloned().collect()),
+            authors: sub.authors.as_ref().map(|v| v.iter().cloned().collect()),
+            kinds: sub.kinds.as_ref().map(|v| v.iter().copied().collect()),
+            since: sub.since,
+            until: sub.until,
+            tags,
+        }
+    }
+}
+
+impl CompiledSubscription {
+    /// Test whether a note matches the compiled filter. Same semantics as
+    /// [`NostrSubscription::matches`]; just faster on the hot path.
+    #[must_use]
+    pub fn matches(&self, note: &crate::NostrNote) -> bool {
+        if self.wildcard {
+            return true;
+        }
+        if let Some(ids) = &self.ids {
+            let Some(id) = note.id.as_deref() else {
+                return false;
+            };
+            if !ids.contains(id) {
+                return false;
+            }
+        }
+        if let Some(authors) = &self.authors {
+            if !authors.contains(&note.pubkey) {
+                return false;
+            }
+        }
+        if let Some(kinds) = &self.kinds {
+            if !kinds.contains(&note.kind) {
+                return false;
+            }
+        }
+        if self.since.is_some() || self.until.is_some() {
+            let Ok(ts) = u64::try_from(note.created_at) else {
+                return false;
+            };
+            if let Some(since) = self.since {
+                if ts < since {
+                    return false;
+                }
+            }
+            if let Some(until) = self.until {
+                if ts > until {
+                    return false;
+                }
+            }
+        }
+        // Tag matching: for every compiled `(letter, allowed)` pair, find
+        // at least one note row whose first cell is `letter` and whose
+        // second cell is in `allowed`.
+        for (letter, allowed) in &self.tags {
+            let any = note.tags.iter().any(|row| {
+                let Some(name) = row.first() else {
+                    return false;
+                };
+                if name != letter {
+                    return false;
+                }
+                let Some(value) = row.get(1) else {
+                    return false;
+                };
+                allowed.contains(value.as_str())
+            });
+            if !any {
+                return false;
             }
         }
         true
@@ -396,5 +510,48 @@ mod tests {
         f2.add_tag("#p", "bob");
         f2.add_tag("#t", "go");
         assert!(!f2.matches(&n), "missing #t=go must fail");
+    }
+
+    /// Locks `CompiledSubscription` semantics to `NostrSubscription::matches`:
+    /// every case the linear matcher accepts/rejects, the compiled matcher
+    /// must agree. Run the same fixture set through both.
+    #[test]
+    fn compiled_matcher_agrees_with_linear() {
+        let mut n_alice = note("alice", 1, 100);
+        n_alice.tags.add_pubkey_tag("bob", None);
+        n_alice.tags.add_custom_tag("t", "rust");
+        let mut n_bob = note("bob", 2, 200);
+        n_bob.tags.add_custom_tag("t", "go");
+        let n_neg = note("alice", 1, -1);
+
+        let mut filters = Vec::<NostrSubscription>::new();
+        filters.push(NostrSubscription::default());
+        filters.push(NostrSubscription::new().author("alice"));
+        filters.push(NostrSubscription::new().kind(1).since(50).until(150));
+        filters.push(NostrSubscription::new().since(0));
+        filters.push(NostrSubscription::new().id("a".repeat(64)));
+        filters.push(NostrSubscription::new().tag("#p", "bob"));
+        filters.push(NostrSubscription::new().tag("#p", "carol"));
+        filters.push(NostrSubscription::new().tag("#t", "rust"));
+        let mut f_and = NostrSubscription::new();
+        f_and.add_tag("#p", "bob");
+        f_and.add_tag("#t", "rust");
+        filters.push(f_and);
+        // Bogus key (no `#`) — linear silently skips, compiled drops at build.
+        let mut f_bogus = NostrSubscription::new();
+        f_bogus.add_tag("nothash", "x");
+        filters.push(f_bogus);
+
+        let notes = [&n_alice, &n_bob, &n_neg];
+        for f in &filters {
+            let c = f.compile();
+            for n in notes {
+                assert_eq!(
+                    f.matches(n),
+                    c.matches(n),
+                    "compiled/linear disagree on filter {f:?} note {n:?}",
+                );
+            }
+        }
     }
 }

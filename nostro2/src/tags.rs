@@ -211,22 +211,6 @@ impl NostrTags {
     }
 }
 
-impl From<Vec<Vec<String>>> for NostrTags {
-    fn from(tags: Vec<Vec<String>>) -> Self {
-        let mut out = Self::new();
-        for row in tags {
-            out.push_row(row);
-        }
-        out
-    }
-}
-
-impl From<NostrTags> for Vec<Vec<String>> {
-    fn from(tags: NostrTags) -> Self {
-        tags.iter().map(<[String]>::to_vec).collect()
-    }
-}
-
 // Wire format: `[[String]]`. Custom impls preserve the on-the-wire shape
 // while keeping the flat-cells storage internally. Mirrors the borrowed
 // `view::TagsView` deserializer; the row seed pushes cells straight into
@@ -358,18 +342,6 @@ mod tests {
         let row = tags.row(0).unwrap();
         assert_eq!(&row[0], "r");
         assert_eq!(&row[1], "wss://relay.example.com");
-    }
-
-    #[test]
-    fn from_vec_round_trip() {
-        let raw = vec![
-            vec!["p".to_string(), "abc123".to_string()],
-            vec!["e".to_string(), "event123".to_string()],
-        ];
-        let tags: NostrTags = raw.clone().into();
-        assert_eq!(tags.len(), 2);
-        let back: Vec<Vec<String>> = tags.into();
-        assert_eq!(back, raw);
     }
 
     /// JSON wire format must match the legacy `Vec<Vec<String>>` shape so

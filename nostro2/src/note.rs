@@ -374,7 +374,10 @@ impl NostrNote {
     }
 }
 /// Zero-alloc adapter: feeds `serde_json::to_writer` output directly into SHA-256.
-struct Sha256Writer<'a>(&'a mut sha2::Sha256);
+/// Shared with `view::NostrNoteView::compute_id_bytes` so both id paths agree by
+/// construction; a divergence here would silently fork the network.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct Sha256Writer<'a>(pub(crate) &'a mut sha2::Sha256);
 
 impl std::io::Write for Sha256Writer<'_> {
     #[inline]
@@ -407,14 +410,10 @@ impl TryFrom<&serde_json::Value> for NostrNote {
         Ok(serde_json::from_value(value.clone())?)
     }
 }
-impl From<NostrNote> for serde_json::Value {
-    /// Infallible — `NostrNote` contains no floats and no non-string-keyed
-    /// maps, the only two cases where `serde_json::to_value` can fail. Any
-    /// failure here would mean the type definition has changed; the
-    /// `nostr_note_to_value_is_infallible` test guards the invariant.
-    fn from(note: NostrNote) -> Self {
-        serde_json::to_value(note)
-            .unwrap_or_else(|_| unreachable!("NostrNote has no float or non-string-keyed fields"))
+impl TryFrom<NostrNote> for serde_json::Value {
+    type Error = crate::errors::NostrErrors;
+    fn try_from(note: NostrNote) -> Result<Self, Self::Error> {
+        Ok(serde_json::to_value(note)?)
     }
 }
 /// Builder for constructing `NostrNote` instances

@@ -113,7 +113,7 @@ pub mod view;
 
 pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
-pub use subscriptions::NostrSubscription;
+pub use subscriptions::{CompiledSubscription, NostrSubscription};
 pub use tags::NostrTags;
 pub use view::{NostrNoteView, TagsView};
 
@@ -173,12 +173,11 @@ mod tests {
         assert_eq!(e_tag, "adsfasdfadsfadsfasdfadfs");
     }
 
-    /// Locks the invariant behind `impl From<NostrNote> for serde_json::Value`:
-    /// every field of `NostrNote` must serialize without error so the
-    /// conversion can stay infallible. Adding a float or non-string-keyed map
-    /// to `NostrNote` would break this.
+    /// Round-trips a `NostrNote` through the fallible `serde_json::Value`
+    /// conversion so the entire field surface (escapes, unicode, extreme
+    /// numerics, tag rows) actually exercises both directions.
     #[test]
-    fn nostr_note_to_value_is_infallible() {
+    fn nostr_note_value_round_trip() {
         let mut note = NostrNote {
             pubkey: PUB.into(),
             kind: u32::MAX,
@@ -192,10 +191,7 @@ mod tests {
         note.tags.add_event_tag(PUB);
         note.tags.add_custom_tag("x", "y");
 
-        // The conversion is `From`, so a panic here is the only failure
-        // mode — `serde_json::to_value` would have to error first, which
-        // it can't for this type.
-        let v: serde_json::Value = note.clone().into();
+        let v: serde_json::Value = note.clone().try_into().expect("to_value");
         let round_trip: NostrNote = serde_json::from_value(v).expect("round trip");
         assert_eq!(note, round_trip);
     }

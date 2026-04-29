@@ -31,16 +31,19 @@ impl Deref for Secp256k1Keypair {
     }
 }
 
-impl Default for Secp256k1Keypair {
-    fn default() -> Self {
-        Self::generate()
-    }
-}
-
 impl NostrSigner for Secp256k1Keypair {
+    /// Signs with fresh OS-randomness as BIP-340 §3.2 aux input. The aux
+    /// rand is *not* the nonce — the nonce is still a deterministic
+    /// derivation of `(secret, aux ⊕ tagged_hash(secret), pubkey, msg)` —
+    /// but mixing in fresh entropy each time defends against fault and
+    /// side-channel attacks that recover the secret from glitched/peeked
+    /// signatures. Mirrors the `k256` backend's `sign_raw(_, aux_rand)`.
     fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
+        let mut aux_rand = [0_u8; 32];
+        getrandom::fill(&mut aux_rand)
+            .map_err(|e| SignerError::Backend(format!("getrandom: {e}")))?;
         let msg = Message::from_digest(*id);
-        let sig = SECP256K1.sign_schnorr_no_aux_rand(&msg, &self.0);
+        let sig = SECP256K1.sign_schnorr_with_aux_rand(&msg, &self.0, &aux_rand);
         Ok(*sig.as_ref())
     }
 
@@ -109,6 +112,29 @@ mod tests {
         let mut note = nostro2::NostrNote::text_note("Hello from secp256k1!");
         note.sign_with(&kp).unwrap();
         assert!(note.verify());
+    }
+
+    /// BIP-340 §3.2: signing must mix fresh aux randomness on every call
+    /// so glitched/peeked signatures can't be combined to recover the key.
+    /// Two signatures over the same prehash with the same key MUST differ;
+    /// both still verify. The `k256` backend has the same test.
+    #[test]
+    fn signs_with_fresh_aux_rand() {
+        let kp = Secp256k1Keypair::generate();
+        let prehash = [0x42_u8; 32];
+        let a = kp.sign_prehash(&prehash).unwrap();
+        let b = kp.sign_prehash(&prehash).unwrap();
+        assert_ne!(a, b, "secp256k1 sign_prehash must inject fresh aux rand");
+
+        // Both must still verify against the same prehash + pubkey.
+        use secp256k1::{schnorr::Signature, XOnlyPublicKey};
+        let pk_bytes = kp.pubkey_bytes();
+        let xonly = XOnlyPublicKey::from_slice(&pk_bytes).unwrap();
+        let msg = Message::from_digest(prehash);
+        for sig in [a, b] {
+            let s = Signature::from_slice(&sig).unwrap();
+            assert!(SECP256K1.verify_schnorr(&s, &msg, &xonly).is_ok());
+        }
     }
 
     #[test]

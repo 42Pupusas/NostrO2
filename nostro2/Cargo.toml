@@ -26,8 +26,12 @@ thiserror.workspace = true
 nostro2-traits.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-ring = { workspace = true, features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
+# `k256`'s curve init pulls in `crypto-bigint -> getrandom`, which on
+# `wasm32-unknown-unknown` requires the `wasm_js` feature to find a
+# JS-backed entropy source. Cargo features are additive across the graph,
+# so flipping it here flips it for every transitive copy.
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
 criterion.workspace = true

@@ -8,7 +8,6 @@
 
 use std::ops::Deref;
 
-use k256::schnorr::signature::hazmat::PrehashSigner;
 use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
 
 use crate::errors::NostrKeypairError;
@@ -31,16 +30,23 @@ impl Deref for K256Keypair {
     }
 }
 
-impl Default for K256Keypair {
-    fn default() -> Self {
-        Self::generate()
-    }
-}
-
 impl NostrSigner for K256Keypair {
+    /// Signs with fresh OS-randomness as BIP-340 §3.2 aux input. The aux
+    /// rand is *not* the nonce — the nonce is still a deterministic
+    /// derivation of `(secret, aux ⊕ tagged_hash(secret), pubkey, msg)` —
+    /// but mixing in fresh entropy each time defends against fault and
+    /// side-channel attacks that recover the secret from glitched/peeked
+    /// signatures. Mirrors the `secp256k1` backend's
+    /// `sign_schnorr_with_aux_rand` so the two are interchangeable on
+    /// every dimension *except* signature byte-equality (intentional).
     fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
-        let sig =
-            PrehashSigner::sign_prehash(&self.0, id).map_err(|_| SignerError::InvalidSignature)?;
+        let mut aux_rand = [0_u8; 32];
+        getrandom::fill(&mut aux_rand)
+            .map_err(|e| SignerError::Backend(format!("getrandom: {e}")))?;
+        let sig = self
+            .0
+            .sign_raw(id, &aux_rand)
+            .map_err(|_| SignerError::InvalidSignature)?;
         Ok(sig.to_bytes())
     }
 
@@ -125,6 +131,28 @@ mod tests {
         let mut note = nostro2::NostrNote::text_note("Hello from k256!");
         note.sign_with(&kp).unwrap();
         assert!(note.verify());
+    }
+
+    /// BIP-340 §3.2: signing must mix fresh aux randomness on every call
+    /// so glitched/peeked signatures can't be combined to recover the key.
+    /// Two signatures over the same prehash with the same key MUST differ;
+    /// both still verify. The `secp256k1` backend has the same test.
+    #[test]
+    fn signs_with_fresh_aux_rand() {
+        let kp = K256Keypair::generate();
+        let prehash = [0x42_u8; 32];
+        let a = kp.sign_prehash(&prehash).unwrap();
+        let b = kp.sign_prehash(&prehash).unwrap();
+        assert_ne!(a, b, "k256 sign_prehash must inject fresh aux rand");
+
+        // Both must still verify against the same prehash + pubkey.
+        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        let pk_bytes = kp.pubkey_bytes();
+        let vk = VerifyingKey::from_bytes((&pk_bytes).into()).unwrap();
+        for sig in [a, b] {
+            let s = Signature::try_from(sig.as_slice()).unwrap();
+            assert!(vk.verify_prehash(&prehash, &s).is_ok());
+        }
     }
 
     #[test]

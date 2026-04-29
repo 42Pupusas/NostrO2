@@ -1,6 +1,21 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use nostro2::{NostrClientEvent, NostrNote, NostrRelayEvent, NostrSubscription, RelayEventTag};
+use nostro2::{NostrClientEvent, NostrNote, NostrRelayEvent, NostrSubscription, NostrTags, RelayEventTag};
 use std::collections::BTreeMap;
+
+/// Build a `NostrTags` from row literals — replaces the dropped
+/// `From<Vec<Vec<String>>>` impl that benches used to call.
+fn tags_from_rows<I, R, S>(rows: I) -> NostrTags
+where
+    I: IntoIterator<Item = R>,
+    R: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut tags = NostrTags::new();
+    for row in rows {
+        tags.add_row(row.into_iter().map(Into::into));
+    }
+    tags
+}
 
 /// Helper to create a sample note for benchmarking
 fn create_sample_note() -> NostrNote {
@@ -9,11 +24,7 @@ fn create_sample_note() -> NostrNote {
         pubkey: "deadbeef".repeat(8),
         created_at: 1234567890,
         kind: 1,
-        tags: vec![
-            vec!["e".to_string(), "event_id".to_string()],
-            vec!["p".to_string(), "pubkey".to_string()],
-        ]
-        .into(),
+        tags: tags_from_rows([["e", "event_id"], ["p", "pubkey"]]),
         content: "Hello Nostr! This is a test message.".to_string(),
         sig: Some("signature".repeat(16)),
     }
@@ -248,7 +259,7 @@ fn bench_varying_note_sizes(c: &mut Criterion) {
             pubkey: "deadbeef".repeat(8),
             created_at: 1234567890,
             kind: 1,
-            tags: vec![vec!["e".to_string(), "event_id".to_string()]].into(),
+            tags: tags_from_rows([["e", "event_id"]]),
             content,
             sig: Some("sig".repeat(16)),
         };

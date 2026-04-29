@@ -344,7 +344,7 @@ impl NostrNoteView<'_> {
             self.content.as_ref(),
         );
         let mut hasher = sha2::Sha256::new();
-        serde_json::to_writer(Sha256Writer(&mut hasher), &payload)?;
+        serde_json::to_writer(crate::note::Sha256Writer(&mut hasher), &payload)?;
         Ok(hasher.finalize().into())
     }
 
@@ -430,21 +430,6 @@ impl NostrNoteView<'_> {
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
         let msg = Message::from_digest(id);
         Ok(SECP256K1.verify_schnorr(&sig, &msg, &xonly).is_ok())
-    }
-}
-
-struct Sha256Writer<'a>(&'a mut sha2::Sha256);
-
-impl std::io::Write for Sha256Writer<'_> {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        use sha2::Digest as _;
-        self.0.update(buf);
-        Ok(buf.len())
-    }
-    #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 

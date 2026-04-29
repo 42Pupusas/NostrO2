@@ -1,6 +1,21 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use nostro2::{NostrClientEvent, NostrNote};
+use nostro2::{NostrClientEvent, NostrNote, NostrTags};
 use tokio::sync::mpsc;
+
+/// Build a `NostrTags` from row literals — replaces the dropped
+/// `From<Vec<Vec<String>>>` impl that benches used to call.
+fn tags_from_rows<I, R, S>(rows: I) -> NostrTags
+where
+    I: IntoIterator<Item = R>,
+    R: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut tags = NostrTags::new();
+    for row in rows {
+        tags.add_row(row.into_iter().map(Into::into));
+    }
+    tags
+}
 
 /// Helper to create a sample note for benchmarking
 fn create_sample_note(index: usize) -> NostrNote {
@@ -9,11 +24,10 @@ fn create_sample_note(index: usize) -> NostrNote {
         pubkey: "deadbeef".repeat(8),
         created_at: 1234567890,
         kind: 1,
-        tags: vec![
-            vec!["e".to_string(), format!("ref_{}", index)],
-            vec!["p".to_string(), "pubkey".to_string()],
-        ]
-        .into(),
+        tags: tags_from_rows([
+            ["e".to_string(), format!("ref_{}", index)],
+            ["p".to_string(), "pubkey".to_string()],
+        ]),
         content: format!("Message number {}", index),
         sig: Some("signature".repeat(16)),
     }
@@ -273,7 +287,7 @@ fn bench_note_content_sizes(c: &mut Criterion) {
                             pubkey: "deadbeef".repeat(8),
                             created_at: 1234567890,
                             kind: 1,
-                            tags: vec![vec!["e".to_string(), "ref".to_string()]].into(),
+                            tags: tags_from_rows([["e", "ref"]]),
                             content,
                             sig: Some("sig".repeat(16)),
                         };
