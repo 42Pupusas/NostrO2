@@ -25,6 +25,7 @@ k256 = { workspace = true, optional = true }
 secp256k1 = { workspace = true, optional = true }
 nostro2.workspace = true
 nostro2-nips.workspace = true
+nostro2-traits.workspace = true
 rand_core.workspace = true
 getrandom = "0.4"
 thiserror.workspace = true

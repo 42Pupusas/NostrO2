@@ -7,7 +7,7 @@ use nostro2_signer::K256Keypair;
 fn create_signed_note() -> NostrNote {
     let keypair = K256Keypair::generate();
     let mut note = NostrNote::text_note("Hello Nostr! Benchmarking signature verification.");
-    keypair.sign_nostr_note(&mut note).expect("signing failed");
+    note.sign_with(&keypair).expect("signing failed");
     note
 }
 

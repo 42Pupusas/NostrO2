@@ -38,12 +38,16 @@ pub struct MacComponents<'a> {
     ciphertext: &'a [u8],
 }
 
-pub trait Nip44 {
+pub trait Nip44: nostro2::NostrKeypair {
     /// Computes the shared secret used for encryption and decryption.
     ///
     /// # Errors
     /// Returns `Nip44Error::SharedSecretError` if the ECDH computation fails.
-    fn shared_secret(&self, peer_pubkey: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip44Error>;
+    fn shared_secret(&self, peer_pubkey: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip44Error> {
+        Ok(nostro2::NostrKeypair::shared_point(self, peer_pubkey)
+            .map_err(|_| Nip44Error::SharedSecretError)?
+            .into())
+    }
 
     /// Encrypts a NIP-44 encrypted message.
     ///
@@ -291,6 +295,8 @@ pub trait Nip44 {
         out
     }
 }
+
+impl<T: nostro2::NostrKeypair + ?Sized> Nip44 for T {}
 
 #[cfg(test)]
 mod tests {

@@ -72,7 +72,8 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         rumor: &mut nostro2::NostrNote,
         peer_pubkey: &str,
     ) -> Result<nostro2::NostrNote, Nip59Error> {
-        self.sign_nostr_note(rumor)
+        rumor
+            .sign_with(self)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         if !rumor.verify() {
             return Err(Nip59Error::SigningError);
@@ -81,10 +82,10 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         let mut seal = nostro2::NostrNote {
             content: serde_json::to_string(rumor).map_err(Nip59Error::SerializationError)?,
             kind: 13,
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         self.nip44_encrypt_note(&mut seal, peer_pubkey)?;
-        self.sign_nostr_note(&mut seal)
+        seal.sign_with(self)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         if !seal.verify() {
             return Err(Nip59Error::SigningError);
@@ -112,14 +113,14 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 1059,
             pubkey: throwaway_key.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         throwaway_key
             .nip44_encrypt_note(&mut giftwrap, peer_pubkey)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
-        throwaway_key
-            .sign_nostr_note(&mut giftwrap)
+        giftwrap
+            .sign_with(&throwaway_key)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
@@ -143,12 +144,13 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 10059,
             pubkey: self.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         self.nip44_encrypt_note(&mut giftwrap, peer_pubkey)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
-        self.sign_nostr_note(&mut giftwrap)
+        giftwrap
+            .sign_with(self)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
@@ -173,14 +175,14 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 20059,
             pubkey: throwaway_key.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         throwaway_key
             .nip44_encrypt_note(&mut giftwrap, peer_pubkey)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
-        throwaway_key
-            .sign_nostr_note(&mut giftwrap)
+        giftwrap
+            .sign_with(&throwaway_key)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
@@ -205,17 +207,20 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
             content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 30059,
             pubkey: self.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         giftwrap.tags.add_pubkey_tag(peer_pubkey, None);
         giftwrap.tags.add_parameter_tag(d_tag);
         self.nip44_encrypt_note(&mut giftwrap, peer_pubkey)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
-        self.sign_nostr_note(&mut giftwrap)
+        giftwrap
+            .sign_with(self)
             .map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".to_string()))?;
         Ok(giftwrap)
     }
 }
+
+impl<T: crate::nip_44::Nip44 + nostro2::NostrSigner + ?Sized> Nip59 for T {}
 
 #[cfg(test)]
 mod tests {
@@ -228,7 +233,7 @@ mod tests {
         NostrNote {
             content: content.to_string(),
             kind: 1,
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         }
     }
 

@@ -1,0 +1,12 @@
+[package]
+name = "nostro2-traits"
+version = "0.1.0"
+edition = "2021"
+categories = ["authentication", "cryptography"]
+license = "MIT"
+description = "Signing traits for the nostro2 ecosystem (NostrSigner, NostrKeypair)."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+
+[dependencies]
+hex.workspace = true
+thiserror.workspace = true

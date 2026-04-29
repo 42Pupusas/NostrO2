@@ -11,18 +11,16 @@ mod nip_17;
 mod nip_44;
 mod nip_46;
 mod nip_59;
-mod nip_82;
 
 pub use nip_04::*;
 pub use nip_17::*;
 pub use nip_44::*;
 pub use nip_46::*;
 pub use nip_59::*;
-pub use nip_82::*;
 #[cfg(test)]
 mod tests {
     use k256::schnorr::signature::hazmat::PrehashSigner;
-    use nostro2::{NostrKeypair, NostrSigner};
+    use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
 
     /// Test-only keypair that wraps k256 directly. Not part of the public API.
     #[derive(Clone)]
@@ -53,18 +51,15 @@ mod tests {
     }
 
     impl NostrSigner for NipTester {
-        fn sign_nostr_note(
-            &self,
-            note: &mut nostro2::NostrNote,
-        ) -> Result<(), nostro2::errors::NostrErrors> {
-            note.pubkey = self.public_key();
-            let id = note.serialize_id_raw()?;
+        fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
             let sig = self
                 .0
-                .sign_prehash(&id)
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidSignature)?;
-            note.sig.replace(hex::encode(sig.to_bytes()));
-            Ok(())
+                .sign_prehash(id)
+                .map_err(|_| SignerError::InvalidSignature)?;
+            Ok(sig.to_bytes())
+        }
+        fn pubkey_bytes(&self) -> [u8; 32] {
+            self.0.verifying_key().to_bytes().into()
         }
         fn generate() -> Self {
             let mut secret = [0_u8; 32];
@@ -72,25 +67,20 @@ mod tests {
             let field_bytes = k256::FieldBytes::from(secret);
             Self(k256::schnorr::SigningKey::from_bytes(&field_bytes).expect("invalid key bytes"))
         }
-        fn public_key(&self) -> String {
-            hex::encode(self.0.verifying_key().to_bytes())
-        }
     }
 
     impl NostrKeypair for NipTester {
-        fn secret_key(&self) -> Option<String> {
-            Some(hex::encode(self.0.to_bytes()))
+        fn secret_bytes(&self) -> [u8; 32] {
+            self.0.to_bytes().into()
         }
-        fn shared_point(&self, peer_pubkey: &str) -> nostro2::Result<[u8; 32]> {
-            let hex_pk = hex::decode(peer_pubkey)
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
+        fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {
             let mut compressed = [0_u8; 33];
             compressed[0] = 0x02;
-            compressed[1..].copy_from_slice(&hex_pk);
+            compressed[1..].copy_from_slice(peer_xonly);
             let public_key = k256::PublicKey::from_sec1_bytes(&compressed)
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
+                .map_err(|_| SignerError::InvalidPublicKey)?;
             let secret_key = k256::SecretKey::from_slice(&self.0.to_bytes())
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidSignature)?;
+                .map_err(|_| SignerError::InvalidSignature)?;
             let shared = k256::ecdh::diffie_hellman(
                 secret_key.to_nonzero_scalar(),
                 public_key.as_affine(),
@@ -99,42 +89,8 @@ mod tests {
             point.copy_from_slice(shared.raw_secret_bytes().as_slice());
             Ok(point)
         }
-        fn npub(&self) -> nostro2::Result<String> {
-            let hrp = bech32::Hrp::parse("npub")
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
-            bech32::encode::<bech32::Bech32>(hrp, &self.0.verifying_key().to_bytes())
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)
-        }
-        fn nsec(&self) -> nostro2::Result<String> {
-            let hrp = bech32::Hrp::parse("nsec")
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
-            bech32::encode::<bech32::Bech32>(hrp, &self.0.to_bytes())
-                .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)
-        }
     }
 
-    impl crate::Nip04 for NipTester {
-        fn shared_secret(
-            &self,
-            pubkey: &str,
-        ) -> Result<zeroize::Zeroizing<[u8; 32]>, crate::Nip04Error> {
-            Ok(NostrKeypair::shared_point(self, pubkey)
-                .map_err(|_| crate::Nip04Error::SharedSecretError)?
-                .into())
-        }
-    }
-    impl crate::Nip44 for NipTester {
-        fn shared_secret(
-            &self,
-            pubkey: &str,
-        ) -> Result<zeroize::Zeroizing<[u8; 32]>, crate::Nip44Error> {
-            Ok(NostrKeypair::shared_point(self, pubkey)
-                .map_err(|_| crate::Nip44Error::SharedSecretError)?
-                .into())
-        }
-    }
-    impl crate::Nip17 for NipTester {}
-    impl crate::Nip46 for NipTester {}
-    impl crate::Nip59 for NipTester {}
-    impl crate::Nip82 for NipTester {}
+    // Nip04 / Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented for every
+    // `NostrKeypair`, so `NipTester` gets them all for free.
 }

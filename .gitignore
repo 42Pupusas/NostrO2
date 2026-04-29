@@ -6,4 +6,5 @@ perf.data
 perf.data.old
 .claude/
 dhat-heap.json
+docs/
 

@@ -43,20 +43,21 @@ pub struct NostrNote {
     pub sig: Option<String>,
 }
 impl Default for NostrNote {
+    /// Cheap, side-effect-free default. **Does not stamp `created_at`** —
+    /// callers that want "now" use [`NostrNote::new`], the explicit
+    /// constructors ([`text_note`](Self::text_note),
+    /// [`metadata`](Self::metadata), [`with_kind`](Self::with_kind)), or the
+    /// [`builder`](Self::builder), all of which call [`now()`](Self::now)
+    /// for them.
+    ///
+    /// Why: `..Default::default()` is the common Rust shorthand for "the
+    /// rest of the fields are uninteresting." Making it expensive (a
+    /// syscall, or a JS bridge call on wasm) and racy was a foot-gun.
     fn default() -> Self {
         Self {
             pubkey: String::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-                .try_into()
-                .unwrap_or(0),
-            #[cfg(target_arch = "wasm32")]
-            #[allow(clippy::cast_possible_truncation)]
-            created_at: (js_sys::Date::now() / 1000.0) as i64,
-            kind: 1,
+            created_at: 0,
+            kind: 0,
             tags: NostrTags::default(),
             content: String::new(),
             id: None,
@@ -65,7 +66,23 @@ impl Default for NostrNote {
     }
 }
 impl NostrNote {
-    /// Create a builder for constructing a `NostrNote`
+    /// Create an empty note with `created_at` stamped to the current time.
+    ///
+    /// Use this when you want "now" but no other field defaults — typical
+    /// pattern is `NostrNote { kind: 13, content: ct, ..NostrNote::new() }`
+    /// instead of `..Default::default()`, which used to stamp time as a
+    /// hidden side effect and no longer does.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            created_at: Self::now(),
+            ..Self::default()
+        }
+    }
+
+    /// Create a builder for constructing a `NostrNote`. The builder stamps
+    /// `created_at` to the current time; override with
+    /// [`NostrNoteBuilder::timestamp`].
     ///
     /// # Example
     ///
@@ -79,10 +96,11 @@ impl NostrNote {
     /// ```
     #[must_use]
     pub fn builder() -> NostrNoteBuilder {
-        NostrNoteBuilder::default()
+        NostrNoteBuilder { note: Self::new() }
     }
 
-    /// Create a text note (kind 1) with the given content
+    /// Create a text note (kind 1) with the given content. `created_at` is
+    /// stamped to the current time.
     ///
     /// # Example
     ///
@@ -97,11 +115,12 @@ impl NostrNote {
         Self {
             content: content.into(),
             kind: 1,
-            ..Default::default()
+            ..Self::new()
         }
     }
 
-    /// Create a metadata note (kind 0) with the given content
+    /// Create a metadata note (kind 0) with the given content. `created_at`
+    /// is stamped to the current time.
     ///
     /// # Example
     ///
@@ -117,11 +136,12 @@ impl NostrNote {
         Self {
             content: content.into(),
             kind: 0,
-            ..Default::default()
+            ..Self::new()
         }
     }
 
-    /// Create a note with the specified kind
+    /// Create a note with the specified kind. `created_at` is stamped to
+    /// the current time.
     ///
     /// # Example
     ///
@@ -135,7 +155,7 @@ impl NostrNote {
     pub fn with_kind(kind: u32) -> Self {
         Self {
             kind,
-            ..Default::default()
+            ..Self::new()
         }
     }
 
@@ -205,16 +225,13 @@ impl NostrNote {
         sig_bytes.copy_from_slice(&sig);
         Some(sig_bytes)
     }
-    /// Returns the public key as a byte array
+    /// Decode the stored `pubkey` hex into raw bytes. Returns `None` if the
+    /// field is not exactly 64 hex characters.
     #[inline]
-    fn pubkey_bytes(&self) -> [u8; 32] {
-        let mut pubkey_bytes = [0_u8; 32];
-        let pubkey = hex::decode(&self.pubkey).unwrap_or_default();
-        if pubkey.len() != 32 {
-            return pubkey_bytes;
-        }
-        pubkey_bytes.copy_from_slice(&pubkey);
-        pubkey_bytes
+    fn pubkey_bytes(&self) -> Option<[u8; 32]> {
+        let mut out = [0_u8; 32];
+        hex::decode_to_slice(self.pubkey.as_bytes(), &mut out).ok()?;
+        Some(out)
     }
 
     /// Compute the SHA256 hash of the canonical event serialization directly,
@@ -245,6 +262,24 @@ impl NostrNote {
         Ok(())
     }
 
+    /// Sign this note with the given signer, populating `pubkey`, `id`, and
+    /// `sig` in place.
+    ///
+    /// # Errors
+    /// Returns an error if id serialization or signing fails.
+    pub fn sign_with<S: nostro2_traits::NostrSigner + ?Sized>(
+        &mut self,
+        signer: &S,
+    ) -> Result<(), crate::errors::NostrErrors> {
+        self.pubkey = signer.public_key();
+        let id = self.serialize_id_raw()?;
+        let sig = signer
+            .sign_prehash(&id)
+            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        self.sig = Some(hex::encode(sig));
+        Ok(())
+    }
+
     /// Compute and set the event ID, returning the raw 32-byte hash.
     ///
     /// This avoids a hex-decode round-trip when the caller needs the raw bytes
@@ -258,7 +293,7 @@ impl NostrNote {
         self.id = Some(hex::encode(hash));
         Ok(hash)
     }
-    #[cfg(all(feature = "k256", not(feature = "secp256k1")))]
+    #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
         let id = self
@@ -267,7 +302,10 @@ impl NostrNote {
         let sig = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
-        let verifying_key = VerifyingKey::from_bytes((&self.pubkey_bytes()).into())
+        let pubkey = self
+            .pubkey_bytes()
+            .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
+        let verifying_key = VerifyingKey::from_bytes((&pubkey).into())
             .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
         let signature = Signature::try_from(sig.as_slice())
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
@@ -283,8 +321,10 @@ impl NostrNote {
         let sig_bytes = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
-        let pubkey_bytes = self.pubkey_bytes();
-        let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
+        let pubkey = self
+            .pubkey_bytes()
+            .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
+        let xonly = XOnlyPublicKey::from_slice(&pubkey)
             .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
         let sig = Signature::from_slice(sig_bytes.as_slice())
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
@@ -358,8 +398,13 @@ impl TryFrom<&serde_json::Value> for NostrNote {
     }
 }
 impl From<NostrNote> for serde_json::Value {
+    /// Infallible — `NostrNote` contains no floats and no non-string-keyed
+    /// maps, the only two cases where `serde_json::to_value` can fail. Any
+    /// failure here would mean the type definition has changed; the
+    /// `nostr_note_to_value_is_infallible` test guards the invariant.
     fn from(note: NostrNote) -> Self {
-        serde_json::to_value(note).expect("Failed to serialize NostrNote.")
+        serde_json::to_value(note)
+            .unwrap_or_else(|_| unreachable!("NostrNote has no float or non-string-keyed fields"))
     }
 }
 /// Builder for constructing `NostrNote` instances
@@ -375,7 +420,7 @@ impl From<NostrNote> for serde_json::Value {
 ///     .tag_pubkey("abc123...")
 ///     .build();
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NostrNoteBuilder {
     note: NostrNote,
 }

@@ -90,10 +90,10 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
                 )?
                 .to_string(),
             pubkey: self.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         note.tags.add_pubkey_tag(signer_pk, None);
-        self.sign_nostr_note(&mut note)?;
+        note.sign_with(self)?;
         Ok(note)
     }
     /// Creates a NIP-46 response note.
@@ -119,13 +119,15 @@ pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {
                 .nip_44_encrypt(&response.to_string(), signer_pk)?
                 .to_string(),
             pubkey: self.public_key(),
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         note.tags.add_pubkey_tag(signer_pk, None);
-        self.sign_nostr_note(&mut note)?;
+        note.sign_with(self)?;
         Ok(note)
     }
 }
+
+impl<T: nostro2::NostrSigner + crate::Nip44 + ?Sized> Nip46 for T {}
 
 #[cfg(test)]
 mod tests {

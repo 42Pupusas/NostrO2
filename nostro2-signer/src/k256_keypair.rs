@@ -1,12 +1,22 @@
+//! `NostrSigner` / `NostrKeypair` / `KeypairExt` impls for the `k256`
+//! pure-Rust Schnorr backend.
+//!
+//! `K256Keypair` is a thin newtype around `k256::schnorr::SigningKey`. The
+//! orphan rule forbids implementing the foreign signer/NIP traits directly
+//! on the foreign `SigningKey`, so we wrap it. Users who need the raw type
+//! reach it via `kp.0` or `&*kp` (Deref).
+
+use std::ops::Deref;
+
 use k256::schnorr::signature::hazmat::PrehashSigner;
-use nostro2::{NostrKeypair, NostrSigner};
-use nostro2_nips::{Nip04, Nip44, Nip59};
+use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
 
 use crate::errors::NostrKeypairError;
+use crate::ext::KeypairExt;
 
 /// Nostr keypair backed by the `k256` pure-Rust Schnorr implementation.
 #[derive(Clone)]
-pub struct K256Keypair(k256::schnorr::SigningKey);
+pub struct K256Keypair(pub k256::schnorr::SigningKey);
 
 impl std::fmt::Debug for K256Keypair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -14,82 +24,10 @@ impl std::fmt::Debug for K256Keypair {
     }
 }
 
-impl K256Keypair {
-    /// Parse from a 64-char hex private key string.
-    ///
-    /// # Errors
-    /// Returns an error if the string is not valid hex or not a valid scalar.
-    pub fn from_hex(hex: &str) -> Result<Self, NostrKeypairError> {
-        let bytes = hex::decode(hex)?;
-        let field_bytes: &k256::FieldBytes = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| NostrKeypairError::InvalidKey)?;
-        k256::schnorr::SigningKey::from_bytes(field_bytes)
-            .map(Self)
-            .map_err(|_| NostrKeypairError::InvalidKey)
-    }
-
-    /// Parse from an `nsec1…` bech32 string.
-    ///
-    /// # Errors
-    /// Returns an error if the string is not a valid nsec.
-    pub fn from_nsec(nsec: &str) -> Result<Self, NostrKeypairError> {
-        if !nsec.starts_with("nsec") {
-            return Err(NostrKeypairError::HrpParseError);
-        }
-        let (hrp, data) = bech32::decode(nsec)?;
-        if hrp.to_string() != "nsec" {
-            return Err(NostrKeypairError::HrpParseError);
-        }
-        let field_bytes: &k256::FieldBytes = data
-            .as_slice()
-            .try_into()
-            .map_err(|_| NostrKeypairError::InvalidKey)?;
-        k256::schnorr::SigningKey::from_bytes(field_bytes)
-            .map(Self)
-            .map_err(|_| NostrKeypairError::InvalidKey)
-    }
-
-    /// Parse from a BIP-39 mnemonic phrase.
-    ///
-    /// # Errors
-    /// Returns an error if the mnemonic is invalid or the entropy is not a valid key.
-    pub fn from_mnemonic(
-        mnemonic: &str,
-        language: bip39::Language,
-    ) -> Result<Self, NostrKeypairError> {
-        let mnemonic = bip39::Mnemonic::parse_in(language, mnemonic)?;
-        let entropy = mnemonic.to_entropy();
-        let field_bytes: &k256::FieldBytes = entropy
-            .as_slice()
-            .try_into()
-            .map_err(|_| NostrKeypairError::InvalidKey)?;
-        k256::schnorr::SigningKey::from_bytes(field_bytes)
-            .map(Self)
-            .map_err(|_| NostrKeypairError::InvalidKey)
-    }
-
-    /// Return the mnemonic for this key in the given language.
-    ///
-    /// # Errors
-    /// Returns an error if the entropy is not valid for BIP-39.
-    pub fn mnemonic(&self, language: bip39::Language) -> Result<String, NostrKeypairError> {
-        let secret_key = self.0.to_bytes();
-        let mnemonic = bip39::Mnemonic::from_entropy_in(language, &secret_key)?;
-        let mut out = String::with_capacity(256);
-        for word in mnemonic.words() {
-            out.push_str(word);
-            out.push(' ');
-        }
-        out.pop();
-        Ok(out)
-    }
-
-    /// Return the public key as 32 raw bytes.
-    #[must_use]
-    pub fn pubkey_bytes(&self) -> [u8; 32] {
-        self.0.verifying_key().to_bytes().into()
+impl Deref for K256Keypair {
+    type Target = k256::schnorr::SigningKey;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -99,141 +37,89 @@ impl Default for K256Keypair {
     }
 }
 
-impl std::str::FromStr for K256Keypair {
-    type Err = NostrKeypairError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.starts_with("nsec") {
-            if let Ok(kp) = Self::from_nsec(value) {
-                return Ok(kp);
-            }
-        }
-        if value.len() == 64 {
-            if let Ok(kp) = Self::from_hex(value) {
-                return Ok(kp);
-            }
-        }
-        for language in [bip39::Language::English, bip39::Language::Spanish] {
-            if let Ok(kp) = Self::from_mnemonic(value, language) {
-                return Ok(kp);
-            }
-        }
-        Err(NostrKeypairError::InvalidKey)
-    }
-}
-
 impl NostrSigner for K256Keypair {
-    fn sign_nostr_note(
-        &self,
-        note: &mut nostro2::NostrNote,
-    ) -> Result<(), nostro2::errors::NostrErrors> {
-        note.pubkey = self.public_key();
-        let id = note.serialize_id_raw()?;
-        let sig = self
-            .0
-            .sign_prehash(&id)
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidSignature)?;
-        note.sig.replace(hex::encode(sig.to_bytes()));
-        Ok(())
+    fn sign_prehash(&self, id: &[u8; 32]) -> Result<[u8; 64], SignerError> {
+        let sig = PrehashSigner::sign_prehash(&self.0, id)
+            .map_err(|_| SignerError::InvalidSignature)?;
+        Ok(sig.to_bytes())
+    }
+
+    fn pubkey_bytes(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes().into()
     }
 
     fn generate() -> Self {
         let mut secret = [0_u8; 32];
-        getrandom::fill(&mut secret).expect("getrandom failed");
-        let field_bytes = k256::FieldBytes::from(secret);
         loop {
+            getrandom::fill(&mut secret).expect("getrandom failed");
+            let field_bytes = k256::FieldBytes::from(secret);
             if let Ok(sk) = k256::schnorr::SigningKey::from_bytes(&field_bytes) {
                 return Self(sk);
             }
-            getrandom::fill(&mut secret).expect("getrandom failed");
         }
-    }
-
-    fn public_key(&self) -> String {
-        hex::encode(self.0.verifying_key().to_bytes())
     }
 }
 
 impl NostrKeypair for K256Keypair {
-    fn secret_key(&self) -> Option<String> {
-        Some(hex::encode(self.0.to_bytes()))
+    fn secret_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes().into()
     }
 
-    fn shared_point(&self, peer_pubkey: &str) -> nostro2::Result<[u8; 32]> {
-        let hex_pk = hex::decode(peer_pubkey)
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
+    fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {
+        // Nostr convention: x-only pubkey → reconstruct compressed SEC1 point
+        // with even-parity prefix (0x02). Lossy for y-parity but matches NIP-04.
         let mut compressed = [0_u8; 33];
         compressed[0] = 0x02;
-        compressed[1..].copy_from_slice(&hex_pk);
+        compressed[1..].copy_from_slice(peer_xonly);
         let public_key = k256::PublicKey::from_sec1_bytes(&compressed)
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
+            .map_err(|_| SignerError::InvalidPublicKey)?;
         let secret_key = k256::SecretKey::from_slice(&self.0.to_bytes())
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidSignature)?;
-        let shared =
-            k256::ecdh::diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
+            .map_err(|_| SignerError::InvalidSignature)?;
+        let shared = k256::ecdh::diffie_hellman(
+            secret_key.to_nonzero_scalar(),
+            public_key.as_affine(),
+        );
         let mut point = [0_u8; 32];
         point.copy_from_slice(shared.raw_secret_bytes().as_slice());
         Ok(point)
     }
+}
 
-    fn npub(&self) -> nostro2::Result<String> {
-        let hrp = bech32::Hrp::parse("npub")
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
-        bech32::encode::<bech32::Bech32>(hrp, &self.0.verifying_key().to_bytes())
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)
-    }
-
-    fn nsec(&self) -> nostro2::Result<String> {
-        let hrp = bech32::Hrp::parse("nsec")
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)?;
-        bech32::encode::<bech32::Bech32>(hrp, &self.0.to_bytes())
-            .map_err(|_| nostro2::errors::NostrErrors::InvalidPublicKey)
+impl KeypairExt for K256Keypair {
+    fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self, NostrKeypairError> {
+        let field_bytes = k256::FieldBytes::from(*bytes);
+        k256::schnorr::SigningKey::from_bytes(&field_bytes)
+            .map(Self)
+            .map_err(|_| NostrKeypairError::InvalidKey)
     }
 }
 
-impl Nip04 for K256Keypair {
-    fn shared_secret(
-        &self,
-        public_key_string: &str,
-    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip04Error> {
-        Ok(NostrKeypair::shared_point(self, public_key_string)
-            .map_err(|_| nostro2_nips::Nip04Error::SharedSecretError)?
-            .into())
+impl std::str::FromStr for K256Keypair {
+    type Err = NostrKeypairError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_any(s)
     }
 }
 
-impl Nip44 for K256Keypair {
-    fn shared_secret(
-        &self,
-        public_key_string: &str,
-    ) -> Result<zeroize::Zeroizing<[u8; 32]>, nostro2_nips::Nip44Error> {
-        Ok(NostrKeypair::shared_point(self, public_key_string)
-            .map_err(|_| nostro2_nips::Nip44Error::SharedSecretError)?
-            .into())
-    }
-}
-
-impl nostro2_nips::Nip17 for K256Keypair {}
-impl nostro2_nips::Nip46 for K256Keypair {}
-impl Nip59 for K256Keypair {}
-impl nostro2_nips::Nip82 for K256Keypair {}
+// Nip04 / Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented in
+// `nostro2-nips` for every `NostrKeypair`.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostro2::{NostrKeypair, NostrSigner};
 
     #[test]
     fn test_generate_and_sign() {
         let kp = K256Keypair::generate();
         let mut note = nostro2::NostrNote::text_note("Hello from k256!");
-        kp.sign_nostr_note(&mut note).unwrap();
+        note.sign_with(&kp).unwrap();
         assert!(note.verify());
     }
 
     #[test]
     fn test_from_hex_roundtrip() {
         let kp = K256Keypair::generate();
-        let hex_sk = kp.secret_key().unwrap();
+        let hex_sk = kp.secret_key();
         let kp2 = K256Keypair::from_hex(&hex_sk).unwrap();
         assert_eq!(kp.public_key(), kp2.public_key());
     }
@@ -242,13 +128,14 @@ mod tests {
     fn test_shared_secret_consistency() {
         let alice = K256Keypair::generate();
         let bob = K256Keypair::generate();
-        let alice_secret = alice.shared_point(&bob.public_key()).unwrap();
-        let bob_secret = bob.shared_point(&alice.public_key()).unwrap();
-        assert_eq!(alice_secret, bob_secret);
+        let a = alice.shared_point(&bob.public_key()).unwrap();
+        let b = bob.shared_point(&alice.public_key()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
     fn test_nip44_encrypt_decrypt() {
+        use nostro2_nips::Nip44 as _;
         let alice = K256Keypair::generate();
         let bob = K256Keypair::generate();
         let mut note = nostro2::NostrNote {
@@ -267,11 +154,11 @@ mod tests {
     #[test]
     fn test_bech32_roundtrip() {
         let kp = K256Keypair::generate();
-        let nsec_str = NostrKeypair::nsec(&kp).unwrap();
-        let npub_str = NostrKeypair::npub(&kp).unwrap();
-        let restored = K256Keypair::from_nsec(&nsec_str).unwrap();
+        let nsec = kp.nsec().unwrap();
+        let npub = kp.npub().unwrap();
+        let restored = K256Keypair::from_nsec(&nsec).unwrap();
         assert_eq!(restored.public_key(), kp.public_key());
-        assert_eq!(NostrKeypair::npub(&restored).unwrap(), npub_str);
+        assert_eq!(restored.npub().unwrap(), npub);
     }
 
     #[test]
@@ -283,16 +170,23 @@ mod tests {
     }
 
     #[test]
-    fn test_from_str_tries_all_formats() {
+    fn test_from_any_tries_all_formats() {
         let hex = "a992011980303ea8c43f66087634283026e7796e7fcea8b61710239e19ee28c8";
-        let kp1: K256Keypair = hex.parse().unwrap();
+        let kp1 = K256Keypair::from_any(hex).unwrap();
         assert_eq!(
             kp1.public_key(),
             "689403d3808274889e371cfe53c2d78eb05743a964cc60d3b2e55824e8fe740a"
         );
         let nsec = "nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53";
-        let kp2: K256Keypair = nsec.parse().unwrap();
+        let kp2 = K256Keypair::from_any(nsec).unwrap();
         assert_eq!(kp2.public_key(), kp1.public_key());
     }
-}
 
+    #[test]
+    fn test_deref_to_raw() {
+        // Should be usable as &k256::schnorr::SigningKey.
+        let kp = K256Keypair::generate();
+        let raw: &k256::schnorr::SigningKey = &kp;
+        assert_eq!(raw.verifying_key().to_bytes().as_slice().len(), 32);
+    }
+}

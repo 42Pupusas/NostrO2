@@ -18,6 +18,7 @@ hmac.workspace = true
 k256.workspace = true
 libaes.workspace = true
 nostro2.workspace = true
+nostro2-traits.workspace = true
 rand.workspace = true
 rand_core.workspace = true
 getrandom = "0.4"

@@ -95,6 +95,15 @@
 //!     Ok(note)
 //! }
 //! ```
+// The `k256` and `secp256k1` features pick the verification backend at
+// compile time. Enabling both is a configuration error: every backend
+// supports the same Schnorr scheme, so two impls would collide and there
+// is no sensible "both" semantic.
+#[cfg(all(feature = "k256", feature = "secp256k1"))]
+compile_error!(
+    "features `k256` and `secp256k1` are mutually exclusive; pick exactly one"
+);
+
 pub mod errors;
 mod note;
 mod relay_events;
@@ -109,59 +118,13 @@ pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
 pub use tags::{NostrTag, NostrTags};
 
+/// Re-export of the signer traits. Defined in `nostro2-traits` so protocol
+/// crates (`nostro2-nips`) and signer impls (`nostro2-signer`) can share the
+/// surface without depending on `nostro2`'s data structures.
+pub use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
+
 /// Convenience type alias for Results with `NostrErrors`
 pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
-
-/// Core signing interface for Nostr keypairs.
-///
-/// Implement this to plug any keypair type into the nostro2 ecosystem.
-pub trait NostrSigner {
-    /// Sign a Nostr note, setting `pubkey`, `id`, and `sig`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if signing fails.
-    fn sign_nostr_note(&self, note: &mut crate::note::NostrNote) -> Result<()>;
-
-    /// Generate a new random keypair.
-    fn generate() -> Self;
-
-    /// Return the public key as a 64-character lowercase hex string.
-    fn public_key(&self) -> String;
-}
-
-/// Extended keypair interface with key-export and ECDH.
-///
-/// Implement this on top of [`NostrSigner`] to expose the full keypair API
-/// (secret key export, ECDH shared point, bech32 encoding).
-pub trait NostrKeypair: NostrSigner {
-    /// Return the raw 32-byte secret key, or `None` if this keypair was
-    /// created without export permission.
-    fn secret_key(&self) -> Option<String>;
-
-    /// Derive the ECDH shared point with a peer's x-only public key
-    /// (32-byte hex string).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the peer public key is invalid.
-    fn shared_point(&self, peer_pubkey: &str) -> Result<[u8; 32]>;
-
-    /// Return the public key in bech32 `npub1…` encoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if bech32 encoding fails.
-    fn npub(&self) -> Result<String>;
-
-    /// Return the secret key in bech32 `nsec1…` encoding, or an error if the
-    /// keypair was created without export permission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the keypair is not extractable or bech32 fails.
-    fn nsec(&self) -> Result<String>;
-}
 
 #[cfg(test)]
 mod tests {
@@ -209,6 +172,33 @@ mod tests {
             .first_tagged_event()
             .expect("Failed to get tag!");
         assert_eq!(e_tag, "adsfasdfadsfadsfasdfadfs");
+    }
+
+    /// Locks the invariant behind `impl From<NostrNote> for serde_json::Value`:
+    /// every field of `NostrNote` must serialize without error so the
+    /// conversion can stay infallible. Adding a float or non-string-keyed map
+    /// to `NostrNote` would break this.
+    #[test]
+    fn nostr_note_to_value_is_infallible() {
+        let mut note = NostrNote {
+            pubkey: PUB.into(),
+            kind: u32::MAX,
+            created_at: i64::MIN,
+            content: "every escape: \\ \" \n \t \0 — and unicode 🦀".into(),
+            id: Some("a".repeat(64)),
+            sig: Some("b".repeat(128)),
+            ..Default::default()
+        };
+        note.tags.add_pubkey_tag(PUB, Some("wss://relay"));
+        note.tags.add_event_tag(PUB);
+        note.tags.add_custom_tag("x", "y");
+
+        // The conversion is `From`, so a panic here is the only failure
+        // mode — `serde_json::to_value` would have to error first, which
+        // it can't for this type.
+        let v: serde_json::Value = note.clone().into();
+        let round_trip: NostrNote = serde_json::from_value(v).expect("round trip");
+        assert_eq!(note, round_trip);
     }
 
     #[test]

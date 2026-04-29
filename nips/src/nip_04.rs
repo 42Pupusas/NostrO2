@@ -22,14 +22,18 @@ pub enum Nip04Error {
     #[error("Conversion error {0}")]
     ConversionError(#[from] std::convert::Infallible),
 }
-pub trait Nip04 {
+pub trait Nip04: nostro2::NostrKeypair {
     /// Generates a shared secret using the private keypair and the public key of the peer
     ///
     /// # Errors
     ///
     /// Returns an error if the public key cannot be decoded or if the shared secret cannot be
     /// generated.
-    fn shared_secret(&self, pubkey: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip04Error>;
+    fn shared_secret(&self, pubkey: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip04Error> {
+        Ok(nostro2::NostrKeypair::shared_point(self, pubkey)
+            .map_err(|_| Nip04Error::SharedSecretError)?
+            .into())
+    }
 
     /// Encrypts a message using NIP-04
     ///
@@ -110,6 +114,8 @@ pub trait Nip04 {
         self.nip04_decrypt(&note.content, peer_pubkey)
     }
 }
+
+impl<T: nostro2::NostrKeypair + ?Sized> Nip04 for T {}
 
 #[cfg(test)]
 mod tests {

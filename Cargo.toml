@@ -5,8 +5,14 @@ members = [
     "nips",
     "nostro2", "nostro2-cache",
     "nostro2-relay",
-    "nostro2-signer", "nostro2-benchmarks",
+    "nostro2-signer",
+    "nostro2-traits",
 ]
+exclude = ["nostro2-benchmarks"]
+
+[workspace.dependencies.nostro2-traits]
+path = "nostro2-traits"
+version = "0.1.0"
 
 [workspace.dependencies]
 # JSON
@@ -16,14 +22,13 @@ serde-wasm-bindgen = "0.6"
 
 thiserror = "2.0.16"
 
-# nostro2 = { path = "nostro2" }
-nostro2 = { path = "nostro2", version = "0.5.0" }
-# nostro2-nips = { path = "nips" }
+# Inner crates take `default-features = false` so consumers can opt into a
+# specific curve backend without dragging in the default `k256`. Pick one of
+# `k256` or `secp256k1` at the top of the dep tree — see the `compile_error!`
+# in `nostro2/src/lib.rs`.
+nostro2 = { path = "nostro2", version = "0.5.0", default-features = false }
 nostro2-nips = { path = "nips", version = "0.2.0" }
-
-# nostro2-signer = { path = "nostro2-signer" }
-# Default uses k256; opt in to secp256k1 with features = ["secp256k1"]
-nostro2-signer = { path = "nostro2-signer", version = "0.3.0" }
+nostro2-signer = { path = "nostro2-signer", version = "0.3.0", default-features = false }
 
 # nostro2-cache = { path = "nostro2-cache" }
 nostro2-cache = { path = "nostro2-cache", version = "0.1.0" }

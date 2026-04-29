@@ -38,7 +38,7 @@ fn bench_signing(c: &mut Criterion) {
     c.bench_function("signing_k256", |b| {
         b.iter(|| {
             let mut note = NostrNote::text_note("Benchmark signing");
-            kp.sign_nostr_note(black_box(&mut note)).unwrap();
+            note.sign_with(black_box(&kp)).unwrap();
         });
     });
 }
@@ -48,7 +48,7 @@ fn bench_signing(c: &mut Criterion) {
 fn bench_verification(c: &mut Criterion) {
     let kp = K256Keypair::generate();
     let mut note = NostrNote::text_note("Benchmark verification");
-    kp.sign_nostr_note(&mut note).unwrap();
+    note.sign_with(&kp).unwrap();
 
     c.bench_function("verification_k256", |b| {
         b.iter(|| black_box(&note).verify());

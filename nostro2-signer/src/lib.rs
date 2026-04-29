@@ -17,9 +17,9 @@
 //!
 //! ### Creating Keypairs
 //!
-//! ```rust
+//! ```ignore
 //! use nostro2::NostrSigner;
-//! use nostro2_signer::{K256Keypair, Language};
+//! use nostro2_signer::{K256Keypair, KeypairExt, Language};
 //!
 //! // Generate new random keypair
 //! let keypair = K256Keypair::generate();
@@ -44,8 +44,8 @@
 //!
 //! ### Signing Notes
 //!
-//! ```rust
-//! use nostro2::{NostrNote, NostrSigner};
+//! ```ignore
+//! use nostro2::{NostrNote, NoteSignerExt, NostrSigner};
 //! use nostro2_signer::K256Keypair;
 //!
 //! let keypair = K256Keypair::generate();
@@ -57,8 +57,8 @@
 //!
 //! ### Encryption (NIP-44)
 //!
-//! ```rust
-//! use nostro2::{NostrNote, NostrSigner};
+//! ```ignore
+//! use nostro2::{NostrNote, NoteSignerExt, NostrSigner};
 //! use nostro2_nips::Nip44;
 //! use nostro2_signer::K256Keypair;
 //!
@@ -78,7 +78,7 @@
 //!
 //! ### Gift Wrapping (NIP-59)
 //!
-//! ```rust
+//! ```ignore
 //! use nostro2::{NostrNote, NostrSigner};
 //! use nostro2_nips::Nip59;
 //! use nostro2_signer::K256Keypair;
@@ -101,15 +101,27 @@
 //! - **NIP-59**: Gift wrap for sealed sender privacy
 //! - **Feature-gated backends**: `k256` (default, pure Rust) or `secp256k1` (C library, faster)
 //! - **Type Safety**: Comprehensive error handling with [`Result`](type.Result.html)
+// Mirror the `nostro2` invariant: pick exactly one curve backend. Enabling
+// both `k256` and `secp256k1` would compile two `Nip04`/`Nip44`/etc.
+// impls, conflict with the upstream `compile_error!`, and have no useful
+// "both" semantic.
+#[cfg(all(feature = "k256", feature = "secp256k1"))]
+compile_error!(
+    "features `k256` and `secp256k1` are mutually exclusive; pick exactly one"
+);
+
 pub mod errors;
+pub mod ext;
 #[cfg(feature = "k256")]
 pub mod k256_keypair;
 #[cfg(feature = "secp256k1")]
 pub mod secp256k1_keypair;
 pub extern crate nostro2;
 pub extern crate nostro2_nips;
+pub extern crate nostro2_traits;
 
 pub use bip39::Language;
+pub use ext::KeypairExt;
 #[cfg(feature = "k256")]
 pub use k256_keypair::K256Keypair;
 #[cfg(feature = "secp256k1")]

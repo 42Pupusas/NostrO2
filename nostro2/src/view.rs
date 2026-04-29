@@ -366,13 +366,13 @@ impl NostrNoteView<'_> {
         Some(out)
     }
 
-    /// Decode the pubkey hex into raw bytes. Returns zeros on malformed input
-    /// (mirrors `NostrNote::pubkey_bytes` which is best-effort).
+    /// Decode the pubkey hex into raw bytes. Returns `None` if the field is
+    /// not exactly 64 hex characters.
     #[must_use]
-    pub fn pubkey_bytes(&self) -> [u8; 32] {
+    pub fn pubkey_bytes(&self) -> Option<[u8; 32]> {
         let mut out = [0_u8; 32];
-        let _ = hex::decode_to_slice(self.pubkey.as_bytes(), &mut out);
-        out
+        hex::decode_to_slice(self.pubkey.as_bytes(), &mut out).ok()?;
+        Some(out)
     }
 
     /// Verify the note's content hash and signature. Returns true iff both pass.
@@ -390,14 +390,17 @@ impl NostrNoteView<'_> {
         self.verify_signature().unwrap_or(false)
     }
 
-    #[cfg(all(feature = "k256", not(feature = "secp256k1")))]
+    #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
         let id = self.id_bytes().ok_or(crate::errors::NostrErrors::MissingId)?;
         let sig = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
-        let vk = VerifyingKey::from_bytes((&self.pubkey_bytes()).into())
+        let pubkey = self
+            .pubkey_bytes()
+            .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
+        let vk = VerifyingKey::from_bytes((&pubkey).into())
             .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
         let signature = Signature::try_from(sig.as_slice())
             .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
@@ -411,7 +414,9 @@ impl NostrNoteView<'_> {
         let sig_bytes = self
             .sig_bytes()
             .ok_or(crate::errors::NostrErrors::MissingSignature)?;
-        let pk = self.pubkey_bytes();
+        let pk = self
+            .pubkey_bytes()
+            .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
         let xonly = XOnlyPublicKey::from_slice(&pk)
             .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
         let sig = Signature::from_slice(&sig_bytes)

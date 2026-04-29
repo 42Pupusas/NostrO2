@@ -31,7 +31,7 @@ async fn main() {
         kind: 1,
         ..Default::default()
     };
-    keypair.sign_nostr_note(&mut note).expect("sign");
+    note.sign_with(&keypair).expect("sign");
     println!("Publishing note id={:?}", note.id);
     relay.send(note).expect("send EVENT");
 

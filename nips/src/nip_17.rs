@@ -45,7 +45,7 @@ pub trait Nip17: crate::nip_59::Nip59 {
         let mut dm_note = nostro2::NostrNote {
             content: dm.to_string(),
             kind: 14,
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         Ok(self.giftwrap(&mut dm_note, recipient)?)
     }
@@ -60,7 +60,7 @@ pub trait Nip17: crate::nip_59::Nip59 {
     fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::NostrNote, Nip17Error> {
         let mut note = nostro2::NostrNote {
             kind: 10050,
-            ..Default::default()
+            ..nostro2::NostrNote::new()
         };
         let mut relay_tags = vec![];
         relay_tags.push("relay".to_string());
@@ -68,11 +68,13 @@ pub trait Nip17: crate::nip_59::Nip59 {
             relay_tags.push((*relay).to_string());
         }
         note.tags.0.push(relay_tags);
-        self.sign_nostr_note(&mut note)
+        note.sign_with(self)
             .map_err(Nip17Error::SigningError)?;
         Ok(note)
     }
 }
+
+impl<T: crate::nip_59::Nip59 + ?Sized> Nip17 for T {}
 
 #[cfg(test)]
 mod tests {
