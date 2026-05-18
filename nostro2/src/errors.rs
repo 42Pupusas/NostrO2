@@ -12,7 +12,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum NostrErrors {
     #[error(transparent)]
-    SerdeError(#[from] serde_json::Error),
+    JsonError(#[from] bourne::Error),
     #[error("no id found on note")]
     MissingId,
     #[error("no signature found on note")]
@@ -23,10 +23,6 @@ pub enum NostrErrors {
     InvalidPublicKey,
     #[error("invalid signature")]
     InvalidSignature,
-    /// Wraps a backend signer failure surfaced through [`sign_with`]
-    /// ([`crate::NostrNote::sign_with`]). Captures hardware-wallet rejection,
-    /// NIP-46 transport errors, etc. — anything more specific than
-    /// [`Self::InvalidSignature`].
     #[error(transparent)]
     Signer(#[from] nostro2_traits::SignerError),
 }

@@ -185,11 +185,11 @@ mod tests {
         assert_eq!(e_tag, "adsfasdfadsfadsfasdfadfs");
     }
 
-    /// Round-trips a `NostrNote` through the fallible `serde_json::Value`
-    /// conversion so the entire field surface (escapes, unicode, extreme
-    /// numerics, tag rows) actually exercises both directions.
+    /// Round-trips a `NostrNote` through bourne serialize/parse so the
+    /// entire field surface (escapes, unicode, extreme numerics, tag rows)
+    /// actually exercises both directions.
     #[test]
-    fn nostr_note_value_round_trip() {
+    fn nostr_note_bourne_round_trip() {
         let mut note = NostrNote {
             pubkey: PUB.into(),
             kind: u32::MAX,
@@ -203,8 +203,8 @@ mod tests {
         note.tags.add_event_tag(PUB);
         note.tags.add_custom_tag("x", "y");
 
-        let v: serde_json::Value = note.clone().try_into().expect("to_value");
-        let round_trip: NostrNote = serde_json::from_value(v).expect("round trip");
+        let json = bourne::to_string(&note).expect("serialize");
+        let round_trip: NostrNote = bourne::parse_str(&json).expect("parse back");
         assert_eq!(note, round_trip);
     }
 

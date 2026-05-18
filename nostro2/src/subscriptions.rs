@@ -1,76 +1,135 @@
-/// Subscription filter for querying Nostr events
-///
-/// Filters allow clients to request specific events from relays based on various criteria.
-/// All filter fields are optional and combined with AND logic.
-///
-/// # Examples
-///
-/// ```rust
-/// use nostro2::NostrSubscription;
-///
-/// // Get recent text notes from specific authors
-/// let filter = NostrSubscription::new()
-///     .kinds(vec![1])
-///     .authors(vec!["pubkey1...".to_string(), "pubkey2...".to_string()])
-///     .limit(20)
-///     .since(1234567890);
-///
-/// // Filter by tags
-/// let filter = NostrSubscription::new()
-///     .kind(1)
-///     .tag("#p", "pubkey...")
-///     .tag("#t", "nostr");
-/// ```
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+//! Subscription filter for querying Nostr events
+//!
+//! Filters allow clients to request specific events from relays based on various criteria.
+//! All filter fields are optional and combined with AND logic.
+
+use bourne::{
+    Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson,
+};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NostrSubscription {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<u32>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
-    /// `#p`/`#e`/etc. tag filters. Backed by `BTreeMap` (not `HashMap`) so
-    /// the JSON serialization order is deterministic across runs — keeps the
-    /// REQ wire bytes byte-stable for snapshot tests and gives downstream
-    /// consumers a reliable hash key when they want to dedupe identical
-    /// subscriptions.
-    #[serde(flatten)]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `#p`/`#e`/etc. tag filters. Backed by `BTreeMap` so serialization
+    /// order is deterministic.
     pub tags: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
-impl TryFrom<serde_json::Value> for NostrSubscription {
-    type Error = serde_json::Error;
-    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
-        serde_json::from_value(value)
+
+impl<'input> FromJson<'input> for NostrSubscription {
+    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
+        lex.object_start()?;
+
+        let mut authors: Option<Vec<String>> = None;
+        let mut ids: Option<Vec<String>> = None;
+        let mut kinds: Option<Vec<u32>> = None;
+        let mut since: Option<u64> = None;
+        let mut until: Option<u64> = None;
+        let mut limit: Option<u32> = None;
+        let mut tags: Option<std::collections::BTreeMap<String, Vec<String>>> = None;
+
+        let mut maybe_key = lex.object_first_key()?;
+        while let Some(key) = maybe_key {
+            match key {
+                "authors" => authors = Option::<Vec<String>>::from_lex(lex)?,
+                "ids" => ids = Option::<Vec<String>>::from_lex(lex)?,
+                "kinds" => kinds = Option::<Vec<u32>>::from_lex(lex)?,
+                "since" => since = Option::<u64>::from_lex(lex)?,
+                "until" => until = Option::<u64>::from_lex(lex)?,
+                "limit" => {
+                    limit = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
+                        BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
+                    })?);
+                }
+                _ if key.starts_with('#') => {
+                    let values = Vec::<String>::from_lex(lex)?;
+                    tags.get_or_insert_with(std::collections::BTreeMap::new)
+                        .insert(key.to_string(), values);
+                }
+                _ => lex.skip_value()?,
+            }
+            maybe_key = lex.object_next_key()?;
+        }
+
+        Ok(Self {
+            authors,
+            ids,
+            kinds,
+            since,
+            until,
+            limit,
+            tags,
+        })
     }
 }
+
+impl ToJson for NostrSubscription {
+    fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
+        w.write_byte(b'{')?;
+        let mut first = true;
+
+        macro_rules! field {
+            ($name:expr, $val:expr) => {
+                if let Some(v) = $val {
+                    if !first {
+                        w.write_byte(b',')?;
+                    }
+                    first = false;
+                    w.write_byte(b'"')?;
+                    w.write_str_raw($name)?;
+                    w.write_str_raw("\":")?;
+                    v.write_json(w)?;
+                }
+            };
+        }
+
+        field!("authors", &self.authors);
+        field!("ids", &self.ids);
+        field!("kinds", &self.kinds);
+        field!("since", &self.since);
+        field!("until", &self.until);
+        field!("limit", &self.limit);
+
+        if let Some(tags) = &self.tags {
+            for (key, values) in tags {
+                if !first {
+                    w.write_byte(b',')?;
+                }
+                first = false;
+                w.write_escaped_str(key)?;
+                w.write_byte(b':')?;
+                values.write_json(w)?;
+            }
+        }
+
+        w.write_byte(b'}')
+    }
+}
+
 impl TryFrom<&[u8]> for NostrSubscription {
-    type Error = serde_json::Error;
+    type Error = bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        serde_json::from_slice(value)
+        bourne::parse(value)
     }
 }
+
 impl std::str::FromStr for NostrSubscription {
-    type Err = serde_json::Error;
+    type Err = bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(value)
+        bourne::parse_str(value)
     }
 }
+
 impl NostrSubscription {
-    /// Create a new empty subscription filter
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add a tag filter. Repeated calls with the same tag append to its
-    /// value list (`#p` → multi-author OR semantics, per NIP-01).
     pub fn add_tag(&mut self, tag: &str, value: &str) {
         self.tags
             .get_or_insert_with(std::collections::BTreeMap::new)
@@ -79,14 +138,12 @@ impl NostrSubscription {
             .push(value.to_string());
     }
 
-    /// Set authors filter (replaces existing)
     #[must_use]
     pub fn authors(mut self, authors: Vec<String>) -> Self {
         self.authors = Some(authors);
         self
     }
 
-    /// Add a single author to the filter
     #[must_use]
     pub fn author(mut self, author: impl Into<String>) -> Self {
         self.authors
@@ -95,66 +152,54 @@ impl NostrSubscription {
         self
     }
 
-    /// Set event IDs filter (replaces existing)
     #[must_use]
     pub fn ids(mut self, ids: Vec<String>) -> Self {
         self.ids = Some(ids);
         self
     }
 
-    /// Add a single event ID to the filter
     #[must_use]
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.ids.get_or_insert_with(Vec::new).push(id.into());
         self
     }
 
-    /// Set kinds filter (replaces existing)
     #[must_use]
     pub fn kinds(mut self, kinds: Vec<u32>) -> Self {
         self.kinds = Some(kinds);
         self
     }
 
-    /// Add a single kind to the filter
     #[must_use]
     pub fn kind(mut self, kind: u32) -> Self {
         self.kinds.get_or_insert_with(Vec::new).push(kind);
         self
     }
 
-    /// Set the limit
     #[must_use]
     pub const fn limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Set the since timestamp
     #[must_use]
     pub const fn since(mut self, since: u64) -> Self {
         self.since = Some(since);
         self
     }
 
-    /// Set the until timestamp
     #[must_use]
     pub const fn until(mut self, until: u64) -> Self {
         self.until = Some(until);
         self
     }
 
-    /// Add a tag filter (chainable)
     #[must_use]
     pub fn tag(mut self, tag: &str, value: &str) -> Self {
         self.add_tag(tag, value);
         self
     }
 
-    /// Returns `true` if every filter field is `None` — i.e. the wire-format
-    /// filter is `{}` and matches every event. Lets relay/cache hot loops
-    /// skip per-note iteration entirely when a default subscription is in
-    /// effect.
     #[must_use]
     #[inline]
     pub const fn is_wildcard(&self) -> bool {
@@ -166,23 +211,6 @@ impl NostrSubscription {
             && self.tags.is_none()
     }
 
-    /// Test whether a note matches this filter under NIP-01 semantics.
-    ///
-    /// Filter semantics, lifted from NIP-01:
-    /// - For each scalar list (`ids`, `authors`, `kinds`), the note's value
-    ///   must be in the list (OR within the list).
-    /// - For tag filters (`#e`, `#p`, `#t`, …), the note must carry at least
-    ///   one tag row whose first cell matches the letter after `#` and
-    ///   whose second cell is in the filter list.
-    /// - `since` / `until` are inclusive timestamp bounds.
-    /// - `limit` is a result-set cap, not a per-note predicate; ignored here.
-    /// - Fields that are `None` are wildcards (always match).
-    ///
-    /// One-shot use: linear scans over each value list / each tag row. For
-    /// repeated matching against the same filter (relay fan-out, cache
-    /// scans), call [`Self::compile`] once and match through the resulting
-    /// [`CompiledSubscription`] — that swaps every `iter().any(==)` for a
-    /// `HashSet::contains` and pre-strips invalid tag keys.
     #[must_use]
     pub fn matches(&self, note: &crate::NostrNote) -> bool {
         if self.is_wildcard() {
@@ -206,9 +234,6 @@ impl NostrSubscription {
                 return false;
             }
         }
-        // `since` / `until` use `u64` in the wire format but `created_at` is
-        // `i64`. A note with negative `created_at` cannot satisfy a `since`
-        // bound; clamp via try_from.
         if let Some(since) = self.since {
             let Ok(ts) = u64::try_from(note.created_at) else {
                 return false;
@@ -227,9 +252,6 @@ impl NostrSubscription {
         }
         if let Some(tags) = &self.tags {
             for (key, values) in tags {
-                // Per NIP-01, tag filter keys are `#x`. Anything else is
-                // either a typo on the wire or a non-tag field landed here
-                // by `#[serde(flatten)]`; skip silently.
                 let Some(letter) = key.strip_prefix('#') else {
                     continue;
                 };
@@ -253,24 +275,12 @@ impl NostrSubscription {
         true
     }
 
-    /// Pre-compute a fast matcher for this subscription. Builds `HashSet`s
-    /// over the value lists and pre-strips the `#` prefix from tag keys
-    /// (dropping any key that doesn't have it) so the per-note hot path is
-    /// allocation-free hash lookups.
-    ///
-    /// Cost: one alloc per filter field that is `Some`. Win: O(1) lookups
-    /// instead of O(n) on every note. Worth it any time the same filter is
-    /// matched against more than a handful of notes — i.e. always for relay
-    /// fan-out and cache scans.
     #[must_use]
     pub fn compile(&self) -> CompiledSubscription {
         CompiledSubscription::from(self)
     }
 }
 
-/// Hash-indexed mirror of [`NostrSubscription`] for repeat matching against
-/// many notes. Build once via [`NostrSubscription::compile`]; reuse for the
-/// life of the subscription.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledSubscription {
     wildcard: bool,
@@ -279,9 +289,6 @@ pub struct CompiledSubscription {
     kinds: Option<std::collections::HashSet<u32>>,
     since: Option<u64>,
     until: Option<u64>,
-    /// `(letter, allowed values)` — `letter` is the post-`#` tag name (e.g.
-    /// `"p"`, `"e"`). Filter entries whose key didn't start with `#` were
-    /// dropped at compile time, so this list is the canonical NIP-01 set.
     tags: Vec<(String, std::collections::HashSet<String>)>,
 }
 
@@ -308,8 +315,6 @@ impl From<&NostrSubscription> for CompiledSubscription {
 }
 
 impl CompiledSubscription {
-    /// Test whether a note matches the compiled filter. Same semantics as
-    /// [`NostrSubscription::matches`]; just faster on the hot path.
     #[must_use]
     pub fn matches(&self, note: &crate::NostrNote) -> bool {
         if self.wildcard {
@@ -348,9 +353,6 @@ impl CompiledSubscription {
                 }
             }
         }
-        // Tag matching: for every compiled `(letter, allowed)` pair, find
-        // at least one note row whose first cell is `letter` and whose
-        // second cell is in `allowed`.
         for (letter, allowed) in &self.tags {
             let any = note.tags.iter().any(|row| {
                 let Some(name) = row.first() else {
@@ -386,30 +388,21 @@ mod tests {
             tags: Some(tags),
             ..Default::default()
         };
-        let filter_value = serde_json::to_value(&filter).unwrap();
-        assert_eq!(
-            filter_value,
-            serde_json::json!({
-                "kinds": [4],
-                "#p": ["value1"],
-                "#q": ["value2"]
-            })
-        );
+        let json = bourne::to_string(&filter).unwrap();
+        assert!(json.contains("\"kinds\":[4]"));
+        assert!(json.contains("\"#p\":[\"value1\"]"));
+        assert!(json.contains("\"#q\":[\"value2\"]"));
     }
+
     #[test]
     fn test_filter_tags_add() {
         let mut filter = NostrSubscription::default();
         filter.add_tag("#p", "value1");
         filter.add_tag("#q", "value2");
         filter.add_tag("#p", "value3");
-        let filter_value = serde_json::to_value(&filter).unwrap();
-        assert_eq!(
-            filter_value,
-            serde_json::json!({
-                "#p": ["value1", "value3"],
-                "#q": ["value2"]
-            })
-        );
+        let json = bourne::to_string(&filter).unwrap();
+        assert!(json.contains("\"#p\":[\"value1\",\"value3\"]"));
+        assert!(json.contains("\"#q\":[\"value2\"]"));
     }
 
     #[test]
@@ -429,7 +422,6 @@ mod tests {
     #[test]
     fn test_subscription_builder_multiple_kinds() {
         let filter = NostrSubscription::new().kind(1).kind(4).kinds(vec![0, 3]);
-
         assert_eq!(filter.kinds, Some(vec![0, 3]));
     }
 
@@ -468,8 +460,6 @@ mod tests {
 
     #[test]
     fn matches_negative_created_at_fails_since() {
-        // i64 → u64 try_from fails for negative values; spec doesn't
-        // contemplate this, but we treat it as "out of bound."
         let f = NostrSubscription::new().since(0);
         assert!(!f.matches(&note("a", 1, -1)));
     }
@@ -506,7 +496,7 @@ mod tests {
         f.add_tag("#p", "bob");
         f.add_tag("#t", "rust");
         assert!(f.matches(&n));
-        f.add_tag("#t", "go"); // OR within #t — bob still has rust, still matches
+        f.add_tag("#t", "go");
         assert!(f.matches(&n));
         let mut f2 = NostrSubscription::new();
         f2.add_tag("#p", "bob");
@@ -514,9 +504,6 @@ mod tests {
         assert!(!f2.matches(&n), "missing #t=go must fail");
     }
 
-    /// Locks `CompiledSubscription` semantics to `NostrSubscription::matches`:
-    /// every case the linear matcher accepts/rejects, the compiled matcher
-    /// must agree. Run the same fixture set through both.
     #[test]
     fn compiled_matcher_agrees_with_linear() {
         let mut n_alice = note("alice", 1, 100);
@@ -539,7 +526,6 @@ mod tests {
         f_and.add_tag("#p", "bob");
         f_and.add_tag("#t", "rust");
         filters.push(f_and);
-        // Bogus key (no `#`) — linear silently skips, compiled drops at build.
         let mut f_bogus = NostrSubscription::new();
         f_bogus.add_tag("nothash", "x");
         filters.push(f_bogus);
@@ -555,5 +541,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn round_trip_through_bourne() {
+        let filter = NostrSubscription::new()
+            .kind(1)
+            .author("alice")
+            .limit(10)
+            .since(100)
+            .until(200)
+            .tag("#p", "bob");
+        let json = bourne::to_string(&filter).unwrap();
+        let back: NostrSubscription = bourne::parse_str(&json).unwrap();
+        assert_eq!(filter, back);
     }
 }

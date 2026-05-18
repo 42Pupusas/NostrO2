@@ -26,6 +26,7 @@ secp256k1 = ["dep:secp256k1"]
 hex.workspace = true
 k256 = { workspace = true, optional = true }
 secp256k1 = { workspace = true, optional = true }
+bourne.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

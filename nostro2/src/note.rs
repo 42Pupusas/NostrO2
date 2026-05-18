@@ -1,77 +1,92 @@
 use crate::tags::NostrTags;
+use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson};
 
 /// A Nostr note (event) as defined by NIP-01
-///
-/// Notes are the fundamental data structure in the Nostr protocol. They represent
-/// all types of events including text notes, metadata, direct messages, and more.
-///
-/// # Structure
-///
-/// - `pubkey`: Author's public key (32-byte hex string)
-/// - `created_at`: Unix timestamp in seconds
-/// - `kind`: Event type (see [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md))
-/// - `tags`: Array of tags for metadata and references
-/// - `content`: Event content (format depends on kind)
-/// - `id`: Event ID (SHA256 hash of serialized event)
-/// - `sig`: Schnorr signature over the event ID
-///
-/// # Examples
-///
-/// ```rust
-/// use nostro2::NostrNote;
-///
-/// // Simple text note
-/// let note = NostrNote::text_note("Hello, Nostr!");
-///
-/// // Builder pattern
-/// let note = NostrNote::builder()
-///     .content("Hello!")
-///     .kind(1)
-///     .tag_pubkey("abc123...")
-///     .build();
-/// ```
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,
     pub kind: u32,
     pub tags: NostrTags,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
 }
-impl Default for NostrNote {
-    /// Cheap, side-effect-free default. **Does not stamp `created_at`** —
-    /// callers that want "now" use [`NostrNote::new`], the explicit
-    /// constructors ([`text_note`](Self::text_note),
-    /// [`metadata`](Self::metadata), [`with_kind`](Self::with_kind)), or the
-    /// [`builder`](Self::builder), all of which call [`now()`](Self::now)
-    /// for them.
-    ///
-    /// Why: `..Default::default()` is the common Rust shorthand for "the
-    /// rest of the fields are uninteresting." Making it expensive (a
-    /// syscall, or a JS bridge call on wasm) and racy was a foot-gun.
-    fn default() -> Self {
-        Self {
-            pubkey: String::new(),
-            created_at: 0,
-            kind: 0,
-            tags: NostrTags::default(),
-            content: String::new(),
-            id: None,
-            sig: None,
+
+impl<'input> FromJson<'input> for NostrNote {
+    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
+        lex.object_start()?;
+
+        let mut pubkey: Option<String> = None;
+        let mut created_at: Option<i64> = None;
+        let mut kind: Option<u32> = None;
+        let mut tags: Option<NostrTags> = None;
+        let mut content: Option<String> = None;
+        let mut id: Option<String> = None;
+        let mut sig: Option<String> = None;
+
+        let mut maybe_key = lex.object_first_key()?;
+        while let Some(key) = maybe_key {
+            match key {
+                "pubkey" => pubkey = Some(String::from_lex(lex)?),
+                "created_at" => created_at = Some(i64::from_lex(lex)?),
+                "kind" => {
+                    kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
+                        BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
+                    })?);
+
+                }
+                "tags" => tags = Some(NostrTags::from_lex(lex)?),
+                "content" => content = Some(String::from_lex(lex)?),
+                "id" => id = Option::<String>::from_lex(lex)?,
+                "sig" => sig = Option::<String>::from_lex(lex)?,
+                _ => lex.skip_value()?,
+            }
+            maybe_key = lex.object_next_key()?;
         }
+
+        Ok(Self {
+            pubkey: pubkey
+                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
+            created_at: created_at
+                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
+            kind: kind
+                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
+            tags: tags.unwrap_or_default(),
+            content: content
+                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
+            id,
+            sig,
+        })
     }
 }
+
+impl ToJson for NostrNote {
+    fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
+        w.write_byte(b'{')?;
+        w.write_str_raw("\"pubkey\":")?;
+        w.write_escaped_str(&self.pubkey)?;
+        w.write_str_raw(",\"created_at\":")?;
+        w.write_int_i64(self.created_at)?;
+        w.write_str_raw(",\"kind\":")?;
+        w.write_int_u64(u64::from(self.kind))?;
+        w.write_str_raw(",\"tags\":")?;
+        self.tags.write_json(w)?;
+        w.write_str_raw(",\"content\":")?;
+        w.write_escaped_str(&self.content)?;
+        if let Some(id) = &self.id {
+            w.write_str_raw(",\"id\":")?;
+            w.write_escaped_str(id)?;
+        }
+        if let Some(sig) = &self.sig {
+            w.write_str_raw(",\"sig\":")?;
+            w.write_escaped_str(sig)?;
+        }
+        w.write_byte(b'}')
+    }
+}
+
 impl NostrNote {
-    /// Create an empty note with `created_at` stamped to the current time.
-    ///
-    /// Use this when you want "now" but no other field defaults — typical
-    /// pattern is `NostrNote { kind: 13, content: ct, ..NostrNote::new() }`
-    /// instead of `..Default::default()`, which used to stamp time as a
-    /// hidden side effect and no longer does.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -80,36 +95,11 @@ impl NostrNote {
         }
     }
 
-    /// Create a builder for constructing a `NostrNote`. The builder stamps
-    /// `created_at` to the current time; override with
-    /// [`NostrNoteBuilder::timestamp`].
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nostro2::NostrNote;
-    ///
-    /// let note = NostrNote::builder()
-    ///     .content("Hello, Nostr!")
-    ///     .kind(1)
-    ///     .build();
-    /// ```
     #[must_use]
     pub fn builder() -> NostrNoteBuilder {
         NostrNoteBuilder { note: Self::new() }
     }
 
-    /// Create a text note (kind 1) with the given content. `created_at` is
-    /// stamped to the current time.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nostro2::NostrNote;
-    ///
-    /// let note = NostrNote::text_note("Hello, Nostr!");
-    /// assert_eq!(note.kind, 1);
-    /// ```
     #[must_use]
     pub fn text_note(content: impl Into<String>) -> Self {
         Self {
@@ -119,18 +109,6 @@ impl NostrNote {
         }
     }
 
-    /// Create a metadata note (kind 0) with the given content. `created_at`
-    /// is stamped to the current time.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nostro2::NostrNote;
-    ///
-    /// let metadata = r#"{"name":"Alice","about":"Nostr user"}"#;
-    /// let note = NostrNote::metadata(metadata);
-    /// assert_eq!(note.kind, 0);
-    /// ```
     #[must_use]
     pub fn metadata(content: impl Into<String>) -> Self {
         Self {
@@ -140,17 +118,6 @@ impl NostrNote {
         }
     }
 
-    /// Create a note with the specified kind. `created_at` is stamped to
-    /// the current time.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nostro2::NostrNote;
-    ///
-    /// let note = NostrNote::with_kind(4); // Encrypted DM
-    /// assert_eq!(note.kind, 4);
-    /// ```
     #[must_use]
     pub fn with_kind(kind: u32) -> Self {
         Self {
@@ -159,9 +126,6 @@ impl NostrNote {
         }
     }
 
-    /// Get the current timestamp in the appropriate format for the platform
-    ///
-    /// Returns Unix timestamp (seconds since epoch)
     #[must_use]
     pub fn now() -> i64 {
         #[cfg(not(target_arch = "wasm32"))]
@@ -179,24 +143,12 @@ impl NostrNote {
         }
     }
 
-    /// Set the timestamp and return self for chaining
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nostro2::NostrNote;
-    ///
-    /// let note = NostrNote::text_note("Hello")
-    ///     .with_timestamp(1234567890);
-    /// assert_eq!(note.created_at, 1234567890);
-    /// ```
     #[must_use]
     pub const fn with_timestamp(mut self, timestamp: i64) -> Self {
         self.created_at = timestamp;
         self
     }
 
-    /// Set the content and return self for chaining
     #[must_use]
     pub fn with_content(mut self, content: impl Into<String>) -> Self {
         self.content = content.into();
@@ -214,7 +166,7 @@ impl NostrNote {
         id_bytes.copy_from_slice(&id);
         Some(id_bytes)
     }
-    /// Returns the signature as a byte array
+
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn sig_bytes(&self) -> Option<[u8; 64]> {
@@ -226,10 +178,7 @@ impl NostrNote {
         sig_bytes.copy_from_slice(&sig);
         Some(sig_bytes)
     }
-    /// Decode the stored `pubkey` hex into raw bytes. Returns `None` if the
-    /// field is not exactly 64 hex characters. Used by the curve-backend
-    /// verifiers; gated to suppress the dead-code warning when neither curve
-    /// feature is enabled (parse-only consumers like `nostro2-relay`).
+
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn pubkey_bytes(&self) -> Option<[u8; 32]> {
@@ -240,46 +189,53 @@ impl NostrNote {
 
     /// Compute the SHA256 hash of the canonical event serialization directly,
     /// without allocating an intermediate JSON string.
+    ///
+    /// Canonical form: `[0,pubkey,created_at,kind,tags,content]`
     #[inline]
-    fn compute_id_bytes(&self) -> Result<[u8; 32], crate::errors::NostrErrors> {
+    fn compute_id_bytes(&self) -> [u8; 32] {
         use sha2::Digest as _;
 
-        let serialized_data = (
-            0,
-            &*self.pubkey,
-            self.created_at,
-            self.kind,
-            &self.tags,
-            &*self.content,
-        );
         let mut hasher = sha2::Sha256::new();
-        serde_json::to_writer(Sha256Writer(&mut hasher), &serialized_data)?;
-        Ok(hasher.finalize().into())
+        let mut sink = Sha256Sink(&mut hasher);
+
+        // Sha256Sink::Error is Infallible — these calls can never fail.
+        let _: Result<(), core::convert::Infallible> = (|| {
+            sink.write_byte(b'[')?;
+            sink.write_int_i64(0)?;
+            sink.write_byte(b',')?;
+            sink.write_escaped_str(&self.pubkey)?;
+            sink.write_byte(b',')?;
+            sink.write_int_i64(self.created_at)?;
+            sink.write_byte(b',')?;
+            sink.write_int_u64(u64::from(self.kind))?;
+            sink.write_byte(b',')?;
+            self.tags.write_json(&mut sink)?;
+            sink.write_byte(b',')?;
+            sink.write_escaped_str(&self.content)?;
+            sink.write_byte(b']')
+        })();
+
+        hasher.finalize().into()
     }
 
     /// # Errors
     ///
-    /// Will return `Err` if `serde` cannot serialize the data
+    /// Will return `Err` if serialization fails
     pub fn serialize_id(&mut self) -> Result<(), crate::errors::NostrErrors> {
-        let hash = self.compute_id_bytes()?;
+        let hash = self.compute_id_bytes();
         self.id = Some(hex::encode(hash));
         Ok(())
     }
 
-    /// Sign this note with the given signer, populating `pubkey`, `id`, and
-    /// `sig` in place.
-    ///
     /// # Errors
-    /// Returns [`crate::errors::NostrErrors::SerdeError`] if id serialization
-    /// fails, or [`crate::errors::NostrErrors::Signer`] wrapping the
-    /// backend's [`nostro2_traits::SignerError`] if signing fails (hardware
-    /// wallet rejection, NIP-46 transport error, etc.).
+    ///
+    /// Returns [`crate::errors::NostrErrors::Signer`] if signing fails.
     pub fn sign_with<S: nostro2_traits::NostrSigner + ?Sized>(
         &mut self,
         signer: &S,
     ) -> Result<(), crate::errors::NostrErrors> {
         self.pubkey = signer.public_key();
-        let id = self.serialize_id_raw()?;
+        let id = self.serialize_id_raw();
         let sig = signer.sign_prehash(&id)?;
         self.sig = Some(hex::encode(sig));
         Ok(())
@@ -287,17 +243,15 @@ impl NostrNote {
 
     /// Compute and set the event ID, returning the raw 32-byte hash.
     ///
-    /// This avoids a hex-decode round-trip when the caller needs the raw bytes
-    /// immediately (e.g., for signing).
-    ///
     /// # Errors
     ///
-    /// Will return `Err` if `serde` cannot serialize the data
-    pub fn serialize_id_raw(&mut self) -> Result<[u8; 32], crate::errors::NostrErrors> {
-        let hash = self.compute_id_bytes()?;
+    /// Infallible — kept as `Result` for API compatibility.
+    pub fn serialize_id_raw(&mut self) -> [u8; 32] {
+        let hash = self.compute_id_bytes();
         self.id = Some(hex::encode(hash));
-        Ok(hash)
+        hash
     }
+
     #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
@@ -336,58 +290,63 @@ impl NostrNote {
         let msg = Message::from_digest(id);
         Ok(SECP256K1.verify_schnorr(&sig, &msg, &xonly).is_ok())
     }
-    /// Used to verify the content of the note
-    ///
-    /// Rebuilds the note and rehashes the content to verify the id.
-    /// Compares raw bytes to avoid hex encoding overhead.
-    /// Only used by `verify`, which is itself curve-feature-gated.
+
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn verify_content(&self) -> bool {
         let Some(stored_id) = self.id_bytes() else {
             return false;
         };
-        let Ok(computed_id) = self.compute_id_bytes() else {
-            return false;
-        };
-        stored_id == computed_id
+        stored_id == self.compute_id_bytes()
     }
-    /// Verify the note's signature and content
-    ///
-    /// Returns true if both the signature and content hash are valid.
-    /// Available only when a curve backend feature (`k256` or `secp256k1`)
-    /// is enabled — parse-only consumers can build `nostro2` without one.
+
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[must_use]
     #[inline]
     pub fn verify(&self) -> bool {
         self.verify_content() && self.verify_signature().is_ok_and(|t| t)
     }
-    /// Creates a JSON encoded string from the `NostrNote` struct
-    ///
+
     /// # Errors
     ///
-    /// Will return `Err` if `serde` cannot serialize the data,
-    /// but because of data types should never realistically fail.
+    /// Returns [`crate::errors::NostrErrors::JsonError`] if serialization fails.
     pub fn serialize(&self) -> Result<String, crate::errors::NostrErrors> {
-        Ok(serde_json::to_string(self)?)
+        Ok(bourne::to_string(self)?)
     }
 }
-/// Zero-alloc adapter: feeds `serde_json::to_writer` output directly into SHA-256.
-/// Shared with `view::NostrNoteView::compute_id_bytes` so both id paths agree by
-/// construction; a divergence here would silently fork the network.
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) struct Sha256Writer<'a>(pub(crate) &'a mut sha2::Sha256);
 
-impl std::io::Write for Sha256Writer<'_> {
+/// Zero-alloc adapter: feeds bourne `JsonWrite` output directly into SHA-256.
+/// Shared with `view::NostrNoteView::compute_id_bytes` so both id paths agree by
+/// construction.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct Sha256Sink<'a>(pub(crate) &'a mut sha2::Sha256);
+
+impl JsonWrite for Sha256Sink<'_> {
+    type Error = core::convert::Infallible;
+
     #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    fn write_byte(&mut self, b: u8) -> Result<(), Self::Error> {
         use sha2::Digest as _;
-        self.0.update(buf);
-        Ok(buf.len())
+        self.0.update([b]);
+        Ok(())
     }
+
     #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn write_str_raw(&mut self, s: &str) -> Result<(), Self::Error> {
+        use sha2::Digest as _;
+        self.0.update(s.as_bytes());
+        Ok(())
+    }
+
+    #[inline]
+    fn write_float_f64(&mut self, f: f64) -> Result<(), Self::Error> {
+        use sha2::Digest as _;
+        use std::io::Write as _;
+        let mut buf = [0_u8; 24];
+        let n = write!(&mut buf[..], "{f}").map_or(0, |()| {
+            buf.iter().position(|&b| b == 0).unwrap_or(buf.len())
+        });
+        self.0.update(&buf[..n]);
         Ok(())
     }
 }
@@ -395,129 +354,86 @@ impl std::io::Write for Sha256Writer<'_> {
 impl core::str::FromStr for NostrNote {
     type Err = crate::errors::NostrErrors;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(serde_json::from_str(s)?)
+        Ok(bourne::parse_str(s)?)
     }
 }
-impl TryFrom<serde_json::Value> for NostrNote {
-    type Error = crate::errors::NostrErrors;
-    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
-        Ok(serde_json::from_value(value)?)
-    }
-}
-impl TryFrom<&serde_json::Value> for NostrNote {
-    type Error = crate::errors::NostrErrors;
-    fn try_from(value: &serde_json::Value) -> Result<Self, Self::Error> {
-        Ok(serde_json::from_value(value.clone())?)
-    }
-}
-impl TryFrom<NostrNote> for serde_json::Value {
-    type Error = crate::errors::NostrErrors;
+
+#[cfg(target_arch = "wasm32")]
+impl TryFrom<NostrNote> for js_sys::wasm_bindgen::JsValue {
+    type Error = js_sys::wasm_bindgen::JsValue;
     fn try_from(note: NostrNote) -> Result<Self, Self::Error> {
-        Ok(serde_json::to_value(note)?)
+        let json = bourne::to_string(&note).map_err(|e| {
+            Self::Error::from(js_sys::Error::new(&format!("serialize NostrNote: {e}")))
+        })?;
+        js_sys::JSON::parse(&json).map_err(|_| {
+            Self::Error::from(js_sys::Error::new("parse NostrNote JSON in JS engine"))
+        })
     }
 }
+
 /// Builder for constructing `NostrNote` instances
-///
-/// # Example
-///
-/// ```
-/// use nostro2::NostrNote;
-///
-/// let note = NostrNote::builder()
-///     .content("Hello, Nostr!")
-///     .kind(1)
-///     .tag_pubkey("abc123...")
-///     .build();
-/// ```
 #[derive(Debug)]
 pub struct NostrNoteBuilder {
     note: NostrNote,
 }
 
 impl NostrNoteBuilder {
-    /// Set the content of the note
     #[must_use]
     pub fn content(mut self, content: impl Into<String>) -> Self {
         self.note.content = content.into();
         self
     }
 
-    /// Set the kind of the note
     #[must_use]
     pub const fn kind(mut self, kind: u32) -> Self {
         self.note.kind = kind;
         self
     }
 
-    /// Set the timestamp of the note
     #[must_use]
     pub const fn timestamp(mut self, timestamp: i64) -> Self {
         self.note.created_at = timestamp;
         self
     }
 
-    /// Add a pubkey tag (p-tag)
     #[must_use]
     pub fn tag_pubkey(mut self, pubkey: &str) -> Self {
         self.note.tags.add_pubkey_tag(pubkey, None);
         self
     }
 
-    /// Add a pubkey tag with a relay hint
     #[must_use]
     pub fn tag_pubkey_with_relay(mut self, pubkey: &str, relay: &str) -> Self {
         self.note.tags.add_pubkey_tag(pubkey, Some(relay));
         self
     }
 
-    /// Add an event tag (e-tag)
     #[must_use]
     pub fn tag_event(mut self, event_id: &str) -> Self {
         self.note.tags.add_event_tag(event_id);
         self
     }
 
-    /// Add a parameter tag (d-tag)
     #[must_use]
     pub fn tag_parameter(mut self, parameter: &str) -> Self {
         self.note.tags.add_parameter_tag(parameter);
         self
     }
 
-    /// Add a custom tag
     #[must_use]
     pub fn tag(mut self, tag_type: &str, value: &str) -> Self {
         self.note.tags.add_custom_tag(tag_type, value);
         self
     }
 
-    /// Add a relay tag (r-tag)
     #[must_use]
     pub fn tag_relay(mut self, url: &str) -> Self {
         self.note.tags.add_relay_tag(url);
         self
     }
 
-    /// Build the `NostrNote`
     #[must_use]
     pub fn build(self) -> NostrNote {
         self.note
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<NostrNote> for js_sys::wasm_bindgen::JsValue {
-    // `js_sys::Error` is the natural error type on the wasm boundary —
-    // it lands as a JS `Error` in the host without needing a separate
-    // wrapper enum. Callers convert via `?` in functions returning
-    // `Result<_, JsValue>`.
-    type Error = js_sys::wasm_bindgen::JsValue;
-    fn try_from(note: NostrNote) -> Result<Self, Self::Error> {
-        let json = serde_json::to_string(&note).map_err(|e| {
-            Self::Error::from(js_sys::Error::new(&format!("serialize NostrNote: {e}")))
-        })?;
-        js_sys::JSON::parse(&json).map_err(|_| {
-            Self::Error::from(js_sys::Error::new("parse NostrNote JSON in JS engine"))
-        })
     }
 }

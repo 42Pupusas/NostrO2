@@ -43,7 +43,6 @@ serde_json.workspace = true
 # harness; bump in lockstep with substantive comparison changes so the
 # numbers in commit history stay interpretable. `nip44` is opt-in upstream.
 nostr = { version = "0.44", features = ["nip44"] }
-
 [[bench]]
 name = "nostr_comparison"
 harness = false

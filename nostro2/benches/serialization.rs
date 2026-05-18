@@ -58,7 +58,7 @@ fn bench_client_event_serialization(c: &mut Criterion) {
     group.bench_function("send_note", |b| {
         b.iter(|| {
             let event: NostrClientEvent = black_box(note.clone()).into();
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -66,7 +66,7 @@ fn bench_client_event_serialization(c: &mut Criterion) {
     group.bench_function("subscribe", |b| {
         b.iter(|| {
             let event: NostrClientEvent = black_box(subscription.clone()).into();
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -74,7 +74,7 @@ fn bench_client_event_serialization(c: &mut Criterion) {
     group.bench_function("close_subscription", |b| {
         b.iter(|| {
             let event = NostrClientEvent::close_subscription("sub_id");
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -94,7 +94,7 @@ fn bench_relay_event_serialization(c: &mut Criterion) {
                 "sub_id".to_string(),
                 black_box(note.clone()),
             );
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -107,7 +107,7 @@ fn bench_relay_event_serialization(c: &mut Criterion) {
                 true,
                 "OK".to_string(),
             );
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -116,7 +116,7 @@ fn bench_relay_event_serialization(c: &mut Criterion) {
         b.iter(|| {
             let event =
                 NostrRelayEvent::EndOfSubscription(RelayEventTag::Eose, "sub_id".to_string());
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -127,7 +127,7 @@ fn bench_relay_event_serialization(c: &mut Criterion) {
                 RelayEventTag::Notice,
                 "This is a notice message".to_string(),
             );
-            serde_json::to_string(&event).unwrap()
+            bourne::to_string(&event).unwrap()
         });
     });
 
@@ -139,24 +139,24 @@ fn bench_client_event_deserialization(c: &mut Criterion) {
     let subscription = create_sample_subscription();
 
     // Pre-serialize events
-    let send_note_json = serde_json::to_string(&NostrClientEvent::from(note.clone())).unwrap();
+    let send_note_json = bourne::to_string(&NostrClientEvent::from(note.clone())).unwrap();
     let subscribe_json =
-        serde_json::to_string(&NostrClientEvent::from(subscription.clone())).unwrap();
+        bourne::to_string(&NostrClientEvent::from(subscription.clone())).unwrap();
     let close_json =
-        serde_json::to_string(&NostrClientEvent::close_subscription("sub_id")).unwrap();
+        bourne::to_string(&NostrClientEvent::close_subscription("sub_id")).unwrap();
 
     let mut group = c.benchmark_group("client_event_deserialization");
 
     group.bench_function("send_note", |b| {
-        b.iter(|| serde_json::from_str::<NostrClientEvent>(black_box(&send_note_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrClientEvent>(black_box(&send_note_json)).unwrap());
     });
 
     group.bench_function("subscribe", |b| {
-        b.iter(|| serde_json::from_str::<NostrClientEvent>(black_box(&subscribe_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrClientEvent>(black_box(&subscribe_json)).unwrap());
     });
 
     group.bench_function("close_subscription", |b| {
-        b.iter(|| serde_json::from_str::<NostrClientEvent>(black_box(&close_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrClientEvent>(black_box(&close_json)).unwrap());
     });
 
     group.finish();
@@ -166,25 +166,25 @@ fn bench_relay_event_deserialization(c: &mut Criterion) {
     let note = create_sample_note();
 
     // Pre-serialize events
-    let new_note_json = serde_json::to_string(&NostrRelayEvent::NewNote(
+    let new_note_json = bourne::to_string(&NostrRelayEvent::NewNote(
         RelayEventTag::Event,
         "sub_id".to_string(),
         note.clone(),
     ))
     .unwrap();
-    let sent_ok_json = serde_json::to_string(&NostrRelayEvent::SentOk(
+    let sent_ok_json = bourne::to_string(&NostrRelayEvent::SentOk(
         RelayEventTag::Ok,
         "event_id".to_string(),
         true,
         "OK".to_string(),
     ))
     .unwrap();
-    let eose_json = serde_json::to_string(&NostrRelayEvent::EndOfSubscription(
+    let eose_json = bourne::to_string(&NostrRelayEvent::EndOfSubscription(
         RelayEventTag::Eose,
         "sub_id".to_string(),
     ))
     .unwrap();
-    let notice_json = serde_json::to_string(&NostrRelayEvent::Notice(
+    let notice_json = bourne::to_string(&NostrRelayEvent::Notice(
         RelayEventTag::Notice,
         "This is a notice message".to_string(),
     ))
@@ -193,19 +193,19 @@ fn bench_relay_event_deserialization(c: &mut Criterion) {
     let mut group = c.benchmark_group("relay_event_deserialization");
 
     group.bench_function("new_note", |b| {
-        b.iter(|| serde_json::from_str::<NostrRelayEvent>(black_box(&new_note_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrRelayEvent>(black_box(&new_note_json)).unwrap());
     });
 
     group.bench_function("sent_ok", |b| {
-        b.iter(|| serde_json::from_str::<NostrRelayEvent>(black_box(&sent_ok_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrRelayEvent>(black_box(&sent_ok_json)).unwrap());
     });
 
     group.bench_function("eose", |b| {
-        b.iter(|| serde_json::from_str::<NostrRelayEvent>(black_box(&eose_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrRelayEvent>(black_box(&eose_json)).unwrap());
     });
 
     group.bench_function("notice", |b| {
-        b.iter(|| serde_json::from_str::<NostrRelayEvent>(black_box(&notice_json)).unwrap());
+        b.iter(|| bourne::parse_str::<NostrRelayEvent>(black_box(&notice_json)).unwrap());
     });
 
     group.finish();
@@ -221,16 +221,16 @@ fn bench_roundtrip_serialization(c: &mut Criterion) {
     group.bench_function("client_send_note", |b| {
         b.iter(|| {
             let event: NostrClientEvent = black_box(note.clone()).into();
-            let json = serde_json::to_string(&event).unwrap();
-            serde_json::from_str::<NostrClientEvent>(&json).unwrap()
+            let json = bourne::to_string(&event).unwrap();
+            bourne::parse_str::<NostrClientEvent>(&json).unwrap()
         });
     });
 
     group.bench_function("client_subscribe", |b| {
         b.iter(|| {
             let event: NostrClientEvent = black_box(subscription.clone()).into();
-            let json = serde_json::to_string(&event).unwrap();
-            serde_json::from_str::<NostrClientEvent>(&json).unwrap()
+            let json = bourne::to_string(&event).unwrap();
+            bourne::parse_str::<NostrClientEvent>(&json).unwrap()
         });
     });
 
@@ -241,8 +241,8 @@ fn bench_roundtrip_serialization(c: &mut Criterion) {
                 "sub_id".to_string(),
                 black_box(note.clone()),
             );
-            let json = serde_json::to_string(&event).unwrap();
-            serde_json::from_str::<NostrRelayEvent>(&json).unwrap()
+            let json = bourne::to_string(&event).unwrap();
+            bourne::parse_str::<NostrRelayEvent>(&json).unwrap()
         });
     });
 
@@ -267,7 +267,7 @@ fn bench_varying_note_sizes(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("serialize", size), size, |b, _| {
             b.iter(|| {
                 let event: NostrClientEvent = black_box(note.clone()).into();
-                serde_json::to_string(&event).unwrap()
+                bourne::to_string(&event).unwrap()
             });
         });
     }

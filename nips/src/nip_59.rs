@@ -4,7 +4,7 @@ pub enum Nip59Error {
     MissingId,
     MissingSig,
     Nip44Error(crate::nip_44::Nip44Error),
-    SerializationError(serde_json::Error),
+    SerializationError(bourne::Error),
     ParseError(String),
     SigningError,
 }
@@ -80,7 +80,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         }
         rumor.sig.take();
         let mut seal = nostro2::NostrNote {
-            content: serde_json::to_string(rumor).map_err(Nip59Error::SerializationError)?,
+            content: bourne::to_string(rumor).map_err(Nip59Error::SerializationError)?,
             kind: 13,
             ..nostro2::NostrNote::new()
         };
@@ -112,7 +112,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         let throwaway_key = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
-            content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 1059,
             pubkey: throwaway_key.public_key(),
             ..nostro2::NostrNote::new()
@@ -140,7 +140,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
-            content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 10059,
             pubkey: self.public_key(),
             ..nostro2::NostrNote::new()
@@ -172,7 +172,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         let throwaway_key = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
-            content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 20059,
             pubkey: throwaway_key.public_key(),
             ..nostro2::NostrNote::new()
@@ -201,7 +201,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut giftwrap = nostro2::NostrNote {
-            content: serde_json::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 30059,
             pubkey: self.public_key(),
             ..nostro2::NostrNote::new()

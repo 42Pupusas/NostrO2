@@ -33,6 +33,7 @@ libaes.workspace = true
 nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
 getrandom.workspace = true
+bourne.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
