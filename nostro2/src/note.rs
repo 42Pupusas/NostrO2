@@ -1,86 +1,19 @@
 use crate::tags::NostrTags;
-use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson};
+use bourne::{JsonWrite, ToJson};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct NostrNote {
-    pub pubkey: String,
-    pub created_at: i64,
-    pub kind: u32,
-    pub tags: NostrTags,
-    pub content: String,
-    pub id: Option<String>,
-    pub sig: Option<String>,
-}
-
-impl<'input> FromJson<'input> for NostrNote {
-    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        lex.object_start()?;
-
-        let mut pubkey: Option<String> = None;
-        let mut created_at: Option<i64> = None;
-        let mut kind: Option<u32> = None;
-        let mut tags: Option<NostrTags> = None;
-        let mut content: Option<String> = None;
-        let mut id: Option<String> = None;
-        let mut sig: Option<String> = None;
-
-        let mut maybe_key = lex.object_first_key()?;
-        while let Some(key) = maybe_key {
-            match key {
-                "pubkey" => pubkey = Some(String::from_lex(lex)?),
-                "created_at" => created_at = Some(lex.parse_i64_value()?),
-                "kind" => {
-                    kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
-                        BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
-                    })?);
-                }
-                "tags" => tags = Some(NostrTags::from_lex(lex)?),
-                "content" => content = Some(String::from_lex(lex)?),
-                "id" => id = Option::<String>::from_lex(lex)?,
-                "sig" => sig = Option::<String>::from_lex(lex)?,
-                _ => lex.skip_value()?,
-            }
-            maybe_key = lex.object_next_key()?;
-        }
-
-        Ok(Self {
-            pubkey: pubkey
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            created_at: created_at
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            kind: kind
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            tags: tags.unwrap_or_default(),
-            content: content
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            id,
-            sig,
-        })
-    }
-}
-
-impl ToJson for NostrNote {
-    fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
-        w.write_byte(b'{')?;
-        w.write_str_raw("\"pubkey\":")?;
-        w.write_escaped_str(&self.pubkey)?;
-        w.write_str_raw(",\"created_at\":")?;
-        w.write_int_i64(self.created_at)?;
-        w.write_str_raw(",\"kind\":")?;
-        w.write_int_u64(u64::from(self.kind))?;
-        w.write_str_raw(",\"tags\":")?;
-        self.tags.write_json(w)?;
-        w.write_str_raw(",\"content\":")?;
-        w.write_escaped_str(&self.content)?;
-        if let Some(id) = &self.id {
-            w.write_str_raw(",\"id\":")?;
-            w.write_escaped_str(id)?;
-        }
-        if let Some(sig) = &self.sig {
-            w.write_str_raw(",\"sig\":")?;
-            w.write_escaped_str(sig)?;
-        }
-        w.write_byte(b'}')
+bourne::json! {
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct NostrNote {
+        pub pubkey: String,
+        pub created_at: i64,
+        pub kind: u32,
+        #[bourne(default)]
+        pub tags: NostrTags,
+        pub content: String,
+        #[bourne(skip_if_none)]
+        pub id: Option<String>,
+        #[bourne(skip_if_none)]
+        pub sig: Option<String>,
     }
 }
 

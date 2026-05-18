@@ -6,8 +6,7 @@ use std::borrow::Cow;
 
 /// Borrowed view over the tag array of a note.
 ///
-/// Stores every tag cell in one flat vector with row offsets in a second
-/// vector — two allocations total, no matter how many tags.
+/// Custom wire format (`[[String]]`) — must stay hand-written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TagsView<'a> {
     cells: Vec<Cow<'a, str>>,
@@ -53,7 +52,6 @@ impl<'input> FromJson<'input> for TagsView<'input> {
         }
 
         loop {
-            // Each element is an inner array of strings (one tag row).
             if lex.array_start()? {
                 // Empty row.
             } else {
@@ -77,11 +75,6 @@ impl<'input> FromJson<'input> for TagsView<'input> {
     }
 }
 
-/// Borrowed view over a Nostr note parsed from a JSON frame.
-///
-/// String fields are `Cow<'a, str>` — they borrow from the source buffer
-/// when the JSON contains no escape sequences in that field, and fall back
-/// to an owned `String` otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NostrNoteView<'a> {
     pub pubkey: Cow<'a, str>,
@@ -109,7 +102,7 @@ impl<'input> FromJson<'input> for NostrNoteView<'input> {
         while let Some(key) = maybe_key {
             match key {
                 "pubkey" => pubkey = Some(<Cow<'input, str>>::from_lex(lex)?),
-                "created_at" => created_at = Some(i64::from_lex(lex)?),
+                "created_at" => created_at = Some(lex.parse_i64_value()?),
                 "kind" => {
                     kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
                         BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
