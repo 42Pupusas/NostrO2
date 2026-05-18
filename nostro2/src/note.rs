@@ -1,7 +1,6 @@
 use crate::tags::NostrTags;
 use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson};
 
-/// A Nostr note (event) as defined by NIP-01
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct NostrNote {
     pub pubkey: String,
@@ -29,12 +28,11 @@ impl<'input> FromJson<'input> for NostrNote {
         while let Some(key) = maybe_key {
             match key {
                 "pubkey" => pubkey = Some(String::from_lex(lex)?),
-                "created_at" => created_at = Some(i64::from_lex(lex)?),
+                "created_at" => created_at = Some(lex.parse_i64_value()?),
                 "kind" => {
                     kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
                         BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
                     })?);
-
                 }
                 "tags" => tags = Some(NostrTags::from_lex(lex)?),
                 "content" => content = Some(String::from_lex(lex)?),
@@ -187,10 +185,6 @@ impl NostrNote {
         Some(out)
     }
 
-    /// Compute the SHA256 hash of the canonical event serialization directly,
-    /// without allocating an intermediate JSON string.
-    ///
-    /// Canonical form: `[0,pubkey,created_at,kind,tags,content]`
     #[inline]
     fn compute_id_bytes(&self) -> [u8; 32] {
         use sha2::Digest as _;
@@ -198,7 +192,6 @@ impl NostrNote {
         let mut hasher = sha2::Sha256::new();
         let mut sink = Sha256Sink(&mut hasher);
 
-        // Sha256Sink::Error is Infallible — these calls can never fail.
         let _: Result<(), core::convert::Infallible> = (|| {
             sink.write_byte(b'[')?;
             sink.write_int_i64(0)?;
@@ -241,11 +234,6 @@ impl NostrNote {
         Ok(())
     }
 
-    /// Compute and set the event ID, returning the raw 32-byte hash.
-    ///
-    /// # Errors
-    ///
-    /// Infallible — kept as `Result` for API compatibility.
     pub fn serialize_id_raw(&mut self) -> [u8; 32] {
         let hash = self.compute_id_bytes();
         self.id = Some(hex::encode(hash));
@@ -316,8 +304,6 @@ impl NostrNote {
 }
 
 /// Zero-alloc adapter: feeds bourne `JsonWrite` output directly into SHA-256.
-/// Shared with `view::NostrNoteView::compute_id_bytes` so both id paths agree by
-/// construction.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) struct Sha256Sink<'a>(pub(crate) &'a mut sha2::Sha256);
 
@@ -371,7 +357,6 @@ impl TryFrom<NostrNote> for js_sys::wasm_bindgen::JsValue {
     }
 }
 
-/// Builder for constructing `NostrNote` instances
 #[derive(Debug)]
 pub struct NostrNoteBuilder {
     note: NostrNote,
