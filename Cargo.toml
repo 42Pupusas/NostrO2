@@ -72,4 +72,5 @@ web-sys = { version = "0.3" }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
+divan = "0.1"
 

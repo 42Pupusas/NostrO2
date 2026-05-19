@@ -41,7 +41,7 @@ js-sys = "0.3"
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
-criterion.workspace = true
+divan.workspace = true
 # Workspace-level `nostro2-signer` has `default-features = false`, so we
 # pin a curve feature here for the dev-dep used by the integration test in
 # `lib.rs::tests::sign_with_then_verify_round_trips`. The mirror under
