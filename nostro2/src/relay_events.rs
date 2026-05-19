@@ -16,16 +16,16 @@ pub enum RelayEventTag {
 }
 
 impl RelayEventTag {
-    const fn as_str(self) -> &'static str {
+    const fn as_quoted(self) -> &'static str {
         match self {
-            Self::Event => "EVENT",
-            Self::Ok => "OK",
-            Self::Eose => "EOSE",
-            Self::Notice => "NOTICE",
-            Self::Close => "CLOSE",
-            Self::Auth => "AUTH",
-            Self::Req => "REQ",
-            Self::Closed => "CLOSED",
+            Self::Event => "\"EVENT\"",
+            Self::Ok => "\"OK\"",
+            Self::Eose => "\"EOSE\"",
+            Self::Notice => "\"NOTICE\"",
+            Self::Close => "\"CLOSE\"",
+            Self::Auth => "\"AUTH\"",
+            Self::Req => "\"REQ\"",
+            Self::Closed => "\"CLOSED\"",
         }
     }
 
@@ -54,7 +54,7 @@ impl<'input> FromJson<'input> for RelayEventTag {
 
 impl ToJson for RelayEventTag {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
-        w.write_escaped_str(self.as_str())
+        w.write_str_raw(self.as_quoted())
     }
 }
 
