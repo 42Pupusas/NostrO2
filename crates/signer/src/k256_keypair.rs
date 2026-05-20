@@ -139,14 +139,13 @@ mod tests {
     /// both still verify. The `secp256k1` backend has the same test.
     #[test]
     fn signs_with_fresh_aux_rand() {
+        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+
         let kp = K256Keypair::generate();
         let prehash = [0x42_u8; 32];
         let a = kp.sign_prehash(&prehash).unwrap();
         let b = kp.sign_prehash(&prehash).unwrap();
         assert_ne!(a, b, "k256 sign_prehash must inject fresh aux rand");
-
-        // Both must still verify against the same prehash + pubkey.
-        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
         let pk_bytes = kp.pubkey_bytes();
         let vk = VerifyingKey::from_bytes((&pk_bytes).into()).unwrap();
         for sig in [a, b] {

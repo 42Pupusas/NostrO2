@@ -35,7 +35,7 @@ hex = "0.4.3"
 hkdf = "0.12"
 hmac = "0.12"
 libaes = "0.7"
-k256 = { path = "../../forfun/elliptic-curves/k256", features = ["schnorr", "ecdh"] }
+k256 = { path = "../../forfun/elliptic-curves/k256", default-features = false, features = ["schnorr", "ecdh"] }
 secp256k1 = { version = "0.29", features = ["rand", "global-context", "hashes"] }
 getrandom = "0.4"
 sha2 = "0.10"
