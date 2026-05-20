@@ -134,7 +134,7 @@ fn bench_serialization(c: &mut Criterion) {
     let (_, nostr_event) = nostr_signed_event();
     let mut group = c.benchmark_group("event_serialize");
     group.bench_function(NOSTRO2_BACKEND, |b| {
-        b.iter(|| serde_json::to_string(black_box(&nostro2_note)).unwrap());
+        b.iter(|| bourne::to_string(black_box(&nostro2_note)).unwrap());
     });
     group.bench_function("nostr", |b| {
         b.iter(|| black_box(&nostr_event).as_json());
@@ -147,12 +147,12 @@ fn bench_serialization(c: &mut Criterion) {
 fn bench_deserialization(c: &mut Criterion) {
     let (_, nostro2_note) = nostro2_signed_note();
     let (_, nostr_event) = nostr_signed_event();
-    let nostro2_json = serde_json::to_string(&nostro2_note).unwrap();
+    let nostro2_json = bourne::to_string(&nostro2_note).unwrap();
     let nostr_json = nostr_event.as_json();
 
     let mut group = c.benchmark_group("event_deserialize");
     group.bench_function(NOSTRO2_BACKEND, |b| {
-        b.iter(|| serde_json::from_str::<nostro2::NostrNote>(black_box(&nostro2_json)).unwrap());
+        b.iter(|| bourne::parse_str::<nostro2::NostrNote>(black_box(&nostro2_json)).unwrap());
     });
     group.bench_function("nostr", |b| {
         b.iter(|| nostr::Event::from_json(black_box(&nostr_json)).unwrap());
@@ -171,21 +171,21 @@ fn bench_deserialization(c: &mut Criterion) {
 fn bench_view_parse(c: &mut Criterion) {
     let (_, nostro2_note) = nostro2_signed_note();
     let (_, nostr_event) = nostr_signed_event();
-    let nostro2_json = serde_json::to_string(&nostro2_note).unwrap();
+    let nostro2_json = bourne::to_string(&nostro2_note).unwrap();
     let nostr_json = nostr_event.as_json();
 
     let mut group = c.benchmark_group("view_parse");
     group.bench_function("nostro2_view", |b| {
         b.iter(|| {
             let view: nostro2::NostrNoteView<'_> =
-                serde_json::from_str(black_box(&nostro2_json)).unwrap();
+                bourne::parse_str(black_box(&nostro2_json)).unwrap();
             black_box(view);
         });
     });
     group.bench_function("nostro2_owned", |b| {
         b.iter(|| {
             let owned: nostro2::NostrNote =
-                serde_json::from_str(black_box(&nostro2_json)).unwrap();
+                bourne::parse_str(black_box(&nostro2_json)).unwrap();
             black_box(owned);
         });
     });
@@ -423,7 +423,7 @@ fn bench_serialization_varying_sizes(c: &mut Criterion) {
             .unwrap();
 
         group.bench_with_input(BenchmarkId::new(NOSTRO2_BACKEND, size), &size, |b, _| {
-            b.iter(|| serde_json::to_string(black_box(&nostro2_note)).unwrap());
+            b.iter(|| bourne::to_string(black_box(&nostro2_note)).unwrap());
         });
         group.bench_with_input(BenchmarkId::new("nostr", size), &size, |b, _| {
             b.iter(|| black_box(&nostr_event).as_json());
@@ -442,8 +442,8 @@ fn bench_full_roundtrip(c: &mut Criterion) {
         b.iter(|| {
             let mut note = nostro2::NostrNote::text_note("Roundtrip");
             note.sign_with(&kp).unwrap();
-            let json = serde_json::to_string(&note).unwrap();
-            let parsed: nostro2::NostrNote = serde_json::from_str(&json).unwrap();
+            let json = bourne::to_string(&note).unwrap();
+            let parsed: nostro2::NostrNote = bourne::parse_str(&json).unwrap();
             assert!(parsed.verify());
         });
     });

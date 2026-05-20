@@ -513,15 +513,16 @@ mod tests {
         n_bob.tags.add_custom_tag("t", "go");
         let n_neg = note("alice", 1, -1);
 
-        let mut filters = Vec::<NostrSubscription>::new();
-        filters.push(NostrSubscription::default());
-        filters.push(NostrSubscription::new().author("alice"));
-        filters.push(NostrSubscription::new().kind(1).since(50).until(150));
-        filters.push(NostrSubscription::new().since(0));
-        filters.push(NostrSubscription::new().id("a".repeat(64)));
-        filters.push(NostrSubscription::new().tag("#p", "bob"));
-        filters.push(NostrSubscription::new().tag("#p", "carol"));
-        filters.push(NostrSubscription::new().tag("#t", "rust"));
+        let mut filters = vec![
+            NostrSubscription::default(),
+            NostrSubscription::new().author("alice"),
+            NostrSubscription::new().kind(1).since(50).until(150),
+            NostrSubscription::new().since(0),
+            NostrSubscription::new().id("a".repeat(64)),
+            NostrSubscription::new().tag("#p", "bob"),
+            NostrSubscription::new().tag("#p", "carol"),
+            NostrSubscription::new().tag("#t", "rust"),
+        ];
         let mut f_and = NostrSubscription::new();
         f_and.add_tag("#p", "bob");
         f_and.add_tag("#t", "rust");
