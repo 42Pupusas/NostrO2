@@ -12,7 +12,7 @@
 //!
 //! `nostro2` provides the core data structures and types for working with Nostr,
 //! as defined in NIP-01. It focuses on type safety, ergonomics, and performance
-//! with full serde support and zero-copy operations where possible.
+//! with zero-copy operations where possible.
 //!
 //! ## Quick Start
 //!
@@ -74,7 +74,7 @@
 //! ## Features
 //!
 //! - **NIP-01 Data Structures**: Complete implementation of core Nostr types
-//! - **Serde Support**: Full serialization/deserialization with serde
+//! - **Fast JSON**: Type-driven serialization via bourne (no serde)
 //! - **Builder Patterns**: Ergonomic APIs for constructing notes and filters
 //! - **Type Safety**: Strong typing with comprehensive error handling
 //! - **WASM Compatible**: Works in browser environments
