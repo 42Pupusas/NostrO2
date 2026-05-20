@@ -136,7 +136,7 @@ mod tests {
             let msg = format!("{err}");
             assert!(!msg.is_empty());
         }
-        assert!(format!("{}", SignerError::Backend("x".into())).contains("x"));
+        assert!(format!("{}", SignerError::Backend("x".into())).contains('x'));
     }
 
     #[test]

@@ -546,7 +546,7 @@ mod tests {
     fn relay_event_rejects_event_trailing_data() {
         let note = sample_note();
         let note_json = bourne::to_string(&note).unwrap();
-        let json = format!(r#"["EVENT","sub",{},"extra"]"#, note_json);
+        let json = format!(r#"["EVENT","sub",{note_json},"extra"]"#);
         let result: Result<NostrRelayEvent, _> = bourne::parse_str(&json);
         assert!(result.is_err());
     }
@@ -639,7 +639,7 @@ mod tests {
     fn client_event_rejects_event_trailing_data() {
         let note = sample_note();
         let note_json = bourne::to_string(&note).unwrap();
-        let json = format!(r#"["EVENT",{},"extra"]"#, note_json);
+        let json = format!(r#"["EVENT",{note_json},"extra"]"#);
         let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
         assert!(result.is_err());
     }
@@ -648,7 +648,7 @@ mod tests {
     fn client_event_rejects_auth_trailing_data() {
         let note = sample_note();
         let note_json = bourne::to_string(&note).unwrap();
-        let json = format!(r#"["AUTH",{},"extra"]"#, note_json);
+        let json = format!(r#"["AUTH",{note_json},"extra"]"#);
         let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
         assert!(result.is_err());
     }
