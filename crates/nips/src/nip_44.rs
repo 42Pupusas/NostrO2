@@ -394,6 +394,46 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    #[test]
+    fn error_display_covers_all_variants() {
+        let cases: Vec<Nip44Error> = vec![
+            Nip44Error::SharedSecretError,
+            Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength),
+            Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId),
+            Nip44Error::InvalidLength,
+            Nip44Error::Base64DecodingError(
+                base64::engine::general_purpose::STANDARD
+                    .decode("!!!").unwrap_err(),
+            ),
+            Nip44Error::HkdfError,
+            Nip44Error::HmacError,
+            Nip44Error::InvalidPrefixLen,
+            Nip44Error::BufferTooSmall,
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+        }
+    }
+
+    #[test]
+    fn error_source_delegates_correctly() {
+        use std::error::Error;
+
+        assert!(Nip44Error::SharedSecretError.source().is_none());
+        assert!(Nip44Error::InvalidLength.source().is_none());
+        assert!(Nip44Error::HkdfError.source().is_none());
+        assert!(Nip44Error::HmacError.source().is_none());
+        assert!(Nip44Error::InvalidPrefixLen.source().is_none());
+        assert!(Nip44Error::BufferTooSmall.source().is_none());
+
+        let hex_err = Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength);
+        assert!(hex_err.source().is_some());
+
+        let note_err = Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId);
+        assert!(note_err.source().is_some());
+    }
+
     mod proptests {
         use super::*;
         use nostro2::{NostrKeypair, NostrSigner};

@@ -20,50 +20,43 @@ pub struct NostrSubscription {
     pub tags: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
+impl NostrSubscription {
+    fn parse_field(&mut self, key: &str, lex: &mut Lexer<'_>) -> Result<(), BourneError> {
+        match key {
+            "authors" => self.authors = Option::<Vec<String>>::from_lex(lex)?,
+            "ids" => self.ids = Option::<Vec<String>>::from_lex(lex)?,
+            "kinds" => self.kinds = Option::<Vec<u32>>::from_lex(lex)?,
+            "since" => self.since = Option::<u64>::from_lex(lex)?,
+            "until" => self.until = Option::<u64>::from_lex(lex)?,
+            "limit" => {
+                self.limit = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
+                    BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
+                })?);
+            }
+            _ if key.starts_with('#') => {
+                let values = Vec::<String>::from_lex(lex)?;
+                self.tags
+                    .get_or_insert_with(std::collections::BTreeMap::new)
+                    .insert(key.to_string(), values);
+            }
+            _ => lex.skip_value()?,
+        }
+        Ok(())
+    }
+}
+
 impl<'input> FromJson<'input> for NostrSubscription {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         lex.object_start()?;
-
-        let mut authors: Option<Vec<String>> = None;
-        let mut ids: Option<Vec<String>> = None;
-        let mut kinds: Option<Vec<u32>> = None;
-        let mut since: Option<u64> = None;
-        let mut until: Option<u64> = None;
-        let mut limit: Option<u32> = None;
-        let mut tags: Option<std::collections::BTreeMap<String, Vec<String>>> = None;
+        let mut sub = Self::default();
 
         let mut maybe_key = lex.object_first_key()?;
         while let Some(key) = maybe_key {
-            match key {
-                "authors" => authors = Option::<Vec<String>>::from_lex(lex)?,
-                "ids" => ids = Option::<Vec<String>>::from_lex(lex)?,
-                "kinds" => kinds = Option::<Vec<u32>>::from_lex(lex)?,
-                "since" => since = Option::<u64>::from_lex(lex)?,
-                "until" => until = Option::<u64>::from_lex(lex)?,
-                "limit" => {
-                    limit = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
-                        BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
-                    })?);
-                }
-                _ if key.starts_with('#') => {
-                    let values = Vec::<String>::from_lex(lex)?;
-                    tags.get_or_insert_with(std::collections::BTreeMap::new)
-                        .insert(key.to_string(), values);
-                }
-                _ => lex.skip_value()?,
-            }
+            sub.parse_field(key, lex)?;
             maybe_key = lex.object_next_key()?;
         }
 
-        Ok(Self {
-            authors,
-            ids,
-            kinds,
-            since,
-            until,
-            limit,
-            tags,
-        })
+        Ok(sub)
     }
 }
 
@@ -542,6 +535,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rejects_negative_limit() {
+        let json = r#"{"limit":-1}"#;
+        assert!(bourne::parse_str::<NostrSubscription>(json).is_err());
+    }
+
+    #[test]
+    fn skips_unknown_fields_in_filter() {
+        let json = r#"{"kinds":[1],"unknown_field":true}"#;
+        let sub: NostrSubscription = bourne::parse_str(json).unwrap();
+        assert_eq!(sub.kinds, Some(vec![1]));
+    }
+
+    #[test]
+    fn parses_all_fields_from_json() {
+        let json = r##"{"authors":["alice"],"ids":["deadbeef"],"kinds":[1,4],"since":100,"until":200,"limit":10,"#p":["bob"]}"##;
+        let sub: NostrSubscription = bourne::parse_str(json).unwrap();
+        assert_eq!(sub.authors, Some(vec!["alice".to_string()]));
+        assert_eq!(sub.ids, Some(vec!["deadbeef".to_string()]));
+        assert_eq!(sub.kinds, Some(vec![1, 4]));
+        assert_eq!(sub.since, Some(100));
+        assert_eq!(sub.until, Some(200));
+        assert_eq!(sub.limit, Some(10));
+        let tags = sub.tags.unwrap();
+        assert_eq!(tags["#p"], vec!["bob".to_string()]);
     }
 
     #[test]

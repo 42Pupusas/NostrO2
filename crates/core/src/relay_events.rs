@@ -75,89 +75,65 @@ pub enum NostrRelayEvent {
     Auth(RelayEventTag, String),
 }
 
+fn expect_more(lex: &mut Lexer<'_>) -> Result<(), BourneError> {
+    if lex.array_continue(b']')? {
+        return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
+    }
+    Ok(())
+}
+
+fn expect_end(lex: &mut Lexer<'_>) -> Result<(), BourneError> {
+    if !lex.array_continue(b']')? {
+        return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
+    }
+    Ok(())
+}
+
+fn parse_relay_event(lex: &mut Lexer<'_>) -> Result<NostrRelayEvent, BourneError> {
+    let sub_id = String::from_lex(lex)?;
+    expect_more(lex)?;
+    let note = crate::note::NostrNote::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(NostrRelayEvent::NewNote(RelayEventTag::Event, sub_id, note))
+}
+
+fn parse_relay_ok(lex: &mut Lexer<'_>) -> Result<NostrRelayEvent, BourneError> {
+    let event_id = String::from_lex(lex)?;
+    expect_more(lex)?;
+    let success = bool::from_lex(lex)?;
+    expect_more(lex)?;
+    let message = String::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(NostrRelayEvent::SentOk(RelayEventTag::Ok, event_id, success, message))
+}
+
+fn parse_relay_two_element(tag: RelayEventTag, lex: &mut Lexer<'_>) -> Result<NostrRelayEvent, BourneError> {
+    let val = String::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(match tag {
+        RelayEventTag::Eose => NostrRelayEvent::EndOfSubscription(tag, val),
+        RelayEventTag::Closed => NostrRelayEvent::ClosedSubscription(tag, val),
+        RelayEventTag::Notice => NostrRelayEvent::Notice(tag, val),
+        RelayEventTag::Auth => NostrRelayEvent::Auth(tag, val),
+        _ => unreachable!(),
+    })
+}
+
 impl<'input> FromJson<'input> for NostrRelayEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         if lex.array_start()? {
-            return Err(BourneError::new(
-                BourneErrorKind::TypeMismatch,
-                lex.position(),
-            ));
+            return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position()));
         }
-
         let tag_str = lex.parse_str_value()?;
         let tag = RelayEventTag::from_str_wire(tag_str)
             .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
-
-        if lex.array_continue(b']')? {
-            return Err(BourneError::new(
-                BourneErrorKind::MissingField,
-                lex.position(),
-            ));
-        }
-
+        expect_more(lex)?;
         match tag {
-            RelayEventTag::Event => {
-                let sub_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let note = crate::note::NostrNote::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::NewNote(tag, sub_id, note))
-            }
-            RelayEventTag::Ok => {
-                let event_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let success = bool::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let message = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::SentOk(tag, event_id, success, message))
-            }
+            RelayEventTag::Event => parse_relay_event(lex),
+            RelayEventTag::Ok => parse_relay_ok(lex),
             RelayEventTag::Eose | RelayEventTag::Closed
-            | RelayEventTag::Notice | RelayEventTag::Auth => {
-                let val = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(match tag {
-                    RelayEventTag::Eose => Self::EndOfSubscription(tag, val),
-                    RelayEventTag::Closed => Self::ClosedSubscription(tag, val),
-                    RelayEventTag::Notice => Self::Notice(tag, val),
-                    RelayEventTag::Auth => Self::Auth(tag, val),
-                    _ => unreachable!(),
-                })
-            }
-            _ => Err(BourneError::new(
-                BourneErrorKind::UnknownField,
-                lex.position(),
-            )),
+            | RelayEventTag::Notice | RelayEventTag::Auth => parse_relay_two_element(tag, lex),
+            _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
         }
     }
 }
@@ -285,96 +261,45 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     }
 }
 
+fn parse_client_note(lex: &mut Lexer<'_>, tag: RelayEventTag) -> Result<NostrClientEvent, BourneError> {
+    expect_more(lex)?;
+    let note = crate::note::NostrNote::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(match tag {
+        RelayEventTag::Event => NostrClientEvent::SendNoteEvent(tag, note),
+        _ => NostrClientEvent::AuthEvent(tag, note),
+    })
+}
+
+fn parse_client_req(lex: &mut Lexer<'_>) -> Result<NostrClientEvent, BourneError> {
+    expect_more(lex)?;
+    let sub_id = String::from_lex(lex)?;
+    expect_more(lex)?;
+    let filter = super::subscriptions::NostrSubscription::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(NostrClientEvent::Subscribe(RelayEventTag::Req, sub_id, filter))
+}
+
+fn parse_client_close(lex: &mut Lexer<'_>) -> Result<NostrClientEvent, BourneError> {
+    expect_more(lex)?;
+    let sub_id = String::from_lex(lex)?;
+    expect_end(lex)?;
+    Ok(NostrClientEvent::CloseSubscriptionEvent(RelayEventTag::Close, sub_id))
+}
+
 impl<'input> FromJson<'input> for NostrClientEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         if lex.array_start()? {
-            return Err(BourneError::new(
-                BourneErrorKind::TypeMismatch,
-                lex.position(),
-            ));
+            return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position()));
         }
-
         let tag_str = lex.parse_str_value()?;
         let tag = RelayEventTag::from_str_wire(tag_str)
             .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
-
         match tag {
-            RelayEventTag::Event => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let note = crate::note::NostrNote::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::SendNoteEvent(tag, note))
-            }
-            RelayEventTag::Auth => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let note = crate::note::NostrNote::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::AuthEvent(tag, note))
-            }
-            RelayEventTag::Req => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let sub_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let filter =
-                    super::subscriptions::NostrSubscription::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::Subscribe(tag, sub_id, filter))
-            }
-            RelayEventTag::Close => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::MissingField,
-                        lex.position(),
-                    ));
-                }
-                let sub_id = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(
-                        BourneErrorKind::TrailingData,
-                        lex.position(),
-                    ));
-                }
-                Ok(Self::CloseSubscriptionEvent(tag, sub_id))
-            }
-            _ => Err(BourneError::new(
-                BourneErrorKind::UnknownField,
-                lex.position(),
-            )),
+            RelayEventTag::Event | RelayEventTag::Auth => parse_client_note(lex, tag),
+            RelayEventTag::Req => parse_client_req(lex),
+            RelayEventTag::Close => parse_client_close(lex),
+            _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
         }
     }
 }
@@ -422,7 +347,325 @@ impl TryFrom<&[u8]> for NostrClientEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::note::NostrNote;
     use crate::subscriptions::NostrSubscription;
+
+    fn sample_note() -> NostrNote {
+        NostrNote {
+            pubkey: "a".repeat(64),
+            created_at: 1_700_000_000,
+            kind: 1,
+            content: "hello relay".into(),
+            id: Some("b".repeat(64)),
+            sig: Some("c".repeat(128)),
+            ..Default::default()
+        }
+    }
+
+    fn round_trip<T: bourne::ToJson + for<'a> bourne::FromJson<'a> + std::fmt::Debug + PartialEq>(
+        val: &T,
+    ) {
+        let json = bourne::to_string(val).expect("serialize");
+        let back: T = bourne::parse_str(&json).expect("parse back");
+        assert_eq!(val, &back);
+    }
+
+    #[test]
+    fn relay_event_round_trip() {
+        let note = sample_note();
+        round_trip(&NostrRelayEvent::NewNote(RelayEventTag::Event, "sub1".into(), note));
+    }
+
+    #[test]
+    fn relay_ok_round_trip() {
+        round_trip(&NostrRelayEvent::SentOk(
+            RelayEventTag::Ok,
+            "abc".repeat(21),
+            true,
+            "duplicate:".into(),
+        ));
+        round_trip(&NostrRelayEvent::SentOk(
+            RelayEventTag::Ok,
+            "def".repeat(21),
+            false,
+            "blocked: not in whitelist".into(),
+        ));
+    }
+
+    #[test]
+    fn relay_eose_round_trip() {
+        round_trip(&NostrRelayEvent::EndOfSubscription(
+            RelayEventTag::Eose,
+            "sub42".into(),
+        ));
+    }
+
+    #[test]
+    fn relay_notice_round_trip() {
+        round_trip(&NostrRelayEvent::Notice(
+            RelayEventTag::Notice,
+            "rate limited".into(),
+        ));
+    }
+
+    #[test]
+    fn relay_auth_round_trip() {
+        round_trip(&NostrRelayEvent::Auth(
+            RelayEventTag::Auth,
+            "challenge-xyz".into(),
+        ));
+    }
+
+    #[test]
+    fn relay_closed_round_trip() {
+        round_trip(&NostrRelayEvent::ClosedSubscription(
+            RelayEventTag::Closed,
+            "sub7".into(),
+        ));
+    }
+
+    #[test]
+    fn client_event_round_trip() {
+        let note = sample_note();
+        round_trip(&NostrClientEvent::SendNoteEvent(RelayEventTag::Event, note));
+    }
+
+    #[test]
+    fn client_auth_round_trip() {
+        let note = sample_note();
+        round_trip(&NostrClientEvent::AuthEvent(RelayEventTag::Auth, note));
+    }
+
+    #[test]
+    fn client_close_round_trip() {
+        round_trip(&NostrClientEvent::CloseSubscriptionEvent(
+            RelayEventTag::Close,
+            "sub99".into(),
+        ));
+    }
+
+    #[test]
+    fn client_subscribe_round_trip() {
+        let sub = NostrSubscription::new().kind(1).limit(10);
+        round_trip(&NostrClientEvent::Subscribe(
+            RelayEventTag::Req,
+            "mysub".into(),
+            sub,
+        ));
+    }
+
+    #[test]
+    fn relay_event_from_str_round_trip() {
+        let note = sample_note();
+        let event = NostrRelayEvent::NewNote(RelayEventTag::Event, "sub1".into(), note);
+        let json = bourne::to_string(&event).unwrap();
+        let parsed: NostrRelayEvent = json.parse().unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn client_event_from_str_round_trip() {
+        let note = sample_note();
+        let event = NostrClientEvent::SendNoteEvent(RelayEventTag::Event, note);
+        let json = bourne::to_string(&event).unwrap();
+        let parsed: NostrClientEvent = json.parse().unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn relay_event_tag_all_variants() {
+        let tags = [
+            (RelayEventTag::Event, "EVENT"),
+            (RelayEventTag::Ok, "OK"),
+            (RelayEventTag::Eose, "EOSE"),
+            (RelayEventTag::Notice, "NOTICE"),
+            (RelayEventTag::Close, "CLOSE"),
+            (RelayEventTag::Auth, "AUTH"),
+            (RelayEventTag::Req, "REQ"),
+            (RelayEventTag::Closed, "CLOSED"),
+        ];
+        for (tag, expected_wire) in tags {
+            let quoted = tag.as_quoted();
+            assert_eq!(quoted, format!("\"{expected_wire}\""));
+            let parsed = RelayEventTag::from_str_wire(expected_wire).unwrap();
+            assert_eq!(tag, parsed);
+        }
+        assert!(RelayEventTag::from_str_wire("UNKNOWN").is_none());
+    }
+
+    #[test]
+    fn relay_event_rejects_empty_array() {
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str("[]");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_unknown_tag() {
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["BOGUS","sub"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_tag_only() {
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EVENT"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_truncated_ok() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["OK","eid"]"#);
+        assert!(result.is_err());
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["OK","eid",true]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_trailing_data() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["EOSE","sub","extra"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_not_array() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"{"tag":"EVENT"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_event_missing_note() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["EVENT","sub"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_event_trailing_data() {
+        let note = sample_note();
+        let note_json = bourne::to_string(&note).unwrap();
+        let json = format!(r#"["EVENT","sub",{},"extra"]"#, note_json);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(&json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_ok_trailing_data() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["OK","eid",true,"msg","extra"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_ok_missing_bool() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["OK","eid"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_ok_missing_message() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["OK","eid",true]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_event_rejects_client_only_tags() {
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["REQ","sub",{}]"#);
+        assert!(result.is_err());
+        let result: Result<NostrRelayEvent, _> =
+            bourne::parse_str(r#"["CLOSE","sub"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_empty_array() {
+        let result: Result<NostrClientEvent, _> = bourne::parse_str("[]");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_unknown_tag() {
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["BOGUS","sub"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_server_only_tags() {
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["EOSE","sub"]"#);
+        assert!(result.is_err());
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["OK","eid",true,""]"#);
+        assert!(result.is_err());
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["NOTICE","msg"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_truncated_event() {
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["EVENT"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_truncated_req() {
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ"]"#);
+        assert!(result.is_err());
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["REQ","sub"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_truncated_close() {
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["CLOSE"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_truncated_auth() {
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["AUTH"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_event_trailing_data() {
+        let note = sample_note();
+        let note_json = bourne::to_string(&note).unwrap();
+        let json = format!(r#"["EVENT",{},"extra"]"#, note_json);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_auth_trailing_data() {
+        let note = sample_note();
+        let note_json = bourne::to_string(&note).unwrap();
+        let json = format!(r#"["AUTH",{},"extra"]"#, note_json);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_close_trailing_data() {
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_event_rejects_req_trailing_data() {
+        let result: Result<NostrClientEvent, _> =
+            bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn fresh_sub_id_does_not_collide() {

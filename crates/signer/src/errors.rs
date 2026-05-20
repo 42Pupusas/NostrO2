@@ -89,3 +89,52 @@ impl From<secp256k1::Error> for NostrKeypairError {
 impl From<xinachtli::Error> for NostrKeypairError {
     fn from(e: xinachtli::Error) -> Self { Self::Bip39Error(e) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_covers_all_variants() {
+        let cases: Vec<NostrKeypairError> = vec![
+            NostrKeypairError::InvalidKey,
+            NostrKeypairError::HrpParseError,
+            NostrKeypairError::SharedSecretError,
+            NostrKeypairError::NotExtractable,
+            NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength),
+            NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId),
+            NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError),
+            NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError),
+            NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum),
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+        }
+    }
+
+    #[test]
+    fn source_delegates_correctly() {
+        use std::error::Error;
+
+        assert!(NostrKeypairError::InvalidKey.source().is_none());
+        assert!(NostrKeypairError::HrpParseError.source().is_none());
+        assert!(NostrKeypairError::SharedSecretError.source().is_none());
+        assert!(NostrKeypairError::NotExtractable.source().is_none());
+
+        let hex_err = NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength);
+        assert!(hex_err.source().is_some());
+
+        let nip01_err = NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId);
+        assert!(nip01_err.source().is_some());
+
+        let nip44_err = NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError);
+        assert!(nip44_err.source().is_some());
+
+        let nip59_err = NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError);
+        assert!(nip59_err.source().is_some());
+
+        let bip39_err = NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum);
+        assert!(bip39_err.source().is_some());
+    }
+}

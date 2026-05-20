@@ -87,49 +87,60 @@ pub struct NostrNoteView<'a> {
     pub sig: Option<Cow<'a, str>>,
 }
 
+fn require<T>(opt: Option<T>, lex: &Lexer<'_>) -> Result<T, BourneError> {
+    opt.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))
+}
+
+#[derive(Default)]
+struct ViewFields<'a> {
+    pubkey: Option<Cow<'a, str>>,
+    created_at: Option<i64>,
+    kind: Option<u32>,
+    tags: Option<TagsView<'a>>,
+    content: Option<Cow<'a, str>>,
+    id: Option<Cow<'a, str>>,
+    sig: Option<Cow<'a, str>>,
+}
+
+impl<'a> ViewFields<'a> {
+    fn parse_field(&mut self, key: &str, lex: &mut Lexer<'a>) -> Result<(), BourneError> {
+        match key {
+            "pubkey" => self.pubkey = Some(<Cow<'a, str>>::from_lex(lex)?),
+            "created_at" => self.created_at = Some(lex.parse_i64_value()?),
+            "kind" => {
+                self.kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
+                    BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
+                })?);
+            }
+            "tags" => self.tags = Some(TagsView::from_lex(lex)?),
+            "content" => self.content = Some(<Cow<'a, str>>::from_lex(lex)?),
+            "id" => self.id = Option::<Cow<'a, str>>::from_lex(lex)?,
+            "sig" => self.sig = Option::<Cow<'a, str>>::from_lex(lex)?,
+            _ => lex.skip_value()?,
+        }
+        Ok(())
+    }
+}
+
 impl<'input> FromJson<'input> for NostrNoteView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         lex.object_start()?;
-
-        let mut pubkey: Option<Cow<'input, str>> = None;
-        let mut created_at: Option<i64> = None;
-        let mut kind: Option<u32> = None;
-        let mut tags: Option<TagsView<'input>> = None;
-        let mut content: Option<Cow<'input, str>> = None;
-        let mut id: Option<Cow<'input, str>> = None;
-        let mut sig: Option<Cow<'input, str>> = None;
+        let mut fields = ViewFields::default();
 
         let mut maybe_key = lex.object_first_key()?;
         while let Some(key) = maybe_key {
-            match key {
-                "pubkey" => pubkey = Some(<Cow<'input, str>>::from_lex(lex)?),
-                "created_at" => created_at = Some(lex.parse_i64_value()?),
-                "kind" => {
-                    kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| {
-                        BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position())
-                    })?);
-                }
-                "tags" => tags = Some(TagsView::from_lex(lex)?),
-                "content" => content = Some(<Cow<'input, str>>::from_lex(lex)?),
-                "id" => id = Option::<Cow<'input, str>>::from_lex(lex)?,
-                "sig" => sig = Option::<Cow<'input, str>>::from_lex(lex)?,
-                _ => lex.skip_value()?,
-            }
+            fields.parse_field(key, lex)?;
             maybe_key = lex.object_next_key()?;
         }
 
         Ok(Self {
-            pubkey: pubkey
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            created_at: created_at
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            kind: kind
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            tags: tags.unwrap_or_default(),
-            content: content
-                .ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))?,
-            id,
-            sig,
+            pubkey: require(fields.pubkey, lex)?,
+            created_at: require(fields.created_at, lex)?,
+            kind: require(fields.kind, lex)?,
+            tags: fields.tags.unwrap_or_default(),
+            content: require(fields.content, lex)?,
+            id: fields.id,
+            sig: fields.sig,
         })
     }
 }
@@ -357,5 +368,53 @@ mod tests {
         let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
         let computed = view.compute_id_bytes().unwrap();
         assert_eq!(nostro2_traits::hex::Hexable::to_hex(&computed), expected_id);
+    }
+
+    #[test]
+    fn rejects_missing_required_fields() {
+        let missing_pubkey = r#"{"created_at":1,"kind":1,"tags":[],"content":"hi"}"#;
+        assert!(bourne::parse_str::<NostrNoteView<'_>>(missing_pubkey).is_err());
+
+        let missing_created_at = r#"{"pubkey":"aa","kind":1,"tags":[],"content":"hi"}"#;
+        assert!(bourne::parse_str::<NostrNoteView<'_>>(missing_created_at).is_err());
+
+        let missing_kind = r#"{"pubkey":"aa","created_at":1,"tags":[],"content":"hi"}"#;
+        assert!(bourne::parse_str::<NostrNoteView<'_>>(missing_kind).is_err());
+
+        let missing_content = r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[]}"#;
+        assert!(bourne::parse_str::<NostrNoteView<'_>>(missing_content).is_err());
+    }
+
+    #[test]
+    fn skips_unknown_fields() {
+        let json = r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[],"content":"hi","extra":true}"#;
+        let view: NostrNoteView<'_> = bourne::parse_str(json).unwrap();
+        assert_eq!(view.content.as_ref(), "hi");
+    }
+
+    #[test]
+    fn kind_rejects_negative() {
+        let json = r#"{"pubkey":"aa","created_at":1,"kind":-1,"tags":[],"content":"hi"}"#;
+        assert!(bourne::parse_str::<NostrNoteView<'_>>(json).is_err());
+    }
+
+    #[cfg(feature = "k256")]
+    #[test]
+    fn view_verify_signature_round_trips() {
+        use nostro2_signer::nostro2_traits::NostrKeypair as _;
+        let kp = nostro2_signer::K256Keypair::generate();
+
+        let mut note = crate::NostrNote::text_note("view verify test");
+        note.tags.add_custom_tag("t", "nostr");
+        note.sign_with(&kp).expect("sign");
+        assert!(note.verify(), "owned note must verify");
+
+        let json = bourne::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        assert!(view.verify(), "view of signed note must verify");
+
+        let tampered = json.replace("view verify test", "tampered content");
+        let bad_view: NostrNoteView<'_> = bourne::parse_str(&tampered).unwrap();
+        assert!(!bad_view.verify(), "tampered view must not verify");
     }
 }

@@ -107,4 +107,18 @@ mod tests {
             assert!(tags.contains(&relay.to_string()));
         }
     }
+
+    #[test]
+    fn error_display_covers_all_variants() {
+        let cases: Vec<Nip17Error> = vec![
+            Nip17Error::SigningError(nostro2::errors::NostrErrors::MissingId),
+            Nip17Error::Nip44Error(crate::Nip44Error::SharedSecretError),
+            Nip17Error::ParseError("bad input".into()),
+            Nip17Error::Nip59Error(crate::Nip59Error::SigningError),
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+        }
+    }
 }

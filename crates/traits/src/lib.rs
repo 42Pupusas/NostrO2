@@ -118,3 +118,38 @@ pub trait NostrKeypair: NostrSigner {
         self.ecdh_x(&buf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signer_error_display_all_variants() {
+        let cases = [
+            SignerError::MissingId,
+            SignerError::MissingSignature,
+            SignerError::InvalidPublicKey,
+            SignerError::InvalidSignature,
+            SignerError::Backend("test backend error".into()),
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty());
+        }
+        assert!(format!("{}", SignerError::Backend("x".into())).contains("x"));
+    }
+
+    #[test]
+    fn hex_error_display_all_variants() {
+        let cases = [
+            hex::HexError::OddLength,
+            hex::HexError::LengthMismatch,
+            hex::HexError::InvalidChar(b'G'),
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty());
+        }
+        assert!(format!("{}", hex::HexError::InvalidChar(b'Z')).contains('Z'));
+    }
+}

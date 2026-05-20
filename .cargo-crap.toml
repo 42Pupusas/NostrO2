@@ -1,0 +1,14 @@
+# CRAP (Change Risk Anti-Patterns) configuration
+# https://github.com/42pupusas/cargo-crap
+
+threshold = 21
+
+missing = "pessimistic"
+
+exclude = [
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests/**",
+    "**/src/bin/**",
+    "bench/**",
+]

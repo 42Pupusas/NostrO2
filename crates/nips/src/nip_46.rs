@@ -230,4 +230,19 @@ mod tests {
         let nip46_response: Nip46Response = content.parse().unwrap();
         assert_eq!(nip46_response.id, nip46_request.id);
     }
+
+    #[test]
+    fn error_display_and_source() {
+        use std::error::Error;
+
+        let note_err = Nip46Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId);
+        let msg = format!("{note_err}");
+        assert!(!msg.is_empty());
+        assert!(note_err.source().is_some());
+
+        let nip44_err = Nip46Error::Nip44Error(crate::Nip44Error::SharedSecretError);
+        let msg = format!("{nip44_err}");
+        assert!(msg.contains("encrypt"));
+        assert!(nip44_err.source().is_some());
+    }
 }

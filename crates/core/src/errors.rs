@@ -46,3 +46,49 @@ impl From<nostro2_traits::SignerError> for NostrErrors {
         Self::Signer(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_bourne_err() -> bourne::Error {
+        bourne::Error::new(
+            bourne::ErrorKind::UnexpectedEof,
+            bourne::Position { offset: 0 },
+        )
+    }
+
+    #[test]
+    fn display_covers_all_variants() {
+        let cases: Vec<NostrErrors> = vec![
+            NostrErrors::JsonError(dummy_bourne_err()),
+            NostrErrors::MissingId,
+            NostrErrors::MissingSignature,
+            NostrErrors::MissingPubkey,
+            NostrErrors::InvalidPublicKey,
+            NostrErrors::InvalidSignature,
+            NostrErrors::Signer(nostro2_traits::SignerError::MissingId),
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty(), "Display must produce non-empty output");
+        }
+    }
+
+    #[test]
+    fn source_delegates_correctly() {
+        use std::error::Error;
+
+        let json_err = NostrErrors::JsonError(dummy_bourne_err());
+        assert!(json_err.source().is_some());
+
+        let signer_err = NostrErrors::Signer(nostro2_traits::SignerError::MissingId);
+        assert!(signer_err.source().is_some());
+
+        assert!(NostrErrors::MissingId.source().is_none());
+        assert!(NostrErrors::MissingSignature.source().is_none());
+        assert!(NostrErrors::MissingPubkey.source().is_none());
+        assert!(NostrErrors::InvalidPublicKey.source().is_none());
+        assert!(NostrErrors::InvalidSignature.source().is_none());
+    }
+}
