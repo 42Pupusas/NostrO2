@@ -44,13 +44,8 @@ use bourne::{Error, ErrorKind, FromJson, JsonWrite, Lexer, ToJson};
 /// and rationale.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NostrTags {
-    /// Every cell of every row, flattened in row-major order.
-    cells: Vec<String>,
-    /// `offsets[i]` is the start index in `cells` for row `i`;
-    /// `offsets.last()` is always `cells.len()` (closing sentinel).
-    /// Empty `NostrTags` carries `offsets = [0]` so the invariant
-    /// `rows == offsets.len() - 1` holds without a special case.
-    offsets: Vec<u32>,
+    pub(crate) cells: Vec<String>,
+    pub(crate) offsets: Vec<u32>,
 }
 
 impl Default for NostrTags {
@@ -382,6 +377,7 @@ mod tests {
         assert_eq!(tags, back);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;

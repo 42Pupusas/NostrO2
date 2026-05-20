@@ -110,6 +110,8 @@ mod subscriptions;
 mod tags;
 pub mod validation;
 pub mod view;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
@@ -325,6 +327,7 @@ mod tests {
         assert!(!note.verify(), "tampered content must not verify");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;

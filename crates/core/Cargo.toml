@@ -38,9 +38,14 @@ js-sys = "0.3"
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
-divan.workspace = true
 nostro2-signer = { workspace = true, features = ["k256"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+divan.workspace = true
 proptest.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true
 
 [[bench]]
 name = "serialization"

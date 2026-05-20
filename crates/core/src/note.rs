@@ -270,18 +270,6 @@ impl core::str::FromStr for NostrNote {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-impl TryFrom<NostrNote> for js_sys::wasm_bindgen::JsValue {
-    type Error = js_sys::wasm_bindgen::JsValue;
-    fn try_from(note: NostrNote) -> Result<Self, Self::Error> {
-        let json = bourne::to_string(&note).map_err(|e| {
-            Self::Error::from(js_sys::Error::new(&format!("serialize NostrNote: {e}")))
-        })?;
-        js_sys::JSON::parse(&json).map_err(|_| {
-            Self::Error::from(js_sys::Error::new("parse NostrNote JSON in JS engine"))
-        })
-    }
-}
 
 #[derive(Debug)]
 pub struct NostrNoteBuilder {

@@ -578,6 +578,7 @@ mod tests {
         assert_eq!(filter, back);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;

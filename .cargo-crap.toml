@@ -10,4 +10,5 @@ exclude = [
     "**/examples/**",
     "**/tests/**",
     "**/src/bin/**",
+    "**/wasm.rs",
 ]
