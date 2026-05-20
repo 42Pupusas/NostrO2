@@ -17,6 +17,10 @@
 //!   exposing key material.
 //! - [`NostrKeypair`]: extends [`NostrSigner`] with raw secret-key export and
 //!   ECDH for in-process keypairs.
+//! - [`hex`]: minimal hex encode/decode traits (`Hexable`, `FromHex`).
+
+pub mod hex;
+use hex::{FromHex as _, Hexable as _};
 
 /// Errors returned by signing and key-derivation operations.
 #[derive(Debug)]
@@ -68,7 +72,7 @@ pub trait NostrSigner {
     /// Return the public key as a 64-character lowercase hex string.
     #[inline]
     fn public_key(&self) -> String {
-        hex::encode(self.pubkey_bytes())
+        self.pubkey_bytes().to_hex()
     }
 }
 
@@ -100,7 +104,7 @@ pub trait NostrKeypair: NostrSigner {
     /// Return the raw secret key as a 64-character lowercase hex string.
     #[inline]
     fn secret_key(&self) -> String {
-        hex::encode(self.secret_bytes())
+        self.secret_bytes().to_hex()
     }
 
     /// Derive the ECDH shared point from a hex-encoded peer x-only pubkey.
@@ -110,7 +114,7 @@ pub trait NostrKeypair: NostrSigner {
     /// valid curve point.
     fn shared_point(&self, peer_pubkey: &str) -> Result<[u8; 32]> {
         let mut buf = [0_u8; 32];
-        hex::decode_to_slice(peer_pubkey, &mut buf).map_err(|_| SignerError::InvalidPublicKey)?;
+        peer_pubkey.decode_hex_to_slice(&mut buf).map_err(|_| SignerError::InvalidPublicKey)?;
         self.ecdh_x(&buf)
     }
 }

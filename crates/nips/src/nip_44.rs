@@ -6,7 +6,7 @@ use zeroize::Zeroize;
 #[derive(Debug)]
 pub enum Nip44Error {
     SharedSecretError,
-    FromHexError(hex::FromHexError),
+    FromHexError(nostro2_traits::hex::HexError),
     NostrNoteError(nostro2::errors::NostrErrors),
     InvalidLength,
     Base64DecodingError(base64::DecodeError),
@@ -55,8 +55,8 @@ impl std::error::Error for Nip44Error {
     }
 }
 
-impl From<hex::FromHexError> for Nip44Error {
-    fn from(e: hex::FromHexError) -> Self { Self::FromHexError(e) }
+impl From<nostro2_traits::hex::HexError> for Nip44Error {
+    fn from(e: nostro2_traits::hex::HexError) -> Self { Self::FromHexError(e) }
 }
 impl From<nostro2::errors::NostrErrors> for Nip44Error {
     fn from(e: nostro2::errors::NostrErrors) -> Self { Self::NostrNoteError(e) }

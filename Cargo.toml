@@ -31,7 +31,6 @@ nostro2-cache = { path = "crates/cache", version = "0.1.0" }
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
 chacha20 = "0.9"
-hex = "0.4.3"
 hkdf = "0.12"
 hmac = "0.12"
 libaes = "0.7"

@@ -1,21 +1,23 @@
 //! Validation helpers for Nostr data
 
+use nostro2_traits::hex::FromHex as _;
+
 /// Check if a string is a valid hex-encoded public key (64 hex characters)
 #[must_use]
 pub fn is_valid_pubkey(s: &str) -> bool {
-    s.len() == 64 && hex::decode(s).is_ok()
+    s.len() == 64 && s.decode_hex().is_ok()
 }
 
 /// Check if a string is a valid hex-encoded event ID (64 hex characters)
 #[must_use]
 pub fn is_valid_event_id(s: &str) -> bool {
-    s.len() == 64 && hex::decode(s).is_ok()
+    s.len() == 64 && s.decode_hex().is_ok()
 }
 
 /// Check if a string is a valid hex-encoded signature (128 hex characters)
 #[must_use]
 pub fn is_valid_signature(s: &str) -> bool {
-    s.len() == 128 && hex::decode(s).is_ok()
+    s.len() == 128 && s.decode_hex().is_ok()
 }
 
 #[cfg(test)]

@@ -27,7 +27,8 @@ mod tests {
 
     impl NipTester {
         pub fn from_hex(s: &str) -> Option<Self> {
-            let bytes = hex::decode(s).ok()?;
+            use nostro2_traits::hex::FromHex as _;
+            let bytes = s.decode_hex().ok()?;
             let field_bytes: &k256::FieldBytes = bytes.as_slice().try_into().ok()?;
             k256::schnorr::SigningKey::from_bytes(field_bytes)
                 .ok()

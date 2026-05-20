@@ -26,7 +26,6 @@ secp256k1 = ["nostro2/secp256k1"]
 [dependencies]
 base64.workspace = true
 chacha20.workspace = true
-hex.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 libaes.workspace = true

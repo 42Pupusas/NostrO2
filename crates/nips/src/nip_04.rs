@@ -4,7 +4,7 @@ use zeroize::Zeroize;
 #[derive(Debug)]
 pub enum Nip04Error {
     InvalidLength,
-    FromHexError(hex::FromHexError),
+    FromHexError(nostro2_traits::hex::HexError),
     SharedSecretError,
     Base64DecodingError(base64::DecodeError),
     Utf8Error(std::string::FromUtf8Error),
@@ -41,8 +41,8 @@ impl std::error::Error for Nip04Error {
     }
 }
 
-impl From<hex::FromHexError> for Nip04Error {
-    fn from(e: hex::FromHexError) -> Self { Self::FromHexError(e) }
+impl From<nostro2_traits::hex::HexError> for Nip04Error {
+    fn from(e: nostro2_traits::hex::HexError) -> Self { Self::FromHexError(e) }
 }
 impl From<base64::DecodeError> for Nip04Error {
     fn from(e: base64::DecodeError) -> Self { Self::Base64DecodingError(e) }

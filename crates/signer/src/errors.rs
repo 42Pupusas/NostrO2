@@ -5,7 +5,7 @@ pub enum NostrKeypairError {
     InvalidKey,
     Bech32DecodeError(bech32::DecodeError),
     Bech32EncodeError(bech32::EncodeError),
-    HexDecodeError(hex::FromHexError),
+    HexDecodeError(nostro2_traits::hex::HexError),
     HrpParseError,
     Nip01Error(nostro2::errors::NostrErrors),
     Nip04Error(nostro2_nips::Nip04Error),
@@ -69,8 +69,8 @@ impl From<bech32::DecodeError> for NostrKeypairError {
 impl From<bech32::EncodeError> for NostrKeypairError {
     fn from(e: bech32::EncodeError) -> Self { Self::Bech32EncodeError(e) }
 }
-impl From<hex::FromHexError> for NostrKeypairError {
-    fn from(e: hex::FromHexError) -> Self { Self::HexDecodeError(e) }
+impl From<nostro2_traits::hex::HexError> for NostrKeypairError {
+    fn from(e: nostro2_traits::hex::HexError) -> Self { Self::HexDecodeError(e) }
 }
 impl From<nostro2::errors::NostrErrors> for NostrKeypairError {
     fn from(e: nostro2::errors::NostrErrors) -> Self { Self::Nip01Error(e) }

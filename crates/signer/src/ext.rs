@@ -27,7 +27,8 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// Returns an error if the string is not 64 hex chars or not a valid scalar.
     fn from_hex(hex: &str) -> Result<Self, NostrKeypairError> {
         let mut buf = [0_u8; 32];
-        hex::decode_to_slice(hex, &mut buf).map_err(|_| NostrKeypairError::InvalidKey)?;
+        nostro2_traits::hex::FromHex::decode_hex_to_slice(hex, &mut buf)
+            .map_err(|_| NostrKeypairError::InvalidKey)?;
         Self::from_secret_bytes(&buf)
     }
 

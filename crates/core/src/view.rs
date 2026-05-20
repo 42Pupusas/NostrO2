@@ -2,6 +2,7 @@
 //! consumers that only parse and forward events, never mutate them.
 
 use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer};
+use nostro2_traits::hex::FromHex as _;
 use std::borrow::Cow;
 
 /// Borrowed view over the tag array of a note.
@@ -183,24 +184,22 @@ impl NostrNoteView<'_> {
 
     #[must_use]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
-        let id = self.id.as_deref()?;
         let mut out = [0_u8; 32];
-        hex::decode_to_slice(id.as_bytes(), &mut out).ok()?;
+        self.id.as_deref()?.decode_hex_to_slice(&mut out).ok()?;
         Some(out)
     }
 
     #[must_use]
     pub fn sig_bytes(&self) -> Option<[u8; 64]> {
-        let sig = self.sig.as_deref()?;
         let mut out = [0_u8; 64];
-        hex::decode_to_slice(sig.as_bytes(), &mut out).ok()?;
+        self.sig.as_deref()?.decode_hex_to_slice(&mut out).ok()?;
         Some(out)
     }
 
     #[must_use]
     pub fn pubkey_bytes(&self) -> Option<[u8; 32]> {
         let mut out = [0_u8; 32];
-        hex::decode_to_slice(self.pubkey.as_bytes(), &mut out).ok()?;
+        self.pubkey.decode_hex_to_slice(&mut out).ok()?;
         Some(out)
     }
 
@@ -357,6 +356,6 @@ mod tests {
         let json = bourne::to_string(&note).unwrap();
         let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
         let computed = view.compute_id_bytes().unwrap();
-        assert_eq!(hex::encode(computed), expected_id);
+        assert_eq!(nostro2_traits::hex::Hexable::to_hex(&computed), expected_id);
     }
 }

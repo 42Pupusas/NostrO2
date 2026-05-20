@@ -1,5 +1,6 @@
 use crate::tags::NostrTags;
 use bourne::{JsonWrite, ToJson};
+use nostro2_traits::hex::{FromHex as _, Hexable};
 
 bourne::json! {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -89,32 +90,24 @@ impl NostrNote {
     #[must_use]
     #[inline]
     pub fn id_bytes(&self) -> Option<[u8; 32]> {
-        let mut id_bytes = [0_u8; 32];
-        let id = hex::decode(self.id.as_ref()?).ok()?;
-        if id.len() != 32 {
-            return None;
-        }
-        id_bytes.copy_from_slice(&id);
-        Some(id_bytes)
+        let mut out = [0_u8; 32];
+        self.id.as_ref()?.decode_hex_to_slice(&mut out).ok()?;
+        Some(out)
     }
 
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn sig_bytes(&self) -> Option<[u8; 64]> {
-        let mut sig_bytes = [0_u8; 64];
-        let sig = hex::decode(self.sig.as_ref()?).ok()?;
-        if sig.len() != 64 {
-            return None;
-        }
-        sig_bytes.copy_from_slice(&sig);
-        Some(sig_bytes)
+        let mut out = [0_u8; 64];
+        self.sig.as_ref()?.decode_hex_to_slice(&mut out).ok()?;
+        Some(out)
     }
 
     #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[inline]
     fn pubkey_bytes(&self) -> Option<[u8; 32]> {
         let mut out = [0_u8; 32];
-        hex::decode_to_slice(self.pubkey.as_bytes(), &mut out).ok()?;
+        self.pubkey.decode_hex_to_slice(&mut out).ok()?;
         Some(out)
     }
 
@@ -149,7 +142,7 @@ impl NostrNote {
     /// Will return `Err` if serialization fails
     pub fn serialize_id(&mut self) -> Result<(), crate::errors::NostrErrors> {
         let hash = self.compute_id_bytes();
-        self.id = Some(hex::encode(hash));
+        self.id = Some(Hexable::to_hex(&hash));
         Ok(())
     }
 
@@ -163,13 +156,13 @@ impl NostrNote {
         self.pubkey = signer.public_key();
         let id = self.serialize_id_raw();
         let sig = signer.sign_prehash(&id)?;
-        self.sig = Some(hex::encode(sig));
+        self.sig = Some(Hexable::to_hex(&sig));
         Ok(())
     }
 
     pub fn serialize_id_raw(&mut self) -> [u8; 32] {
         let hash = self.compute_id_bytes();
-        self.id = Some(hex::encode(hash));
+        self.id = Some(Hexable::to_hex(&hash));
         hash
     }
 
