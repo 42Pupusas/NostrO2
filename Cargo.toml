@@ -31,19 +31,19 @@ nostro2-cache = { path = "crates/cache", version = "0.1.0" }
 # Cryptography
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
-chacha20 = "0.9"
-hkdf = "0.12"
-hmac = "0.12"
+chacha20 = "0.10"
+hkdf = "0.13"
+hmac = "0.13"
 libaes = "0.7"
 k256 = { path = "../../forfun/elliptic-curves/k256", default-features = false, features = ["schnorr", "ecdh"] }
 secp256k1 = { version = "0.29", features = ["rand", "global-context", "hashes"] }
 getrandom = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 zeroize = "1.8"
 
 # Key helpers
 bech32 = "0.11"
-bip39 = { version = "2.1", features = ["spanish"] }
+xinachtli = { path = "../../tooling/xinachtli", features = ["english", "spanish"] }
 
 # Async
 tokio = { version = "^1.44" }

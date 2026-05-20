@@ -602,8 +602,8 @@ mod tests {
                 .prop_map(|(pubkey, kind, created_at, id, tag_pairs)| {
                     let mut note = crate::NostrNote {
                         pubkey,
-                        kind,
                         created_at,
+                        kind,
                         id,
                         ..Default::default()
                     };

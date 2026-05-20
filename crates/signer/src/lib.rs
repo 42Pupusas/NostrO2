@@ -123,7 +123,7 @@ pub use nostro2;
 pub use nostro2_nips;
 pub use nostro2_traits;
 
-pub use bip39::Language;
+pub use xinachtli::Language;
 pub use ext::KeypairExt;
 #[cfg(feature = "k256")]
 pub use k256_keypair::K256Keypair;

@@ -17,7 +17,7 @@ pub enum NostrKeypairError {
     Secp256k1Error(secp256k1::Error),
     SharedSecretError,
     NotExtractable,
-    Bip39Error(bip39::Error),
+    Bip39Error(xinachtli::Error),
 }
 
 impl std::fmt::Display for NostrKeypairError {
@@ -92,6 +92,6 @@ impl From<k256::elliptic_curve::Error> for NostrKeypairError {
 impl From<secp256k1::Error> for NostrKeypairError {
     fn from(e: secp256k1::Error) -> Self { Self::Secp256k1Error(e) }
 }
-impl From<bip39::Error> for NostrKeypairError {
-    fn from(e: bip39::Error) -> Self { Self::Bip39Error(e) }
+impl From<xinachtli::Error> for NostrKeypairError {
+    fn from(e: xinachtli::Error) -> Self { Self::Bip39Error(e) }
 }

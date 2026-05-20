@@ -53,11 +53,10 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if the mnemonic is invalid or the entropy is not a
     /// valid scalar.
-    fn from_mnemonic(mnemonic: &str, language: bip39::Language) -> Result<Self, NostrKeypairError> {
-        let mnemonic = bip39::Mnemonic::parse_in(language, mnemonic)?;
-        let entropy = mnemonic.to_entropy();
-        let bytes: &[u8; 32] = entropy
-            .as_slice()
+    fn from_mnemonic(mnemonic: &str, language: xinachtli::Language) -> Result<Self, NostrKeypairError> {
+        let mnemonic = xinachtli::Mnemonic::from_phrase(mnemonic, language)?;
+        let bytes: &[u8; 32] = mnemonic
+            .entropy()
             .try_into()
             .map_err(|_| NostrKeypairError::InvalidKey)?;
         Self::from_secret_bytes(bytes)
@@ -67,10 +66,10 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// Spanish) and return the first that parses.
     ///
     /// The mnemonic fallback only tries English and Spanish — those are the
-    /// languages this crate compiles support for (see `bip39` features in
+    /// languages this crate compiles support for (see `xinachtli` features in
     /// `Cargo.toml`). For other BIP-39 languages, call
     /// [`from_mnemonic`](Self::from_mnemonic) directly with the right
-    /// [`bip39::Language`].
+    /// [`xinachtli::Language`].
     ///
     /// # Errors
     /// Returns `InvalidKey` if no encoding matches.
@@ -87,7 +86,7 @@ pub trait KeypairExt: NostrKeypair + Sized {
                 return Ok(kp);
             }
         }
-        for language in [bip39::Language::English, bip39::Language::Spanish] {
+        for language in [xinachtli::Language::English, xinachtli::Language::Spanish] {
             if let Ok(kp) = Self::from_mnemonic(value, language) {
                 return Ok(kp);
             }
@@ -99,19 +98,10 @@ pub trait KeypairExt: NostrKeypair + Sized {
     ///
     /// # Errors
     /// Returns an error if the entropy is not a valid 32-byte scalar.
-    fn mnemonic(&self, language: bip39::Language) -> Result<String, NostrKeypairError> {
+    fn mnemonic(&self, language: xinachtli::Language) -> Result<String, NostrKeypairError> {
         let secret = self.secret_bytes();
-        let m = bip39::Mnemonic::from_entropy_in(language, &secret)?;
-        // Allocates one String, joins with single spaces. Equivalent to
-        // collect-and-join but avoids the intermediate Vec.
-        let mut out = String::with_capacity(256);
-        for (i, word) in m.words().enumerate() {
-            if i > 0 {
-                out.push(' ');
-            }
-            out.push_str(word);
-        }
-        Ok(out)
+        let m = xinachtli::Mnemonic::from_entropy(&secret, language)?;
+        Ok(m.phrase())
     }
 
     /// Encode the public key as `npub1…` bech32.

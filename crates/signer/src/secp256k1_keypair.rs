@@ -185,8 +185,8 @@ mod tests {
     #[test]
     fn test_mnemonic_roundtrip() {
         let kp = Secp256k1Keypair::generate();
-        let mn = kp.mnemonic(bip39::Language::English).unwrap();
-        let restored = Secp256k1Keypair::from_mnemonic(&mn, bip39::Language::English).unwrap();
+        let mn = kp.mnemonic(xinachtli::Language::English).unwrap();
+        let restored = Secp256k1Keypair::from_mnemonic(&mn, xinachtli::Language::English).unwrap();
         assert_eq!(restored.public_key(), kp.public_key());
     }
 

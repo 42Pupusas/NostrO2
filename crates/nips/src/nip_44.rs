@@ -1,6 +1,6 @@
 use base64::engine::{general_purpose, Engine as _};
 use chacha20::cipher::{KeyIvInit, StreamCipher};
-use hmac::Mac;
+use hmac::{KeyInit, Mac};
 use zeroize::Zeroize;
 
 #[derive(Debug)]
@@ -47,7 +47,6 @@ impl std::error::Error for Nip44Error {
             Self::NostrNoteError(e) => Some(e),
             Self::Base64DecodingError(e) => Some(e),
             Self::FromUtf8Error(e) => Some(e),
-            Self::SliceError(e) => Some(e),
             Self::FromArrayError(e) => Some(e),
             Self::FromIntError(e) => Some(e),
             _ => None,
@@ -427,7 +426,7 @@ mod tests {
             #[test]
             fn pad_string_is_power_of_two(plaintext in ".{1,1024}") {
                 let total = (plaintext.len() + 2).next_power_of_two().max(32);
-                let mut buf = vec![0u8; total];
+                let mut buf = vec![0_u8; total];
                 let padded = crate::tests::NipTester::pad_string(
                     plaintext.as_bytes(), &mut buf
                 ).unwrap();

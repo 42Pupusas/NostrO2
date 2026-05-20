@@ -1,65 +1,73 @@
-/// Pull a single byte of OS entropy and render it as a NIP-46 request id.
-///
-/// Replaces a dependency on `rand` 0.8 (which dragged in `rand_core` 0.6 and
-/// `rand_chacha`) for what was effectively `OsRng → u8`. `getrandom` is
-/// already in our tree for IV/nonce generation, so this is a free trim.
 fn fresh_request_id() -> String {
     let mut b = [0_u8; 1];
     getrandom::fill(&mut b).expect("getrandom failed");
     b[0].to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Nip46Method {
-    Connect,
-    SignEvent,
-    Ping,
-    GetPublicKey,
-    Nip04Encrypt,
-    Nip04Decrypt,
-    Nip44Encrypt,
-    Nip44Decrypt,
+bourne::json! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Nip46Method {
+        #[bourne(rename = "connect")]
+        Connect,
+        #[bourne(rename = "sign_event")]
+        SignEvent,
+        #[bourne(rename = "ping")]
+        Ping,
+        #[bourne(rename = "get_public_key")]
+        GetPublicKey,
+        #[bourne(rename = "nip04_encrypt")]
+        Nip04Encrypt,
+        #[bourne(rename = "nip04_decrypt")]
+        Nip04Decrypt,
+        #[bourne(rename = "nip44_encrypt")]
+        Nip44Encrypt,
+        #[bourne(rename = "nip44_decrypt")]
+        Nip44Decrypt,
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Nip46Request {
-    id: String,
-    method: Nip46Method,
-    params: Vec<String>,
+bourne::json! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Nip46Request {
+        id: String,
+        method: Nip46Method,
+        params: Vec<String>,
+    }
 }
 impl std::fmt::Display for Nip46Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = serde_json::to_string(self).unwrap_or_default();
+        let value = bourne::to_string(self).unwrap_or_default();
         write!(f, "{value}")
     }
 }
 impl std::str::FromStr for Nip46Request {
-    type Err = serde_json::Error;
+    type Err = bourne::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
+        bourne::parse_str(s)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Nip46Response {
-    id: String,
-    result: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+bourne::json! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Nip46Response {
+        id: String,
+        result: String,
+        #[bourne(skip_if_none)]
+        error: Option<String>,
+    }
 }
 impl std::fmt::Display for Nip46Response {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = serde_json::to_string(self).unwrap_or_default();
+        let value = bourne::to_string(self).unwrap_or_default();
         write!(f, "{value}")
     }
 }
 impl std::str::FromStr for Nip46Response {
-    type Err = serde_json::Error;
+    type Err = bourne::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
+        bourne::parse_str(s)
     }
 }
 
