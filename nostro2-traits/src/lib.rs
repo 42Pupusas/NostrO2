@@ -19,20 +19,28 @@
 //!   ECDH for in-process keypairs.
 
 /// Errors returned by signing and key-derivation operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum SignerError {
-    #[error("missing id on note")]
     MissingId,
-    #[error("missing signature on note")]
     MissingSignature,
-    #[error("invalid public key")]
     InvalidPublicKey,
-    #[error("invalid signature")]
     InvalidSignature,
-    /// Backend-specific failure (signing rejected, transport error, …).
-    #[error("signing backend error: {0}")]
     Backend(String),
 }
+
+impl std::fmt::Display for SignerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingId => f.write_str("missing id on note"),
+            Self::MissingSignature => f.write_str("missing signature on note"),
+            Self::InvalidPublicKey => f.write_str("invalid public key"),
+            Self::InvalidSignature => f.write_str("invalid signature"),
+            Self::Backend(s) => write!(f, "signing backend error: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for SignerError {}
 
 /// Convenience alias.
 pub type Result<T> = std::result::Result<T, SignerError>;

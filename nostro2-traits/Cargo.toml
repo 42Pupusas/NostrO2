@@ -9,4 +9,3 @@ repository = "https://github.com/42Pupusas/NostrO2.git"
 
 [dependencies]
 hex.workspace = true
-thiserror.workspace = true

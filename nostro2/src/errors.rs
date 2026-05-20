@@ -1,28 +1,48 @@
 //! Error types for the nostro2 crate
-//!
-//! This module contains all error types that can be returned by nostro2 operations.
 
-/// Errors that can occur when working with Nostr notes and protocol operations.
-///
-/// Wrapper variants (`SerdeError`, `Signer`) use `#[error(transparent)]` so
-/// that `Display` shows the leaf error's message directly, rather than the
-/// "Nostr error: Signer error: signing backend error: …" chain you get when
-/// every layer prefixes itself. `Debug` still prints the full chain, and
-/// `source()` still walks the error tree the standard way.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum NostrErrors {
-    #[error(transparent)]
-    JsonError(#[from] bourne::Error),
-    #[error("no id found on note")]
+    JsonError(bourne::Error),
     MissingId,
-    #[error("no signature found on note")]
     MissingSignature,
-    #[error("no pubkey found on note")]
     MissingPubkey,
-    #[error("invalid public key")]
     InvalidPublicKey,
-    #[error("invalid signature")]
     InvalidSignature,
-    #[error(transparent)]
-    Signer(#[from] nostro2_traits::SignerError),
+    Signer(nostro2_traits::SignerError),
+}
+
+impl std::fmt::Display for NostrErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JsonError(e) => write!(f, "{e}"),
+            Self::MissingId => f.write_str("no id found on note"),
+            Self::MissingSignature => f.write_str("no signature found on note"),
+            Self::MissingPubkey => f.write_str("no pubkey found on note"),
+            Self::InvalidPublicKey => f.write_str("invalid public key"),
+            Self::InvalidSignature => f.write_str("invalid signature"),
+            Self::Signer(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for NostrErrors {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::JsonError(e) => Some(e),
+            Self::Signer(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<bourne::Error> for NostrErrors {
+    fn from(e: bourne::Error) -> Self {
+        Self::JsonError(e)
+    }
+}
+
+impl From<nostro2_traits::SignerError> for NostrErrors {
+    fn from(e: nostro2_traits::SignerError) -> Self {
+        Self::Signer(e)
+    }
 }
