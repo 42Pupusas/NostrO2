@@ -11,7 +11,7 @@
 //!
 //! `nostro2-signer` provides keypair management, signing, and cryptographic
 //! operations for Nostr. It supports multiple key formats (hex, nsec, mnemonics),
-//! modern encryption standards (NIP-04, NIP-44), and privacy features (NIP-59).
+//! modern encryption standards (NIP-44), and privacy features (NIP-59).
 //!
 //! ## Quick Start
 //!
@@ -97,12 +97,12 @@
 //!
 //! - **Multiple Key Formats**: Hex, nsec (bech32), and BIP39 mnemonic support
 //! - **Smart Key Detection**: [`FromStr`](std::str::FromStr) tries all formats automatically
-//! - **NIP-04 & NIP-44**: Modern and legacy encryption standards
+//! - **NIP-44**: Modern encryption standard
 //! - **NIP-59**: Gift wrap for sealed sender privacy
 //! - **Feature-gated backends**: `k256` (default, pure Rust) or `secp256k1` (C library, faster)
 //! - **Type Safety**: Comprehensive error handling with [`Result`](type.Result.html)
 // Mirror the `nostro2` invariant: pick exactly one curve backend. Enabling
-// both `k256` and `secp256k1` would compile two `Nip04`/`Nip44`/etc.
+// both `k256` and `secp256k1` would compile two `Nip44`/etc.
 // impls, conflict with the upstream `compile_error!`, and have no useful
 // "both" semantic. Enabling neither leaves no concrete keypair type; we
 // reject that too rather than silently exporting an empty crate.

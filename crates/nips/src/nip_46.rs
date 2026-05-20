@@ -15,10 +15,6 @@ bourne::json! {
         Ping,
         #[bourne(rename = "get_public_key")]
         GetPublicKey,
-        #[bourne(rename = "nip04_encrypt")]
-        Nip04Encrypt,
-        #[bourne(rename = "nip04_decrypt")]
-        Nip04Decrypt,
         #[bourne(rename = "nip44_encrypt")]
         Nip44Encrypt,
         #[bourne(rename = "nip44_decrypt")]

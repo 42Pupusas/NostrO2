@@ -8,7 +8,6 @@ pub enum NostrKeypairError {
     HexDecodeError(nostro2_traits::hex::HexError),
     HrpParseError,
     Nip01Error(nostro2::errors::NostrErrors),
-    Nip04Error(nostro2_nips::Nip04Error),
     Nip44Error(nostro2_nips::Nip44Error),
     Nip59Error(nostro2_nips::Nip59Error),
     #[cfg(feature = "k256")]
@@ -29,7 +28,6 @@ impl std::fmt::Display for NostrKeypairError {
             Self::HexDecodeError(e) => write!(f, "{e}"),
             Self::HrpParseError => f.write_str("invalid hrp"),
             Self::Nip01Error(e) => write!(f, "{e}"),
-            Self::Nip04Error(e) => write!(f, "{e}"),
             Self::Nip44Error(e) => write!(f, "{e}"),
             Self::Nip59Error(e) => write!(f, "{e}"),
             #[cfg(feature = "k256")]
@@ -50,7 +48,6 @@ impl std::error::Error for NostrKeypairError {
             Self::Bech32EncodeError(e) => Some(e),
             Self::HexDecodeError(e) => Some(e),
             Self::Nip01Error(e) => Some(e),
-            Self::Nip04Error(e) => Some(e),
             Self::Nip44Error(e) => Some(e),
             Self::Nip59Error(e) => Some(e),
             #[cfg(feature = "k256")]
@@ -74,9 +71,6 @@ impl From<nostro2_traits::hex::HexError> for NostrKeypairError {
 }
 impl From<nostro2::errors::NostrErrors> for NostrKeypairError {
     fn from(e: nostro2::errors::NostrErrors) -> Self { Self::Nip01Error(e) }
-}
-impl From<nostro2_nips::Nip04Error> for NostrKeypairError {
-    fn from(e: nostro2_nips::Nip04Error) -> Self { Self::Nip04Error(e) }
 }
 impl From<nostro2_nips::Nip44Error> for NostrKeypairError {
     fn from(e: nostro2_nips::Nip44Error) -> Self { Self::Nip44Error(e) }

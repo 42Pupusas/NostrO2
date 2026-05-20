@@ -28,7 +28,6 @@ base64.workspace = true
 chacha20.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
-libaes.workspace = true
 nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
 getrandom.workspace = true

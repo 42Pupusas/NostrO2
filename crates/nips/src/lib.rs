@@ -6,13 +6,11 @@
     clippy::pedantic,
     clippy::nursery
 )]
-mod nip_04;
 mod nip_17;
 mod nip_44;
 mod nip_46;
 mod nip_59;
 
-pub use nip_04::*;
 pub use nip_17::*;
 pub use nip_44::*;
 pub use nip_46::*;
@@ -102,6 +100,6 @@ mod tests {
         }
     }
 
-    // Nip04 / Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented for every
+    // Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented for every
     // `NostrKeypair`, so `NipTester` gets them all for free.
 }

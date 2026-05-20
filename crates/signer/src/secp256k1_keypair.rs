@@ -99,7 +99,7 @@ impl std::str::FromStr for Secp256k1Keypair {
     }
 }
 
-// Nip04 / Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented in
+// Nip44 / Nip17 / Nip46 / Nip59 are blanket-implemented in
 // `nostro2-nips` for every `NostrKeypair`.
 
 #[cfg(test)]
