@@ -1,26 +1,57 @@
 use base64::{engine::general_purpose, Engine as _};
 use zeroize::Zeroize;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum Nip04Error {
-    #[error("Invalid length")]
     InvalidLength,
-    #[error("Shared secret error")]
-    FromHexError(#[from] hex::FromHexError),
-    #[error("Shared secret error")]
+    FromHexError(hex::FromHexError),
     SharedSecretError,
-    #[error("Base64 decoding error {0}")]
-    Base64DecodingError(#[from] base64::DecodeError),
-    #[error("UTF-8 conversion error {0}")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Missing ciphertext")]
+    Base64DecodingError(base64::DecodeError),
+    Utf8Error(std::string::FromUtf8Error),
     MissingCiphertext,
-    #[error("Missing IV")]
     MissingIv,
-    #[error("Malformed IV")]
     MalformedIv,
-    #[error("Conversion error {0}")]
-    ConversionError(#[from] std::convert::Infallible),
+    ConversionError(std::convert::Infallible),
+}
+
+impl std::fmt::Display for Nip04Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength => f.write_str("invalid length"),
+            Self::FromHexError(e) => write!(f, "{e}"),
+            Self::SharedSecretError => f.write_str("shared secret error"),
+            Self::Base64DecodingError(e) => write!(f, "base64 decoding error: {e}"),
+            Self::Utf8Error(e) => write!(f, "UTF-8 conversion error: {e}"),
+            Self::MissingCiphertext => f.write_str("missing ciphertext"),
+            Self::MissingIv => f.write_str("missing IV"),
+            Self::MalformedIv => f.write_str("malformed IV"),
+            Self::ConversionError(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for Nip04Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FromHexError(e) => Some(e),
+            Self::Base64DecodingError(e) => Some(e),
+            Self::Utf8Error(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<hex::FromHexError> for Nip04Error {
+    fn from(e: hex::FromHexError) -> Self { Self::FromHexError(e) }
+}
+impl From<base64::DecodeError> for Nip04Error {
+    fn from(e: base64::DecodeError) -> Self { Self::Base64DecodingError(e) }
+}
+impl From<std::string::FromUtf8Error> for Nip04Error {
+    fn from(e: std::string::FromUtf8Error) -> Self { Self::Utf8Error(e) }
+}
+impl From<std::convert::Infallible> for Nip04Error {
+    fn from(e: std::convert::Infallible) -> Self { Self::ConversionError(e) }
 }
 pub trait Nip04: nostro2::NostrKeypair {
     /// Generates a shared secret using the private keypair and the public key of the peer

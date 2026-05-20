@@ -1,43 +1,97 @@
 //! Error types for the nostro2-signer crate
-//!
-//! This module contains all error types that can be returned by keypair and signing operations.
 
-/// Errors that can occur when working with Nostr keypairs and cryptographic operations.
-///
-/// `Display` is `transparent` for every wrapped error type — the user-facing
-/// message is the leaf error's message, not "Nostr error: Signer error: …"
-/// chained. The variant name is still useful for matching; `Debug` still
-/// shows the chain.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum NostrKeypairError {
-    #[error("invalid key")]
     InvalidKey,
-    #[error(transparent)]
-    Bech32DecodeError(#[from] bech32::DecodeError),
-    #[error(transparent)]
-    Bech32EncodeError(#[from] bech32::EncodeError),
-    #[error(transparent)]
-    HexDecodeError(#[from] hex::FromHexError),
-    #[error("invalid hrp")]
+    Bech32DecodeError(bech32::DecodeError),
+    Bech32EncodeError(bech32::EncodeError),
+    HexDecodeError(hex::FromHexError),
     HrpParseError,
-    #[error(transparent)]
-    Nip01Error(#[from] nostro2::errors::NostrErrors),
-    #[error(transparent)]
-    Nip04Error(#[from] nostro2_nips::Nip04Error),
-    #[error(transparent)]
-    Nip44Error(#[from] nostro2_nips::Nip44Error),
-    #[error(transparent)]
-    Nip59Error(#[from] nostro2_nips::Nip59Error),
+    Nip01Error(nostro2::errors::NostrErrors),
+    Nip04Error(nostro2_nips::Nip04Error),
+    Nip44Error(nostro2_nips::Nip44Error),
+    Nip59Error(nostro2_nips::Nip59Error),
     #[cfg(feature = "k256")]
-    #[error(transparent)]
-    K256Error(#[from] k256::elliptic_curve::Error),
+    K256Error(k256::elliptic_curve::Error),
     #[cfg(feature = "secp256k1")]
-    #[error(transparent)]
-    Secp256k1Error(#[from] secp256k1::Error),
-    #[error("shared secret error")]
+    Secp256k1Error(secp256k1::Error),
     SharedSecretError,
-    #[error("not extractable")]
     NotExtractable,
-    #[error(transparent)]
-    Bip39Error(#[from] bip39::Error),
+    Bip39Error(bip39::Error),
+}
+
+impl std::fmt::Display for NostrKeypairError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidKey => f.write_str("invalid key"),
+            Self::Bech32DecodeError(e) => write!(f, "{e}"),
+            Self::Bech32EncodeError(e) => write!(f, "{e}"),
+            Self::HexDecodeError(e) => write!(f, "{e}"),
+            Self::HrpParseError => f.write_str("invalid hrp"),
+            Self::Nip01Error(e) => write!(f, "{e}"),
+            Self::Nip04Error(e) => write!(f, "{e}"),
+            Self::Nip44Error(e) => write!(f, "{e}"),
+            Self::Nip59Error(e) => write!(f, "{e}"),
+            #[cfg(feature = "k256")]
+            Self::K256Error(e) => write!(f, "{e}"),
+            #[cfg(feature = "secp256k1")]
+            Self::Secp256k1Error(e) => write!(f, "{e}"),
+            Self::SharedSecretError => f.write_str("shared secret error"),
+            Self::NotExtractable => f.write_str("not extractable"),
+            Self::Bip39Error(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for NostrKeypairError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Bech32DecodeError(e) => Some(e),
+            Self::Bech32EncodeError(e) => Some(e),
+            Self::HexDecodeError(e) => Some(e),
+            Self::Nip01Error(e) => Some(e),
+            Self::Nip04Error(e) => Some(e),
+            Self::Nip44Error(e) => Some(e),
+            Self::Nip59Error(e) => Some(e),
+            #[cfg(feature = "k256")]
+            Self::K256Error(e) => Some(e),
+            #[cfg(feature = "secp256k1")]
+            Self::Secp256k1Error(e) => Some(e),
+            Self::Bip39Error(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<bech32::DecodeError> for NostrKeypairError {
+    fn from(e: bech32::DecodeError) -> Self { Self::Bech32DecodeError(e) }
+}
+impl From<bech32::EncodeError> for NostrKeypairError {
+    fn from(e: bech32::EncodeError) -> Self { Self::Bech32EncodeError(e) }
+}
+impl From<hex::FromHexError> for NostrKeypairError {
+    fn from(e: hex::FromHexError) -> Self { Self::HexDecodeError(e) }
+}
+impl From<nostro2::errors::NostrErrors> for NostrKeypairError {
+    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::Nip01Error(e) }
+}
+impl From<nostro2_nips::Nip04Error> for NostrKeypairError {
+    fn from(e: nostro2_nips::Nip04Error) -> Self { Self::Nip04Error(e) }
+}
+impl From<nostro2_nips::Nip44Error> for NostrKeypairError {
+    fn from(e: nostro2_nips::Nip44Error) -> Self { Self::Nip44Error(e) }
+}
+impl From<nostro2_nips::Nip59Error> for NostrKeypairError {
+    fn from(e: nostro2_nips::Nip59Error) -> Self { Self::Nip59Error(e) }
+}
+#[cfg(feature = "k256")]
+impl From<k256::elliptic_curve::Error> for NostrKeypairError {
+    fn from(e: k256::elliptic_curve::Error) -> Self { Self::K256Error(e) }
+}
+#[cfg(feature = "secp256k1")]
+impl From<secp256k1::Error> for NostrKeypairError {
+    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1Error(e) }
+}
+impl From<bip39::Error> for NostrKeypairError {
+    fn from(e: bip39::Error) -> Self { Self::Bip39Error(e) }
 }

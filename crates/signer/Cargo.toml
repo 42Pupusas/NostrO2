@@ -30,7 +30,6 @@ nostro2.workspace = true
 nostro2-nips.workspace = true
 nostro2-traits.workspace = true
 getrandom.workspace = true
-thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

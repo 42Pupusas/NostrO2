@@ -63,12 +63,35 @@ impl std::str::FromStr for Nip46Response {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum Nip46Error {
-    #[error("Nostr note error {0}")]
-    NostrNoteError(#[from] nostro2::errors::NostrErrors),
-    #[error("Failed to encrypt message {0}")]
-    Nip44Error(#[from] crate::nip_44::Nip44Error),
+    NostrNoteError(nostro2::errors::NostrErrors),
+    Nip44Error(crate::nip_44::Nip44Error),
+}
+
+impl std::fmt::Display for Nip46Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NostrNoteError(e) => write!(f, "{e}"),
+            Self::Nip44Error(e) => write!(f, "failed to encrypt message: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Nip46Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NostrNoteError(e) => Some(e),
+            Self::Nip44Error(e) => Some(e),
+        }
+    }
+}
+
+impl From<nostro2::errors::NostrErrors> for Nip46Error {
+    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::NostrNoteError(e) }
+}
+impl From<crate::nip_44::Nip44Error> for Nip46Error {
+    fn from(e: crate::nip_44::Nip44Error) -> Self { Self::Nip44Error(e) }
 }
 
 pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {

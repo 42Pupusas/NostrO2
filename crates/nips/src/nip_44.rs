@@ -3,34 +3,78 @@ use chacha20::cipher::{KeyIvInit, StreamCipher};
 use hmac::Mac;
 use zeroize::Zeroize;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum Nip44Error {
-    #[error("Shared secret error")]
     SharedSecretError,
-    #[error("Hex decoding error {0}")]
-    FromHexError(#[from] hex::FromHexError),
-    #[error("Nostr note error {0}")]
-    NostrNoteError(#[from] nostro2::errors::NostrErrors),
-    #[error("Invalid input length")]
+    FromHexError(hex::FromHexError),
+    NostrNoteError(nostro2::errors::NostrErrors),
     InvalidLength,
-    #[error("Base64 decoding error {0}")]
-    Base64DecodingError(#[from] base64::DecodeError),
-    #[error("UTF-8 conversion error {0}")]
-    FromUtf8Error(#[from] std::str::Utf8Error),
-    #[error("HKDF key derivation failed")]
+    Base64DecodingError(base64::DecodeError),
+    FromUtf8Error(std::str::Utf8Error),
     HkdfError,
-    #[error("HMAC failure")]
     HmacError,
-    #[error("ChaCha20 slice error")]
-    SliceError(#[from] chacha20::cipher::InvalidLength),
-    #[error("Invalid length prefix")]
+    SliceError(chacha20::cipher::InvalidLength),
     InvalidPrefixLen,
-    #[error("Decryption error {0}")]
-    FromArrayError(#[from] std::array::TryFromSliceError),
-    #[error("Buffer too small")]
+    FromArrayError(std::array::TryFromSliceError),
     BufferTooSmall,
-    #[error("Encryption error {0}")]
-    FromIntError(#[from] std::num::TryFromIntError),
+    FromIntError(std::num::TryFromIntError),
+}
+
+impl std::fmt::Display for Nip44Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SharedSecretError => f.write_str("shared secret error"),
+            Self::FromHexError(e) => write!(f, "hex decoding error: {e}"),
+            Self::NostrNoteError(e) => write!(f, "{e}"),
+            Self::InvalidLength => f.write_str("invalid input length"),
+            Self::Base64DecodingError(e) => write!(f, "base64 decoding error: {e}"),
+            Self::FromUtf8Error(e) => write!(f, "UTF-8 conversion error: {e}"),
+            Self::HkdfError => f.write_str("HKDF key derivation failed"),
+            Self::HmacError => f.write_str("HMAC failure"),
+            Self::SliceError(e) => write!(f, "ChaCha20 slice error: {e}"),
+            Self::InvalidPrefixLen => f.write_str("invalid length prefix"),
+            Self::FromArrayError(e) => write!(f, "decryption error: {e}"),
+            Self::BufferTooSmall => f.write_str("buffer too small"),
+            Self::FromIntError(e) => write!(f, "encryption error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Nip44Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FromHexError(e) => Some(e),
+            Self::NostrNoteError(e) => Some(e),
+            Self::Base64DecodingError(e) => Some(e),
+            Self::FromUtf8Error(e) => Some(e),
+            Self::SliceError(e) => Some(e),
+            Self::FromArrayError(e) => Some(e),
+            Self::FromIntError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<hex::FromHexError> for Nip44Error {
+    fn from(e: hex::FromHexError) -> Self { Self::FromHexError(e) }
+}
+impl From<nostro2::errors::NostrErrors> for Nip44Error {
+    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::NostrNoteError(e) }
+}
+impl From<base64::DecodeError> for Nip44Error {
+    fn from(e: base64::DecodeError) -> Self { Self::Base64DecodingError(e) }
+}
+impl From<std::str::Utf8Error> for Nip44Error {
+    fn from(e: std::str::Utf8Error) -> Self { Self::FromUtf8Error(e) }
+}
+impl From<chacha20::cipher::InvalidLength> for Nip44Error {
+    fn from(e: chacha20::cipher::InvalidLength) -> Self { Self::SliceError(e) }
+}
+impl From<std::array::TryFromSliceError> for Nip44Error {
+    fn from(e: std::array::TryFromSliceError) -> Self { Self::FromArrayError(e) }
+}
+impl From<std::num::TryFromIntError> for Nip44Error {
+    fn from(e: std::num::TryFromIntError) -> Self { Self::FromIntError(e) }
 }
 
 pub struct MacComponents<'a> {
