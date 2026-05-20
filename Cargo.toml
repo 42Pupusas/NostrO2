@@ -9,7 +9,7 @@ members = [
     "crates/signer",
     "crates/cache",
     #"crates/relay",
-    "bench/comparison",
+    "benches",
 ]
 
 [workspace.dependencies.nostro2-traits]

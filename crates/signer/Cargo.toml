@@ -35,5 +35,6 @@ divan.workspace = true
 
 [[bench]]
 name = "crypto"
+path = "../../benches/crypto.rs"
 harness = false
 

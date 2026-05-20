@@ -10,5 +10,4 @@ exclude = [
     "**/examples/**",
     "**/tests/**",
     "**/src/bin/**",
-    "bench/**",
 ]

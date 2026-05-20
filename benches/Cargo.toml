@@ -1,0 +1,35 @@
+[package]
+name = "nostro2-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Cross-library comparison benchmarks (nostro2 vs upstream nostr crate)."
+
+[features]
+default = ["k256"]
+k256 = [
+    "nostro2/k256",
+    "nostro2-signer/k256",
+    "nostro2-nips/k256",
+]
+secp256k1 = [
+    "nostro2/secp256k1",
+    "nostro2-signer/secp256k1",
+    "nostro2-nips/secp256k1",
+]
+
+[dependencies]
+
+[dev-dependencies]
+nostro2 = { workspace = true }
+nostro2-signer = { workspace = true }
+nostro2-nips = { workspace = true }
+divan.workspace = true
+bourne.workspace = true
+serde_json.workspace = true
+nostr = { version = "0.44", features = ["nip44"] }
+
+[[bench]]
+name = "nostr_comparison"
+path = "nostr_comparison.rs"
+harness = false
