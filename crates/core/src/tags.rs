@@ -42,7 +42,7 @@ use bourne::{Error, ErrorKind, FromJson, JsonWrite, Lexer, ToJson};
 ///
 /// Stores cells flat with row offsets — see the module docs for the layout
 /// and rationale.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NostrTags {
     /// Every cell of every row, flattened in row-major order.
     cells: Vec<String>,
@@ -51,6 +51,15 @@ pub struct NostrTags {
     /// Empty `NostrTags` carries `offsets = [0]` so the invariant
     /// `rows == offsets.len() - 1` holds without a special case.
     offsets: Vec<u32>,
+}
+
+impl Default for NostrTags {
+    fn default() -> Self {
+        Self {
+            cells: Vec::new(),
+            offsets: vec![0],
+        }
+    }
 }
 
 impl NostrTags {
@@ -100,9 +109,6 @@ impl NostrTags {
 
     /// Append a row built from an iterator of owned strings.
     fn push_row<I: IntoIterator<Item = String>>(&mut self, row: I) {
-        if self.offsets.is_empty() {
-            self.offsets.push(0);
-        }
         self.cells.extend(row);
         let len = u32::try_from(self.cells.len()).expect("tag cell count overflow (u32)");
         self.offsets.push(len);
@@ -374,5 +380,48 @@ mod tests {
         let json = bourne::to_string(&tags).unwrap();
         let back: NostrTags = bourne::parse_str(&json).unwrap();
         assert_eq!(tags, back);
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_tag_row() -> impl Strategy<Value = Vec<String>> {
+            proptest::collection::vec("[a-zA-Z0-9 _-]{0,32}", 1..=4)
+        }
+
+        proptest! {
+            #[test]
+            fn round_trip(rows in proptest::collection::vec(arb_tag_row(), 0..20)) {
+                let mut tags = NostrTags::new();
+                for row in &rows {
+                    tags.add_row(row.iter().cloned());
+                }
+                let json = bourne::to_string(&tags).unwrap();
+                let back: NostrTags = bourne::parse_str(&json).unwrap();
+                prop_assert_eq!(&tags, &back);
+            }
+
+            #[test]
+            fn len_matches_rows(rows in proptest::collection::vec(arb_tag_row(), 0..30)) {
+                let mut tags = NostrTags::new();
+                for row in &rows {
+                    tags.add_row(row.iter().cloned());
+                }
+                prop_assert_eq!(tags.len(), rows.len());
+            }
+
+            #[test]
+            fn row_cells_preserved(
+                name in "[a-zA-Z0-9]{1,8}",
+                value in "[a-zA-Z0-9]{0,64}",
+            ) {
+                let mut tags = NostrTags::new();
+                tags.add_custom_tag(&name, &value);
+                let row = tags.row(0).unwrap();
+                prop_assert_eq!(&row[0], &name);
+                prop_assert_eq!(&row[1], &value);
+            }
+        }
     }
 }

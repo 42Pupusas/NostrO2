@@ -324,4 +324,62 @@ mod tests {
         note.content.push('!');
         assert!(!note.verify(), "tampered content must not verify");
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_note() -> impl Strategy<Value = NostrNote> {
+            (
+                "[a-zA-Z0-9]{0,64}",
+                any::<i64>(),
+                any::<u32>(),
+                "[a-zA-Z0-9 ]{0,128}",
+                proptest::collection::vec(("[a-zA-Z0-9]{1,4}", "[a-zA-Z0-9]{0,32}"), 0..8),
+            )
+                .prop_map(|(pubkey, created_at, kind, content, tag_pairs)| {
+                    let mut note = NostrNote {
+                        pubkey,
+                        created_at,
+                        kind,
+                        content,
+                        ..Default::default()
+                    };
+                    for (name, value) in tag_pairs {
+                        note.tags.add_custom_tag(&name, &value);
+                    }
+                    note
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn json_round_trip(note in arb_note()) {
+                let json = bourne::to_string(&note).unwrap();
+                let back: NostrNote = bourne::parse_str(&json).unwrap();
+                prop_assert_eq!(&note, &back);
+            }
+
+            #[test]
+            fn serialize_id_is_deterministic(note in arb_note()) {
+                let mut a = note.clone();
+                let mut b = note;
+                a.serialize_id().unwrap();
+                b.serialize_id().unwrap();
+                prop_assert_eq!(&a.id, &b.id);
+            }
+
+            #[test]
+            fn view_id_matches_owned_id(note in arb_note()) {
+                let mut owned = note;
+                owned.serialize_id().unwrap();
+                let json = bourne::to_string(&owned).unwrap();
+                let view: crate::view::NostrNoteView<'_> =
+                    bourne::parse_str(&json).unwrap();
+                let view_id = view.compute_id_bytes().unwrap();
+                let owned_id = owned.id_bytes().unwrap();
+                prop_assert_eq!(owned_id, view_id);
+            }
+        }
+    }
 }

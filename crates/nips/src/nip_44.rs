@@ -394,4 +394,46 @@ mod tests {
 
         assert_eq!(decrypted, plaintext);
     }
+
+    mod proptests {
+        use super::*;
+        use nostro2::{NostrKeypair, NostrSigner};
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn encrypt_decrypt_round_trip(plaintext in ".{1,256}") {
+                let sender = crate::tests::NipTester::generate();
+                let receiver = crate::tests::NipTester::generate();
+                let receiver_pk = receiver.public_key();
+                let sender_pk = sender.public_key();
+
+                let ciphertext = sender.nip_44_encrypt(&plaintext, &receiver_pk).unwrap();
+                let decrypted = receiver.nip_44_decrypt(&ciphertext, &sender_pk).unwrap();
+                prop_assert_eq!(&plaintext, decrypted.as_ref());
+            }
+
+            #[test]
+            fn encrypt_is_non_deterministic(plaintext in ".{1,64}") {
+                let sender = crate::tests::NipTester::generate();
+                let receiver = crate::tests::NipTester::generate();
+                let receiver_pk = receiver.public_key();
+
+                let a = sender.nip_44_encrypt(&plaintext, &receiver_pk).unwrap();
+                let b = sender.nip_44_encrypt(&plaintext, &receiver_pk).unwrap();
+                prop_assert_ne!(a, b, "same plaintext must produce different ciphertexts");
+            }
+
+            #[test]
+            fn pad_string_is_power_of_two(plaintext in ".{1,1024}") {
+                let total = (plaintext.len() + 2).next_power_of_two().max(32);
+                let mut buf = vec![0u8; total];
+                let padded = crate::tests::NipTester::pad_string(
+                    plaintext.as_bytes(), &mut buf
+                ).unwrap();
+                prop_assert!(padded.len().is_power_of_two() || padded.len() == 32);
+                prop_assert!(padded.len() >= 32);
+            }
+        }
+    }
 }

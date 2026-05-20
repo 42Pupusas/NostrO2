@@ -1,5 +1,6 @@
 [workspace]
 resolver="2"
+exclude = ["fuzz"]
 
 members = [
     "crates/core",
@@ -57,6 +58,9 @@ tokio-tungstenite-wasm = { version = "0.4.0", features = ["rustls-tls-webpki-roo
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
+
+# Property testing
+proptest = "1"
 
 # Benchmarking
 divan = "0.1"

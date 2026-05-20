@@ -40,6 +40,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 bech32.workspace = true
+proptest.workspace = true
 # Tests need a concrete keypair to exercise the trait-bounded NIP impls;
 # `NipTester` in `lib.rs` wraps `k256::schnorr::SigningKey` for that.
 # Production code in this crate has no curve dependency.

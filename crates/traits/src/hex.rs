@@ -147,4 +147,39 @@ mod tests {
         assert_eq!([].to_hex(), "");
         assert_eq!("".decode_hex().unwrap(), Vec::<u8>::new());
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn encode_decode_round_trip(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+                let hex = bytes.to_hex();
+                let decoded = hex.decode_hex().unwrap();
+                prop_assert_eq!(&bytes, &decoded);
+            }
+
+            #[test]
+            fn decode_to_slice_matches_decode(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+                let hex = bytes.to_hex();
+                let mut out = vec![0u8; bytes.len()];
+                hex.decode_hex_to_slice(&mut out).unwrap();
+                prop_assert_eq!(&bytes, &out);
+            }
+
+            #[test]
+            fn decode_rejects_odd_length(s in "[0-9a-fA-F]{1,255}") {
+                if s.len() % 2 != 0 {
+                    prop_assert!(matches!(s.decode_hex(), Err(HexError::OddLength)));
+                }
+            }
+
+            #[test]
+            fn output_is_lowercase(bytes in proptest::collection::vec(any::<u8>(), 1..128)) {
+                let hex = bytes.to_hex();
+                prop_assert!(hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+            }
+        }
+    }
 }

@@ -557,4 +557,80 @@ mod tests {
         let back: NostrSubscription = bourne::parse_str(&json).unwrap();
         assert_eq!(filter, back);
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_subscription() -> impl Strategy<Value = NostrSubscription> {
+            (
+                proptest::option::of(proptest::collection::vec("[a-zA-Z0-9]{1,32}", 1..5)),
+                proptest::option::of(proptest::collection::vec("[a-zA-Z0-9]{1,32}", 1..5)),
+                proptest::option::of(proptest::collection::vec(any::<u32>(), 1..5)),
+                proptest::option::of(any::<u64>()),
+                proptest::option::of(any::<u64>()),
+                proptest::option::of(any::<u32>()),
+                proptest::collection::vec(("[a-zA-Z0-9]{1,8}", "[a-zA-Z0-9]{1,32}"), 0..4),
+            )
+                .prop_map(
+                    |(authors, ids, kinds, since, until, limit, tag_pairs)| {
+                        let mut sub = NostrSubscription {
+                            authors,
+                            ids,
+                            kinds,
+                            since,
+                            until,
+                            limit,
+                            tags: None,
+                        };
+                        for (k, v) in tag_pairs {
+                            sub.add_tag(&format!("#{k}"), &v);
+                        }
+                        sub
+                    },
+                )
+        }
+
+        fn arb_note() -> impl Strategy<Value = crate::NostrNote> {
+            (
+                "[a-zA-Z0-9]{1,32}",
+                any::<u32>(),
+                any::<i64>(),
+                proptest::option::of("[0-9a-f]{64}"),
+                proptest::collection::vec(("[a-zA-Z0-9]{1,4}", "[a-zA-Z0-9]{1,16}"), 0..5),
+            )
+                .prop_map(|(pubkey, kind, created_at, id, tag_pairs)| {
+                    let mut note = crate::NostrNote {
+                        pubkey,
+                        kind,
+                        created_at,
+                        id,
+                        ..Default::default()
+                    };
+                    for (name, value) in tag_pairs {
+                        note.tags.add_custom_tag(&name, &value);
+                    }
+                    note
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn round_trip(sub in arb_subscription()) {
+                let json = bourne::to_string(&sub).unwrap();
+                let back: NostrSubscription = bourne::parse_str(&json).unwrap();
+                prop_assert_eq!(&sub, &back);
+            }
+
+            #[test]
+            fn compiled_agrees_with_linear(sub in arb_subscription(), note in arb_note()) {
+                let compiled = sub.compile();
+                prop_assert_eq!(
+                    sub.matches(&note),
+                    compiled.matches(&note),
+                    "compiled and linear matchers must agree"
+                );
+            }
+        }
+    }
 }
