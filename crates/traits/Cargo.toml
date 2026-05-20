@@ -8,6 +8,12 @@ description = "Signing traits for the nostro2 ecosystem (NostrSigner, NostrKeypa
 repository = "https://github.com/42Pupusas/NostrO2.git"
 
 [dev-dependencies]
+divan.workspace = true
+hex = "0.4"
 proptest = "1"
+
+[[bench]]
+name = "hex_bench"
+harness = false
 
 [dependencies]
