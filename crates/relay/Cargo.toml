@@ -28,7 +28,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 nostro2-signer.workspace = true
-criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+divan.workspace = true
 lru.workspace = true
 
 [[bench]]

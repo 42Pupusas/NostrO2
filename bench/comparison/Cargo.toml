@@ -37,7 +37,7 @@ secp256k1 = [
 nostro2 = { workspace = true }
 nostro2-signer = { workspace = true }
 nostro2-nips = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }
+divan.workspace = true
 bourne.workspace = true
 serde_json.workspace = true
 # External yardstick. Pinned to the same major as last time we updated this

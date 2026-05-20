@@ -33,7 +33,7 @@ getrandom.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
+divan.workspace = true
 
 [[bench]]
 name = "crypto"

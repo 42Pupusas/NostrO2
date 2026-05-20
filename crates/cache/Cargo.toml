@@ -14,7 +14,7 @@ keywords = ["nostr", "cache", "lru", "deduplication"]
 lru = "0.12"
 
 [dev-dependencies]
-criterion.workspace = true
+divan.workspace = true
 
 [[bench]]
 name = "deduplication"
