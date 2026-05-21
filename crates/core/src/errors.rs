@@ -9,6 +9,10 @@ pub enum NostrErrors {
     InvalidPublicKey,
     InvalidSignature,
     Signer(nostro2_traits::SignerError),
+    #[cfg(feature = "k256")]
+    Ecdsa(k256::ecdsa::Error),
+    #[cfg(feature = "secp256k1")]
+    Ecdsa(secp256k1::Error),
 }
 
 impl std::fmt::Display for NostrErrors {
@@ -21,6 +25,8 @@ impl std::fmt::Display for NostrErrors {
             Self::InvalidPublicKey => f.write_str("invalid public key"),
             Self::InvalidSignature => f.write_str("invalid signature"),
             Self::Signer(e) => write!(f, "{e}"),
+            #[cfg(any(feature = "k256", feature = "secp256k1"))]
+            Self::Ecdsa(e) => write!(f, "{e}"),
         }
     }
 }
@@ -44,6 +50,20 @@ impl From<bourne::Error> for NostrErrors {
 impl From<nostro2_traits::SignerError> for NostrErrors {
     fn from(e: nostro2_traits::SignerError) -> Self {
         Self::Signer(e)
+    }
+}
+
+#[cfg(feature = "k256")]
+impl From<k256::ecdsa::Error> for NostrErrors {
+    fn from(e: k256::ecdsa::Error) -> Self {
+        Self::Ecdsa(e)
+    }
+}
+
+#[cfg(feature = "secp256k1")]
+impl From<secp256k1::Error> for NostrErrors {
+    fn from(e: secp256k1::Error) -> Self {
+        Self::Ecdsa(e)
     }
 }
 
@@ -90,5 +110,14 @@ mod tests {
         assert!(NostrErrors::MissingPubkey.source().is_none());
         assert!(NostrErrors::InvalidPublicKey.source().is_none());
         assert!(NostrErrors::InvalidSignature.source().is_none());
+    }
+
+    #[cfg(feature = "k256")]
+    #[test]
+    fn ecdsa_variant_display_and_source() {
+        use std::error::Error;
+        let err = NostrErrors::Ecdsa(k256::ecdsa::Error::new());
+        assert!(!format!("{err}").is_empty());
+        assert!(err.source().is_none());
     }
 }
