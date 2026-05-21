@@ -19,6 +19,7 @@
 //!   ECDH for in-process keypairs.
 //! - [`hex`]: minimal hex encode/decode traits (`Hexable`, `FromHex`).
 
+pub mod bech32;
 pub mod hex;
 use hex::{FromHex as _, Hexable as _};
 

@@ -20,7 +20,6 @@ k256 = ["dep:k256", "nostro2/k256", "nostro2-nips/k256"]
 secp256k1 = ["dep:secp256k1", "nostro2/secp256k1", "nostro2-nips/secp256k1"]
 
 [dependencies]
-bech32.workspace = true
 xinachtli.workspace = true
 k256 = { workspace = true, optional = true }
 secp256k1 = { workspace = true, optional = true }

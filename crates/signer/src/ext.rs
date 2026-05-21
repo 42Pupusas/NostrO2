@@ -37,9 +37,9 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if the HRP is not `nsec` or the payload is not 32 bytes.
     fn from_nsec(nsec: &str) -> Result<Self, NostrKeypairError> {
-        let (hrp, data) = bech32::decode(nsec)?;
-        if hrp.as_str() != "nsec" {
-            return Err(NostrKeypairError::HrpParseError);
+        let (hrp, data) = nostro2_traits::bech32::decode(nsec)?;
+        if hrp != "nsec" {
+            return Err(NostrKeypairError::InvalidKey);
         }
         let bytes: &[u8; 32] = data
             .as_slice()
@@ -65,17 +65,9 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// Try every supported encoding (nsec → hex → mnemonic in English then
     /// Spanish) and return the first that parses.
     ///
-    /// The mnemonic fallback only tries English and Spanish — those are the
-    /// languages this crate compiles support for (see `xinachtli` features in
-    /// `Cargo.toml`). For other BIP-39 languages, call
-    /// [`from_mnemonic`](Self::from_mnemonic) directly with the right
-    /// [`xinachtli::Language`].
-    ///
     /// # Errors
     /// Returns `InvalidKey` if no encoding matches.
     fn from_any(value: &str) -> Result<Self, NostrKeypairError> {
-        // `nsec1` is the bech32 HRP + separator. `starts_with("nsec")` would
-        // also match strings like "nsection" and waste a decode attempt.
         if value.starts_with("nsec1") {
             if let Ok(kp) = Self::from_nsec(value) {
                 return Ok(kp);
@@ -107,18 +99,16 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// Encode the public key as `npub1…` bech32.
     ///
     /// # Errors
-    /// Returns an error if bech32 encoding fails (unreachable for valid HRP).
+    /// Returns an error if bech32 encoding fails.
     fn npub(&self) -> Result<String, NostrKeypairError> {
-        let hrp = bech32::Hrp::parse("npub").map_err(|_| NostrKeypairError::HrpParseError)?;
-        Ok(bech32::encode::<bech32::Bech32>(hrp, &self.pubkey_bytes())?)
+        Ok(nostro2_traits::bech32::encode("npub", &self.pubkey_bytes())?)
     }
 
     /// Encode the secret key as `nsec1…` bech32.
     ///
     /// # Errors
-    /// Returns an error if bech32 encoding fails (unreachable for valid HRP).
+    /// Returns an error if bech32 encoding fails.
     fn nsec(&self) -> Result<String, NostrKeypairError> {
-        let hrp = bech32::Hrp::parse("nsec").map_err(|_| NostrKeypairError::HrpParseError)?;
-        Ok(bech32::encode::<bech32::Bech32>(hrp, &self.secret_bytes())?)
+        Ok(nostro2_traits::bech32::encode("nsec", &self.secret_bytes())?)
     }
 }

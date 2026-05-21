@@ -40,7 +40,6 @@ sha2 = "0.11"
 zeroize = "1.8"
 
 # Key helpers
-bech32 = "0.11"
 xinachtli = { path = "../../tooling/xinachtli", features = ["english", "spanish"] }
 
 # Async
