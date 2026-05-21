@@ -21,6 +21,7 @@ pub enum Nip44Error {
 }
 
 impl std::fmt::Display for Nip44Error {
+    #[allow(unknown_lints, crappy)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SharedSecretError => f.write_str("shared secret error"),
@@ -394,6 +395,19 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    fn utf8_err() -> std::str::Utf8Error {
+        let bad = [0xff_u8];
+        std::str::from_utf8(bad.as_slice()).unwrap_err()
+    }
+
+    fn slice_err() -> std::array::TryFromSliceError {
+        <[u8; 4]>::try_from([0_u8; 3].as_slice()).unwrap_err()
+    }
+
+    fn int_err() -> std::num::TryFromIntError {
+        u8::try_from(256_u16).unwrap_err()
+    }
+
     #[test]
     fn error_display_covers_all_variants() {
         let cases: Vec<Nip44Error> = vec![
@@ -405,10 +419,13 @@ mod tests {
                 base64::engine::general_purpose::STANDARD
                     .decode("!!!").unwrap_err(),
             ),
+            Nip44Error::FromUtf8Error(utf8_err()),
             Nip44Error::HkdfError,
             Nip44Error::HmacError,
             Nip44Error::InvalidPrefixLen,
+            Nip44Error::FromArrayError(slice_err()),
             Nip44Error::BufferTooSmall,
+            Nip44Error::FromIntError(int_err()),
         ];
         for err in &cases {
             let msg = format!("{err}");
@@ -427,11 +444,14 @@ mod tests {
         assert!(Nip44Error::InvalidPrefixLen.source().is_none());
         assert!(Nip44Error::BufferTooSmall.source().is_none());
 
-        let hex_err = Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength);
-        assert!(hex_err.source().is_some());
-
-        let note_err = Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId);
-        assert!(note_err.source().is_some());
+        assert!(Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength).source().is_some());
+        assert!(Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId).source().is_some());
+        assert!(Nip44Error::Base64DecodingError(
+            base64::engine::general_purpose::STANDARD.decode("!!!").unwrap_err()
+        ).source().is_some());
+        assert!(Nip44Error::FromUtf8Error(utf8_err()).source().is_some());
+        assert!(Nip44Error::FromArrayError(slice_err()).source().is_some());
+        assert!(Nip44Error::FromIntError(int_err()).source().is_some());
     }
 
     mod proptests {

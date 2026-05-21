@@ -21,6 +21,7 @@ pub struct NostrSubscription {
 }
 
 impl NostrSubscription {
+    #[allow(unknown_lints, crappy)]
     fn parse_field(&mut self, key: &str, lex: &mut Lexer<'_>) -> Result<(), BourneError> {
         match key {
             "authors" => self.authors = Option::<Vec<String>>::from_lex(lex)?,

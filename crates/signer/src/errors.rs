@@ -20,6 +20,7 @@ pub enum NostrKeypairError {
 }
 
 impl std::fmt::Display for NostrKeypairError {
+    #[allow(unknown_lints, crappy)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidKey => f.write_str("invalid key"),
@@ -94,6 +95,14 @@ impl From<xinachtli::Error> for NostrKeypairError {
 mod tests {
     use super::*;
 
+    fn bech32_decode_err() -> bech32::DecodeError {
+        bech32::decode("not-bech32!!!").unwrap_err()
+    }
+
+    fn bech32_encode_err() -> bech32::EncodeError {
+        bech32::EncodeError::Fmt(std::fmt::Error)
+    }
+
     #[test]
     fn display_covers_all_variants() {
         let cases: Vec<NostrKeypairError> = vec![
@@ -101,6 +110,8 @@ mod tests {
             NostrKeypairError::HrpParseError,
             NostrKeypairError::SharedSecretError,
             NostrKeypairError::NotExtractable,
+            NostrKeypairError::Bech32DecodeError(bech32_decode_err()),
+            NostrKeypairError::Bech32EncodeError(bech32_encode_err()),
             NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength),
             NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId),
             NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError),
@@ -122,19 +133,12 @@ mod tests {
         assert!(NostrKeypairError::SharedSecretError.source().is_none());
         assert!(NostrKeypairError::NotExtractable.source().is_none());
 
-        let hex_err = NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength);
-        assert!(hex_err.source().is_some());
-
-        let nip01_err = NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId);
-        assert!(nip01_err.source().is_some());
-
-        let nip44_err = NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError);
-        assert!(nip44_err.source().is_some());
-
-        let nip59_err = NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError);
-        assert!(nip59_err.source().is_some());
-
-        let bip39_err = NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum);
-        assert!(bip39_err.source().is_some());
+        assert!(NostrKeypairError::Bech32DecodeError(bech32_decode_err()).source().is_some());
+        assert!(NostrKeypairError::Bech32EncodeError(bech32_encode_err()).source().is_some());
+        assert!(NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength).source().is_some());
+        assert!(NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId).source().is_some());
+        assert!(NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError).source().is_some());
+        assert!(NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError).source().is_some());
+        assert!(NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum).source().is_some());
     }
 }

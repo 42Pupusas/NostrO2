@@ -211,37 +211,42 @@ impl NostrTags {
 // Wire format: `[[String]]`. Custom impls preserve the on-the-wire shape
 // while keeping the flat-cells storage internally.
 
-impl<'input> FromJson<'input> for NostrTags {
-    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, Error> {
-        let mut cells = Vec::new();
-        let mut offsets = Vec::new();
-        offsets.push(0_u32);
+pub fn parse_tag_rows<'input, C: FromJson<'input>>(
+    lex: &mut Lexer<'input>,
+) -> Result<(Vec<C>, Vec<u32>), Error> {
+    let mut cells = Vec::new();
+    let mut offsets: Vec<u32> = vec![0];
 
+    if lex.array_start()? {
+        return Ok((cells, offsets));
+    }
+
+    loop {
         if lex.array_start()? {
-            return Ok(Self { cells, offsets });
-        }
-
-        loop {
-            // Each element is an inner array of strings (one tag row).
-            if lex.array_start()? {
-                // Empty row — just record the offset.
-            } else {
-                loop {
-                    cells.push(String::from_lex(lex)?);
-                    if lex.array_continue(b']')? {
-                        break;
-                    }
+            // empty row
+        } else {
+            loop {
+                cells.push(C::from_lex(lex)?);
+                if lex.array_continue(b']')? {
+                    break;
                 }
             }
-            let cell_count = u32::try_from(cells.len())
-                .map_err(|_| Error::new(ErrorKind::NumberOutOfRange, lex.position()))?;
-            offsets.push(cell_count);
-
-            if lex.array_continue(b']')? {
-                break;
-            }
         }
+        let cell_count = u32::try_from(cells.len())
+            .map_err(|_| Error::new(ErrorKind::NumberOutOfRange, lex.position()))?;
+        offsets.push(cell_count);
 
+        if lex.array_continue(b']')? {
+            break;
+        }
+    }
+
+    Ok((cells, offsets))
+}
+
+impl<'input> FromJson<'input> for NostrTags {
+    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, Error> {
+        let (cells, offsets) = parse_tag_rows(lex)?;
         Ok(Self { cells, offsets })
     }
 }

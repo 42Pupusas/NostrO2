@@ -218,6 +218,20 @@ mod tests {
         let nsec = "nsec14xfqzxvqxql233plvcy8vdpgxqnww7tw0l823dshzq3eux0w9ryqulcv53";
         let kp2 = K256Keypair::from_any(nsec).unwrap();
         assert_eq!(kp2.public_key(), kp1.public_key());
+
+        let mnemonic_en = kp1
+            .mnemonic(xinachtli::Language::English)
+            .unwrap();
+        let kp3 = K256Keypair::from_any(&mnemonic_en).unwrap();
+        assert_eq!(kp3.public_key(), kp1.public_key());
+
+        let mnemonic_es = kp1
+            .mnemonic(xinachtli::Language::Spanish)
+            .unwrap();
+        let kp4 = K256Keypair::from_any(&mnemonic_es).unwrap();
+        assert_eq!(kp4.public_key(), kp1.public_key());
+
+        assert!(K256Keypair::from_any("not-a-valid-key-in-any-format").is_err());
     }
 
     #[test]

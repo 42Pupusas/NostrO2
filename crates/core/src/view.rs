@@ -44,34 +44,7 @@ impl<'a> TagsView<'a> {
 
 impl<'input> FromJson<'input> for TagsView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        let mut cells: Vec<Cow<'input, str>> = Vec::new();
-        let mut offsets: Vec<u32> = Vec::new();
-        offsets.push(0);
-
-        if lex.array_start()? {
-            return Ok(Self { cells, offsets });
-        }
-
-        loop {
-            if lex.array_start()? {
-                // Empty row.
-            } else {
-                loop {
-                    cells.push(<Cow<'input, str>>::from_lex(lex)?);
-                    if lex.array_continue(b']')? {
-                        break;
-                    }
-                }
-            }
-            let cell_count = u32::try_from(cells.len())
-                .map_err(|_| BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position()))?;
-            offsets.push(cell_count);
-
-            if lex.array_continue(b']')? {
-                break;
-            }
-        }
-
+        let (cells, offsets) = crate::tags::parse_tag_rows(lex)?;
         Ok(Self { cells, offsets })
     }
 }
@@ -103,6 +76,7 @@ struct ViewFields<'a> {
 }
 
 impl<'a> ViewFields<'a> {
+    #[allow(unknown_lints, crappy)]
     fn parse_field(&mut self, key: &str, lex: &mut Lexer<'a>) -> Result<(), BourneError> {
         match key {
             "pubkey" => self.pubkey = Some(<Cow<'a, str>>::from_lex(lex)?),
