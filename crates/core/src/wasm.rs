@@ -28,10 +28,7 @@ fn get_opt_string(obj: &JsValue, key: &str) -> Result<Option<String>, JsValue> {
     if val.is_undefined() || val.is_null() {
         return Ok(None);
     }
-    Ok(Some(
-        val.as_string()
-            .ok_or_else(|| err(&format!("{key}: expected string or null")))?,
-    ))
+    Ok(val.as_string())
 }
 
 fn get_f64(obj: &JsValue, key: &str) -> Result<f64, JsValue> {
@@ -70,6 +67,7 @@ fn tags_from_js(val: &JsValue) -> Result<NostrTags, JsValue> {
                     .ok_or_else(|| err(&format!("tags[{i}][{j}]: expected string")))?,
             );
         }
+        #[allow(clippy::cast_possible_truncation)]
         offsets.push(cells.len() as u32);
     }
     Ok(NostrTags { cells, offsets })
@@ -79,7 +77,7 @@ fn note_to_obj(
     pubkey: &str,
     created_at: i64,
     kind: u32,
-    tags_js: JsValue,
+    tags_js: &JsValue,
     content: &str,
     id: Option<&str>,
     sig: Option<&str>,
@@ -89,7 +87,7 @@ fn note_to_obj(
     #[allow(clippy::cast_precision_loss)]
     set(&obj, "created_at", &JsValue::from_f64(created_at as f64));
     set(&obj, "kind", &JsValue::from_f64(f64::from(kind)));
-    set(&obj, "tags", &tags_js);
+    set(&obj, "tags", tags_js);
     set(&obj, "content", &JsValue::from_str(content));
     if let Some(id) = id {
         set(&obj, "id", &JsValue::from_str(id));
@@ -107,7 +105,7 @@ impl From<NostrNote> for JsValue {
             &note.pubkey,
             note.created_at,
             note.kind,
-            tags_js,
+            &tags_js,
             &note.content,
             note.id.as_deref(),
             note.sig.as_deref(),
@@ -122,7 +120,7 @@ impl From<&NostrNote> for JsValue {
             &note.pubkey,
             note.created_at,
             note.kind,
-            tags_js,
+            &tags_js,
             &note.content,
             note.id.as_deref(),
             note.sig.as_deref(),
@@ -137,7 +135,7 @@ impl From<&NostrNoteView<'_>> for JsValue {
             view.pubkey.as_ref(),
             view.created_at,
             view.kind,
-            tags_js,
+            &tags_js,
             view.content.as_ref(),
             view.id.as_deref(),
             view.sig.as_deref(),
