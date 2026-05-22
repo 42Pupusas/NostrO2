@@ -30,18 +30,14 @@ fn test_notes() -> Vec<NostrNote> {
 fn filter_by_author(bencher: divan::Bencher) {
     let notes = test_notes();
     let f = NostrSubscription::new().author("pubkey_5");
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
 fn filter_by_kind(bencher: divan::Bencher) {
     let notes = test_notes();
     let f = NostrSubscription::new().kind(1);
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
@@ -50,9 +46,7 @@ fn filter_by_timestamp(bencher: divan::Bencher) {
     let f = NostrSubscription::new()
         .since(1_234_567_890 + 500)
         .until(1_234_567_890 + 700);
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
@@ -62,9 +56,7 @@ fn filter_by_ids(bencher: divan::Bencher) {
         .id(format!("event_{:016x}", 100))
         .id(format!("event_{:016x}", 200))
         .id(format!("event_{:016x}", 300));
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
@@ -75,27 +67,21 @@ fn filter_multi(bencher: divan::Bencher) {
         .author("pubkey_7")
         .kind(1)
         .since(1_234_567_890 + 100);
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
 fn filter_with_tag(bencher: divan::Bencher) {
     let notes = test_notes();
     let f = NostrSubscription::new().kind(1).tag("#t", "nostr");
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]
 fn filter_empty_matches_per_note(bencher: divan::Bencher) {
     let notes = test_notes();
     let f = NostrSubscription::default();
-    bencher.bench(|| {
-        black_box(notes.iter().filter(|n| f.matches(n)).count())
-    });
+    bencher.bench(|| black_box(notes.iter().filter(|n| f.matches(n)).count()));
 }
 
 #[divan::bench]

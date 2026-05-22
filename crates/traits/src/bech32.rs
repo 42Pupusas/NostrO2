@@ -212,12 +212,18 @@ mod tests {
         let last = encoded.pop().unwrap();
         let replacement = if last == 'q' { 'p' } else { 'q' };
         encoded.push(replacement);
-        assert!(matches!(decode(&encoded), Err(Bech32Error::InvalidChecksum)));
+        assert!(matches!(
+            decode(&encoded),
+            Err(Bech32Error::InvalidChecksum)
+        ));
     }
 
     #[test]
     fn rejects_no_separator() {
-        assert!(matches!(decode("noseparator"), Err(Bech32Error::NoSeparator)));
+        assert!(matches!(
+            decode("noseparator"),
+            Err(Bech32Error::NoSeparator)
+        ));
     }
 
     #[test]

@@ -57,30 +57,46 @@ impl std::error::Error for NostrKeypairError {
 }
 
 impl From<nostro2_traits::bech32::Bech32Error> for NostrKeypairError {
-    fn from(e: nostro2_traits::bech32::Bech32Error) -> Self { Self::Bech32Error(e) }
+    fn from(e: nostro2_traits::bech32::Bech32Error) -> Self {
+        Self::Bech32Error(e)
+    }
 }
 impl From<nostro2_traits::hex::HexError> for NostrKeypairError {
-    fn from(e: nostro2_traits::hex::HexError) -> Self { Self::HexDecodeError(e) }
+    fn from(e: nostro2_traits::hex::HexError) -> Self {
+        Self::HexDecodeError(e)
+    }
 }
 impl From<nostro2::errors::NostrErrors> for NostrKeypairError {
-    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::Nip01Error(e) }
+    fn from(e: nostro2::errors::NostrErrors) -> Self {
+        Self::Nip01Error(e)
+    }
 }
 impl From<nostro2_nips::Nip44Error> for NostrKeypairError {
-    fn from(e: nostro2_nips::Nip44Error) -> Self { Self::Nip44Error(e) }
+    fn from(e: nostro2_nips::Nip44Error) -> Self {
+        Self::Nip44Error(e)
+    }
 }
 impl From<nostro2_nips::Nip59Error> for NostrKeypairError {
-    fn from(e: nostro2_nips::Nip59Error) -> Self { Self::Nip59Error(e) }
+    fn from(e: nostro2_nips::Nip59Error) -> Self {
+        Self::Nip59Error(e)
+    }
 }
 #[cfg(feature = "k256")]
 impl From<k256::elliptic_curve::Error> for NostrKeypairError {
-    fn from(e: k256::elliptic_curve::Error) -> Self { Self::K256Error(e) }
+    fn from(e: k256::elliptic_curve::Error) -> Self {
+        Self::K256Error(e)
+    }
 }
 #[cfg(feature = "secp256k1")]
 impl From<secp256k1::Error> for NostrKeypairError {
-    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1Error(e) }
+    fn from(e: secp256k1::Error) -> Self {
+        Self::Secp256k1Error(e)
+    }
 }
 impl From<xinachtli::Error> for NostrKeypairError {
-    fn from(e: xinachtli::Error) -> Self { Self::Bip39Error(e) }
+    fn from(e: xinachtli::Error) -> Self {
+        Self::Bip39Error(e)
+    }
 }
 
 #[cfg(test)]
@@ -102,7 +118,10 @@ mod tests {
         ];
         for err in &cases {
             let msg = format!("{err}");
-            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+            assert!(
+                !msg.is_empty(),
+                "Display must produce non-empty output for {err:?}"
+            );
         }
     }
 
@@ -114,11 +133,35 @@ mod tests {
         assert!(NostrKeypairError::SharedSecretError.source().is_none());
         assert!(NostrKeypairError::NotExtractable.source().is_none());
 
-        assert!(NostrKeypairError::Bech32Error(nostro2_traits::bech32::Bech32Error::InvalidChecksum).source().is_some());
-        assert!(NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength).source().is_some());
-        assert!(NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId).source().is_some());
-        assert!(NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError).source().is_some());
-        assert!(NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError).source().is_some());
-        assert!(NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum).source().is_some());
+        assert!(NostrKeypairError::Bech32Error(
+            nostro2_traits::bech32::Bech32Error::InvalidChecksum
+        )
+        .source()
+        .is_some());
+        assert!(
+            NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength)
+                .source()
+                .is_some()
+        );
+        assert!(
+            NostrKeypairError::Nip01Error(nostro2::errors::NostrErrors::MissingId)
+                .source()
+                .is_some()
+        );
+        assert!(
+            NostrKeypairError::Nip44Error(nostro2_nips::Nip44Error::SharedSecretError)
+                .source()
+                .is_some()
+        );
+        assert!(
+            NostrKeypairError::Nip59Error(nostro2_nips::Nip59Error::SigningError)
+                .source()
+                .is_some()
+        );
+        assert!(
+            NostrKeypairError::Bip39Error(xinachtli::Error::InvalidChecksum)
+                .source()
+                .is_some()
+        );
     }
 }

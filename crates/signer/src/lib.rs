@@ -123,12 +123,12 @@ pub use nostro2;
 pub use nostro2_nips;
 pub use nostro2_traits;
 
-pub use xinachtli::Language;
 pub use ext::KeypairExt;
 #[cfg(feature = "k256")]
 pub use k256_keypair::K256Keypair;
 #[cfg(feature = "secp256k1")]
 pub use secp256k1_keypair::Secp256k1Keypair;
+pub use xinachtli::Language;
 
 /// Convenience type alias for Results with `NostrKeypairError`
 pub type Result<T> = std::result::Result<T, errors::NostrKeypairError>;

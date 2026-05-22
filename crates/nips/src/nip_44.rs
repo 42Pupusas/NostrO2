@@ -56,25 +56,39 @@ impl std::error::Error for Nip44Error {
 }
 
 impl From<nostro2_traits::hex::HexError> for Nip44Error {
-    fn from(e: nostro2_traits::hex::HexError) -> Self { Self::FromHexError(e) }
+    fn from(e: nostro2_traits::hex::HexError) -> Self {
+        Self::FromHexError(e)
+    }
 }
 impl From<nostro2::errors::NostrErrors> for Nip44Error {
-    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::NostrNoteError(e) }
+    fn from(e: nostro2::errors::NostrErrors) -> Self {
+        Self::NostrNoteError(e)
+    }
 }
 impl From<base64::DecodeError> for Nip44Error {
-    fn from(e: base64::DecodeError) -> Self { Self::Base64DecodingError(e) }
+    fn from(e: base64::DecodeError) -> Self {
+        Self::Base64DecodingError(e)
+    }
 }
 impl From<std::str::Utf8Error> for Nip44Error {
-    fn from(e: std::str::Utf8Error) -> Self { Self::FromUtf8Error(e) }
+    fn from(e: std::str::Utf8Error) -> Self {
+        Self::FromUtf8Error(e)
+    }
 }
 impl From<chacha20::cipher::InvalidLength> for Nip44Error {
-    fn from(e: chacha20::cipher::InvalidLength) -> Self { Self::SliceError(e) }
+    fn from(e: chacha20::cipher::InvalidLength) -> Self {
+        Self::SliceError(e)
+    }
 }
 impl From<std::array::TryFromSliceError> for Nip44Error {
-    fn from(e: std::array::TryFromSliceError) -> Self { Self::FromArrayError(e) }
+    fn from(e: std::array::TryFromSliceError) -> Self {
+        Self::FromArrayError(e)
+    }
 }
 impl From<std::num::TryFromIntError> for Nip44Error {
-    fn from(e: std::num::TryFromIntError) -> Self { Self::FromIntError(e) }
+    fn from(e: std::num::TryFromIntError) -> Self {
+        Self::FromIntError(e)
+    }
 }
 
 pub struct MacComponents<'a> {
@@ -417,7 +431,8 @@ mod tests {
             Nip44Error::InvalidLength,
             Nip44Error::Base64DecodingError(
                 base64::engine::general_purpose::STANDARD
-                    .decode("!!!").unwrap_err(),
+                    .decode("!!!")
+                    .unwrap_err(),
             ),
             Nip44Error::FromUtf8Error(utf8_err()),
             Nip44Error::HkdfError,
@@ -429,7 +444,10 @@ mod tests {
         ];
         for err in &cases {
             let msg = format!("{err}");
-            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+            assert!(
+                !msg.is_empty(),
+                "Display must produce non-empty output for {err:?}"
+            );
         }
     }
 
@@ -444,11 +462,23 @@ mod tests {
         assert!(Nip44Error::InvalidPrefixLen.source().is_none());
         assert!(Nip44Error::BufferTooSmall.source().is_none());
 
-        assert!(Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength).source().is_some());
-        assert!(Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId).source().is_some());
+        assert!(
+            Nip44Error::FromHexError(nostro2_traits::hex::HexError::OddLength)
+                .source()
+                .is_some()
+        );
+        assert!(
+            Nip44Error::NostrNoteError(nostro2::errors::NostrErrors::MissingId)
+                .source()
+                .is_some()
+        );
         assert!(Nip44Error::Base64DecodingError(
-            base64::engine::general_purpose::STANDARD.decode("!!!").unwrap_err()
-        ).source().is_some());
+            base64::engine::general_purpose::STANDARD
+                .decode("!!!")
+                .unwrap_err()
+        )
+        .source()
+        .is_some());
         assert!(Nip44Error::FromUtf8Error(utf8_err()).source().is_some());
         assert!(Nip44Error::FromArrayError(slice_err()).source().is_some());
         assert!(Nip44Error::FromIntError(int_err()).source().is_some());

@@ -53,7 +53,10 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if the mnemonic is invalid or the entropy is not a
     /// valid scalar.
-    fn from_mnemonic(mnemonic: &str, language: xinachtli::Language) -> Result<Self, NostrKeypairError> {
+    fn from_mnemonic(
+        mnemonic: &str,
+        language: xinachtli::Language,
+    ) -> Result<Self, NostrKeypairError> {
         let mnemonic = xinachtli::Mnemonic::from_phrase(mnemonic, language)?;
         let bytes: &[u8; 32] = mnemonic
             .entropy()
@@ -101,7 +104,10 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if bech32 encoding fails.
     fn npub(&self) -> Result<String, NostrKeypairError> {
-        Ok(nostro2_traits::bech32::encode("npub", &self.pubkey_bytes())?)
+        Ok(nostro2_traits::bech32::encode(
+            "npub",
+            &self.pubkey_bytes(),
+        )?)
     }
 
     /// Encode the secret key as `nsec1…` bech32.
@@ -109,6 +115,9 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if bech32 encoding fails.
     fn nsec(&self) -> Result<String, NostrKeypairError> {
-        Ok(nostro2_traits::bech32::encode("nsec", &self.secret_bytes())?)
+        Ok(nostro2_traits::bech32::encode(
+            "nsec",
+            &self.secret_bytes(),
+        )?)
     }
 }

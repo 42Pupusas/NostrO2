@@ -465,7 +465,10 @@ mod tests {
         let f = NostrSubscription::new().id(n.id.clone().unwrap());
         assert!(f.matches(&n));
         n.id = None;
-        assert!(!f.matches(&n), "missing id field cannot match an ids filter");
+        assert!(
+            !f.matches(&n),
+            "missing id field cannot match an ids filter"
+        );
     }
 
     #[test]
@@ -594,23 +597,21 @@ mod tests {
                 proptest::option::of(any::<u32>()),
                 proptest::collection::vec(("[a-zA-Z0-9]{1,8}", "[a-zA-Z0-9]{1,32}"), 0..4),
             )
-                .prop_map(
-                    |(authors, ids, kinds, since, until, limit, tag_pairs)| {
-                        let mut sub = NostrSubscription {
-                            authors,
-                            ids,
-                            kinds,
-                            since,
-                            until,
-                            limit,
-                            tags: None,
-                        };
-                        for (k, v) in tag_pairs {
-                            sub.add_tag(&format!("#{k}"), &v);
-                        }
-                        sub
-                    },
-                )
+                .prop_map(|(authors, ids, kinds, since, until, limit, tag_pairs)| {
+                    let mut sub = NostrSubscription {
+                        authors,
+                        ids,
+                        kinds,
+                        since,
+                        until,
+                        limit,
+                        tags: None,
+                    };
+                    for (k, v) in tag_pairs {
+                        sub.add_tag(&format!("#{k}"), &v);
+                    }
+                    sub
+                })
         }
 
         fn arb_note() -> impl Strategy<Value = crate::NostrNote> {

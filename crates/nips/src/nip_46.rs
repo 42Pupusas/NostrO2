@@ -92,10 +92,14 @@ impl std::error::Error for Nip46Error {
 }
 
 impl From<nostro2::errors::NostrErrors> for Nip46Error {
-    fn from(e: nostro2::errors::NostrErrors) -> Self { Self::NostrNoteError(e) }
+    fn from(e: nostro2::errors::NostrErrors) -> Self {
+        Self::NostrNoteError(e)
+    }
 }
 impl From<crate::nip_44::Nip44Error> for Nip46Error {
-    fn from(e: crate::nip_44::Nip44Error) -> Self { Self::Nip44Error(e) }
+    fn from(e: crate::nip_44::Nip44Error) -> Self {
+        Self::Nip44Error(e)
+    }
 }
 
 pub trait Nip46: nostro2::NostrSigner + crate::Nip44 {

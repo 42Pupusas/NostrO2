@@ -118,7 +118,10 @@ mod tests {
         ];
         for err in &cases {
             let msg = format!("{err}");
-            assert!(!msg.is_empty(), "Display must produce non-empty output for {err:?}");
+            assert!(
+                !msg.is_empty(),
+                "Display must produce non-empty output for {err:?}"
+            );
         }
     }
 }

@@ -215,14 +215,13 @@ impl NostrNoteView<'_> {
         let pubkey = self
             .pubkey_bytes()
             .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
-        let vk = VerifyingKey::from_bytes((&pubkey).into())
-            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
-        let signature = Signature::try_from(sig.as_slice())
-            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let vk = VerifyingKey::from_bytes((&pubkey).into())?;
+        let signature = Signature::try_from(sig.as_slice())?;
         Ok(vk.verify_prehash(&id, &signature).is_ok())
     }
 
     #[cfg(feature = "secp256k1")]
+    #[allow(unknown_lints, crappy)]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey, SECP256K1};
         let id = self
@@ -234,10 +233,8 @@ impl NostrNoteView<'_> {
         let pk = self
             .pubkey_bytes()
             .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
-        let xonly = XOnlyPublicKey::from_slice(&pk)
-            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
-        let sig = Signature::from_slice(&sig_bytes)
-            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let xonly = XOnlyPublicKey::from_slice(&pk)?;
+        let sig = Signature::from_slice(&sig_bytes)?;
         let msg = Message::from_digest(id);
         Ok(SECP256K1.verify_schnorr(&sig, &msg, &xonly).is_ok())
     }
@@ -361,7 +358,8 @@ mod tests {
 
     #[test]
     fn skips_unknown_fields() {
-        let json = r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[],"content":"hi","extra":true}"#;
+        let json =
+            r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[],"content":"hi","extra":true}"#;
         let view: NostrNoteView<'_> = bourne::parse_str(json).unwrap();
         assert_eq!(view.content.as_ref(), "hi");
     }

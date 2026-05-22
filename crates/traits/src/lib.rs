@@ -115,7 +115,9 @@ pub trait NostrKeypair: NostrSigner {
     /// valid curve point.
     fn shared_point(&self, peer_pubkey: &str) -> Result<[u8; 32]> {
         let mut buf = [0_u8; 32];
-        peer_pubkey.decode_hex_to_slice(&mut buf).map_err(|_| SignerError::InvalidPublicKey)?;
+        peer_pubkey
+            .decode_hex_to_slice(&mut buf)
+            .map_err(|_| SignerError::InvalidPublicKey)?;
         self.ecdh_x(&buf)
     }
 }

@@ -178,14 +178,13 @@ impl NostrNote {
         let pubkey = self
             .pubkey_bytes()
             .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
-        let verifying_key = VerifyingKey::from_bytes((&pubkey).into())
-            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
-        let signature = Signature::try_from(sig.as_slice())
-            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let verifying_key = VerifyingKey::from_bytes((&pubkey).into())?;
+        let signature = Signature::try_from(sig.as_slice())?;
         Ok(verifying_key.verify_prehash(&id, &signature).is_ok())
     }
 
     #[cfg(feature = "secp256k1")]
+    #[allow(unknown_lints, crappy)]
     fn verify_signature(&self) -> Result<bool, crate::errors::NostrErrors> {
         use secp256k1::{schnorr::Signature, Message, XOnlyPublicKey, SECP256K1};
         let id = self
@@ -197,10 +196,8 @@ impl NostrNote {
         let pubkey = self
             .pubkey_bytes()
             .ok_or(crate::errors::NostrErrors::InvalidPublicKey)?;
-        let xonly = XOnlyPublicKey::from_slice(&pubkey)
-            .map_err(|_| crate::errors::NostrErrors::InvalidPublicKey)?;
-        let sig = Signature::from_slice(sig_bytes.as_slice())
-            .map_err(|_| crate::errors::NostrErrors::InvalidSignature)?;
+        let xonly = XOnlyPublicKey::from_slice(&pubkey)?;
+        let sig = Signature::from_slice(sig_bytes.as_slice())?;
         let msg = Message::from_digest(id);
         Ok(SECP256K1.verify_schnorr(&sig, &msg, &xonly).is_ok())
     }
@@ -269,7 +266,6 @@ impl core::str::FromStr for NostrNote {
         Ok(bourne::parse_str(s)?)
     }
 }
-
 
 #[derive(Debug)]
 pub struct NostrNoteBuilder {

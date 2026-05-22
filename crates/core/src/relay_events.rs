@@ -77,14 +77,20 @@ pub enum NostrRelayEvent {
 
 fn expect_more(lex: &mut Lexer<'_>) -> Result<(), BourneError> {
     if lex.array_continue(b']')? {
-        return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
+        return Err(BourneError::new(
+            BourneErrorKind::MissingField,
+            lex.position(),
+        ));
     }
     Ok(())
 }
 
 fn expect_end(lex: &mut Lexer<'_>) -> Result<(), BourneError> {
     if !lex.array_continue(b']')? {
-        return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
+        return Err(BourneError::new(
+            BourneErrorKind::TrailingData,
+            lex.position(),
+        ));
     }
     Ok(())
 }
@@ -104,10 +110,18 @@ fn parse_relay_ok(lex: &mut Lexer<'_>) -> Result<NostrRelayEvent, BourneError> {
     expect_more(lex)?;
     let message = String::from_lex(lex)?;
     expect_end(lex)?;
-    Ok(NostrRelayEvent::SentOk(RelayEventTag::Ok, event_id, success, message))
+    Ok(NostrRelayEvent::SentOk(
+        RelayEventTag::Ok,
+        event_id,
+        success,
+        message,
+    ))
 }
 
-fn parse_relay_two_element(tag: RelayEventTag, lex: &mut Lexer<'_>) -> Result<NostrRelayEvent, BourneError> {
+fn parse_relay_two_element(
+    tag: RelayEventTag,
+    lex: &mut Lexer<'_>,
+) -> Result<NostrRelayEvent, BourneError> {
     let val = String::from_lex(lex)?;
     expect_end(lex)?;
     Ok(match tag {
@@ -122,7 +136,10 @@ fn parse_relay_two_element(tag: RelayEventTag, lex: &mut Lexer<'_>) -> Result<No
 impl<'input> FromJson<'input> for NostrRelayEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         if lex.array_start()? {
-            return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position()));
+            return Err(BourneError::new(
+                BourneErrorKind::TypeMismatch,
+                lex.position(),
+            ));
         }
         let tag_str = lex.parse_str_value()?;
         let tag = RelayEventTag::from_str_wire(tag_str)
@@ -131,9 +148,14 @@ impl<'input> FromJson<'input> for NostrRelayEvent {
         match tag {
             RelayEventTag::Event => parse_relay_event(lex),
             RelayEventTag::Ok => parse_relay_ok(lex),
-            RelayEventTag::Eose | RelayEventTag::Closed
-            | RelayEventTag::Notice | RelayEventTag::Auth => parse_relay_two_element(tag, lex),
-            _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
+            RelayEventTag::Eose
+            | RelayEventTag::Closed
+            | RelayEventTag::Notice
+            | RelayEventTag::Auth => parse_relay_two_element(tag, lex),
+            _ => Err(BourneError::new(
+                BourneErrorKind::UnknownField,
+                lex.position(),
+            )),
         }
     }
 }
@@ -261,7 +283,10 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     }
 }
 
-fn parse_client_note(lex: &mut Lexer<'_>, tag: RelayEventTag) -> Result<NostrClientEvent, BourneError> {
+fn parse_client_note(
+    lex: &mut Lexer<'_>,
+    tag: RelayEventTag,
+) -> Result<NostrClientEvent, BourneError> {
     expect_more(lex)?;
     let note = crate::note::NostrNote::from_lex(lex)?;
     expect_end(lex)?;
@@ -277,20 +302,30 @@ fn parse_client_req(lex: &mut Lexer<'_>) -> Result<NostrClientEvent, BourneError
     expect_more(lex)?;
     let filter = super::subscriptions::NostrSubscription::from_lex(lex)?;
     expect_end(lex)?;
-    Ok(NostrClientEvent::Subscribe(RelayEventTag::Req, sub_id, filter))
+    Ok(NostrClientEvent::Subscribe(
+        RelayEventTag::Req,
+        sub_id,
+        filter,
+    ))
 }
 
 fn parse_client_close(lex: &mut Lexer<'_>) -> Result<NostrClientEvent, BourneError> {
     expect_more(lex)?;
     let sub_id = String::from_lex(lex)?;
     expect_end(lex)?;
-    Ok(NostrClientEvent::CloseSubscriptionEvent(RelayEventTag::Close, sub_id))
+    Ok(NostrClientEvent::CloseSubscriptionEvent(
+        RelayEventTag::Close,
+        sub_id,
+    ))
 }
 
 impl<'input> FromJson<'input> for NostrClientEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         if lex.array_start()? {
-            return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position()));
+            return Err(BourneError::new(
+                BourneErrorKind::TypeMismatch,
+                lex.position(),
+            ));
         }
         let tag_str = lex.parse_str_value()?;
         let tag = RelayEventTag::from_str_wire(tag_str)
@@ -299,7 +334,10 @@ impl<'input> FromJson<'input> for NostrClientEvent {
             RelayEventTag::Event | RelayEventTag::Auth => parse_client_note(lex, tag),
             RelayEventTag::Req => parse_client_req(lex),
             RelayEventTag::Close => parse_client_close(lex),
-            _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
+            _ => Err(BourneError::new(
+                BourneErrorKind::UnknownField,
+                lex.position(),
+            )),
         }
     }
 }
@@ -362,7 +400,9 @@ mod tests {
         }
     }
 
-    fn round_trip<T: bourne::ToJson + for<'a> bourne::FromJson<'a> + std::fmt::Debug + PartialEq>(
+    fn round_trip<
+        T: bourne::ToJson + for<'a> bourne::FromJson<'a> + std::fmt::Debug + PartialEq,
+    >(
         val: &T,
     ) {
         let json = bourne::to_string(val).expect("serialize");
@@ -373,7 +413,11 @@ mod tests {
     #[test]
     fn relay_event_round_trip() {
         let note = sample_note();
-        round_trip(&NostrRelayEvent::NewNote(RelayEventTag::Event, "sub1".into(), note));
+        round_trip(&NostrRelayEvent::NewNote(
+            RelayEventTag::Event,
+            "sub1".into(),
+            note,
+        ));
     }
 
     #[test]
@@ -513,32 +557,27 @@ mod tests {
 
     #[test]
     fn relay_event_rejects_truncated_ok() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["OK","eid"]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid"]"#);
         assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["OK","eid",true]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid",true]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_trailing_data() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["EOSE","sub","extra"]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_not_array() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"{"tag":"EVENT"}"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"{"tag":"EVENT"}"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_event_missing_note() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["EVENT","sub"]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EVENT","sub"]"#);
         assert!(result.is_err());
     }
 
@@ -560,25 +599,21 @@ mod tests {
 
     #[test]
     fn relay_event_rejects_ok_missing_bool() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["OK","eid"]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_missing_message() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["OK","eid",true]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid",true]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_client_only_tags() {
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["REQ","sub",{}]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["REQ","sub",{}]"#);
         assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["CLOSE","sub"]"#);
+        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["CLOSE","sub"]"#);
         assert!(result.is_err());
     }
 
@@ -590,21 +625,17 @@ mod tests {
 
     #[test]
     fn client_event_rejects_unknown_tag() {
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["BOGUS","sub"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["BOGUS","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_server_only_tags() {
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["EOSE","sub"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["EOSE","sub"]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["OK","eid",true,""]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["OK","eid",true,""]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["NOTICE","msg"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["NOTICE","msg"]"#);
         assert!(result.is_err());
     }
 
@@ -618,8 +649,7 @@ mod tests {
     fn client_event_rejects_truncated_req() {
         let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ"]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["REQ","sub"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ","sub"]"#);
         assert!(result.is_err());
     }
 
@@ -655,15 +685,13 @@ mod tests {
 
     #[test]
     fn client_event_rejects_close_trailing_data() {
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_req_trailing_data() {
-        let result: Result<NostrClientEvent, _> =
-            bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
+        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
         assert!(result.is_err());
     }
 

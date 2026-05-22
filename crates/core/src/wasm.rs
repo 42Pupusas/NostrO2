@@ -146,6 +146,7 @@ impl From<&NostrNoteView<'_>> for JsValue {
 impl TryFrom<JsValue> for NostrNote {
     type Error = JsValue;
 
+    #[allow(unknown_lints, crappy)]
     fn try_from(val: JsValue) -> Result<Self, Self::Error> {
         let pubkey = get_string(&val, "pubkey")?;
         #[allow(clippy::cast_possible_truncation)]

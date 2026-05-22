@@ -130,7 +130,10 @@ mod tests {
 
     #[test]
     fn invalid_char_fails() {
-        assert!(matches!("zz".decode_hex(), Err(HexError::InvalidChar(b'z'))));
+        assert!(matches!(
+            "zz".decode_hex(),
+            Err(HexError::InvalidChar(b'z'))
+        ));
     }
 
     #[test]
