@@ -1,0 +1,39 @@
+[package]
+name = "nostro2-signer"
+version = "0.3.0"
+edition = "2021"
+categories = ["authentication", "cryptography", "web-programming"]
+license = "MIT"
+description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+readme = "../../README.md"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+documentation = "https://docs.rs/nostro2/latest/nostro2/"
+
+
+[features]
+# Default mirrors the historical behaviour. Consumers who want
+# `secp256k1` should set `default-features = false` and pick the
+# `secp256k1` feature here.
+default = ["k256"]
+k256 = ["dep:k256", "nostro2/k256", "nostro2-nips/k256"]
+secp256k1 = ["dep:secp256k1", "nostro2/secp256k1", "nostro2-nips/secp256k1"]
+
+[dependencies]
+xinachtli.workspace = true
+k256 = { workspace = true, optional = true }
+secp256k1 = { workspace = true, optional = true }
+nostro2.workspace = true
+nostro2-nips.workspace = true
+nostro2-traits.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "crypto"
+path = "../../benches/crypto.rs"
+harness = false
+

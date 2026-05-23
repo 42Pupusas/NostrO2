@@ -1,0 +1,55 @@
+[package]
+name = "nostro2-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+bourne = { path = "../../../tooling/bourne/crates/bourne" }
+nostro2 = { path = "../crates/core", features = ["k256"] }
+nostro2-traits = { path = "../crates/traits" }
+
+[[bin]]
+name = "fuzz_note_parse"
+path = "fuzz_targets/fuzz_note_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_subscription_parse"
+path = "fuzz_targets/fuzz_subscription_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_relay_event_parse"
+path = "fuzz_targets/fuzz_relay_event_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_client_event_parse"
+path = "fuzz_targets/fuzz_client_event_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_note_view_parse"
+path = "fuzz_targets/fuzz_note_view_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_hex"
+path = "fuzz_targets/fuzz_hex.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_note_id"
+path = "fuzz_targets/fuzz_note_id.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_subscription_matches"
+path = "fuzz_targets/fuzz_subscription_matches.rs"
+doc = false

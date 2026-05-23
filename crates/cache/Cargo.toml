@@ -1,0 +1,23 @@
+[package]
+name = "nostro2-cache"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Lock-free LRU deduplication cache for the Nostr protocol."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+readme = "README.md"
+categories = ["caching", "data-structures"]
+keywords = ["nostr", "cache", "lru", "deduplication"]
+
+[dependencies]
+lru = "0.12"
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "deduplication"
+path = "../../benches/deduplication.rs"
+harness = false
+

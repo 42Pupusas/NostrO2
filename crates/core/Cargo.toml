@@ -1,0 +1,60 @@
+[package]
+name = "nostro2"
+version = "0.5.0"
+edition = "2021"
+categories = ["authentication", "cryptography", "web-programming"]
+license = "MIT"
+description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
+repository = "https://github.com/42Pupusas/NostrO2.git"
+readme = "../../README.md"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+documentation = "https://docs.rs/nostro2/latest/nostro2/"
+
+[features]
+# No default backend. Cargo unifies features across the dep graph, so
+# defaulting to a curve here would silently force *every* downstream
+# consumer of `nostro2` to use that curve unless they remembered to set
+# `default-features = false`. Picking up the curve via a sibling crate
+# (e.g. `nostro2-signer`'s default) is fine — that's an explicit choice
+# by whichever crate the consumer reached for. The `compile_error!` in
+# `lib.rs` enforces that you do not pick both.
+default = []
+k256 = ["dep:k256"]
+secp256k1 = ["dep:secp256k1"]
+
+[dependencies]
+k256 = { workspace = true, optional = true }
+secp256k1 = { workspace = true, optional = true }
+bourne.workspace = true
+sha2.workspace = true
+nostro2-traits.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+# `k256`'s curve init pulls in `crypto-bigint -> getrandom`, which on
+# `wasm32-unknown-unknown` requires the `wasm_js` feature to find a
+# JS-backed entropy source. Cargo features are additive across the graph,
+# so flipping it here flips it for every transitive copy.
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[dev-dependencies]
+nostro2-signer = { workspace = true, features = ["k256"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+divan.workspace = true
+proptest.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true
+
+[[bench]]
+name = "serialization"
+path = "../../benches/serialization.rs"
+harness = false
+
+[[bench]]
+name = "subscription"
+path = "../../benches/subscription.rs"
+harness = false
+
+

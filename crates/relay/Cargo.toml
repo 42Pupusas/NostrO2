@@ -1,0 +1,40 @@
+[package]
+name = "nostro2-relay"
+version = "0.3.1"
+edition = "2021"
+categories = ["authentication", "cryptography", "web-programming"]
+license = "MIT"
+description = "WebSocket relay client and connection pool for the Nostr protocol"
+repository = "https://github.com/42Pupusas/NostrO2.git"
+readme = "README.md"
+homepage = "https://github.com/42Pupusas/NostrO2.git"
+documentation = "https://docs.rs/nostro2/latest/nostro2/"
+
+[features]
+default = ["rustls-ring"]
+rustls-ring = ["rustls/ring", "tokio-tungstenite/rustls-tls-native-roots", "tokio-tungstenite/connect"]
+rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots", "tokio-tungstenite/connect"]
+
+[dependencies]
+futures-util.workspace = true
+log = "0.4"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-tungstenite = { version = "0.26", default-features = false }
+
+nostro2.workspace = true
+nostro2-cache.workspace = true
+rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
+serde_json.workspace = true
+
+[dev-dependencies]
+nostro2-signer.workspace = true
+divan.workspace = true
+lru.workspace = true
+
+[[bench]]
+name = "relay_benchmarks"
+harness = false
+
+[[bench]]
+name = "deduplication"
+harness = false
