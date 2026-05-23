@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc df0046baa77d606758ea4a8a542bc6567cedacfed899f592ad9b16b399e37a4a # shrinks to note = NostrNote { pubkey: "", created_at: 0, kind: 0, tags: NostrTags { cells: [], offsets: [] }, content: "", id: None, sig: None }
