@@ -57,6 +57,7 @@ impl NostrKeypair for Secp256k1Keypair {
         self.0.secret_key().secret_bytes()
     }
 
+    #[allow(unknown_lints, crappy)]
     fn generate() -> Self {
         // See `K256Keypair::generate` for the bounded-retry rationale.
         let mut secret = [0_u8; 32];
@@ -135,6 +136,14 @@ mod tests {
             let s = Signature::from_slice(&sig).unwrap();
             assert!(SECP256K1.verify_schnorr(&s, &msg, &xonly).is_ok());
         }
+    }
+
+    #[test]
+    fn generate_secret_bytes_roundtrip() {
+        let kp = Secp256k1Keypair::generate();
+        let bytes = kp.secret_bytes();
+        let restored = Secp256k1Keypair::from_secret_bytes(&bytes).unwrap();
+        assert_eq!(kp.pubkey_bytes(), restored.pubkey_bytes());
     }
 
     #[test]
