@@ -14,33 +14,30 @@ members = [
 
 [workspace.dependencies.nostro2-traits]
 path = "crates/traits"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 # JSON
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde-wasm-bindgen = "0.6"
 bourne = { package = "json-bourne", version = "0.1" }
 
-nostro2 = { path = "crates/core", version = "0.5.0", default-features = false }
-nostro2-nips = { path = "crates/nips", version = "0.2.0", default-features = false }
-nostro2-signer = { path = "crates/signer", version = "0.3.0", default-features = false }
-nostro2-cache = { path = "crates/cache", version = "0.1.0" }
+nostro2 = { path = "crates/core", version = "0.6.0", default-features = false }
+nostro2-nips = { path = "crates/nips", version = "0.3.0", default-features = false }
+nostro2-signer = { path = "crates/signer", version = "0.4.0", default-features = false }
+nostro2-cache = { path = "crates/cache", version = "0.2.0" }
 
 # Cryptography
 base64 = "0.22"
 chacha20 = "0.10"
 hkdf = "0.13"
 hmac = "0.13"
-k256 = { path = "../../forfun/elliptic-curves/k256", default-features = false, features = ["schnorr", "ecdh"] }
+k256 = { version = "0.14.0-rc.9", default-features = false, features = ["schnorr", "ecdh"] }
 secp256k1 = { version = "0.29", features = ["rand", "global-context", "hashes"] }
 getrandom = "0.4"
 sha2 = "0.11"
 zeroize = "1.8"
 
 # Key helpers
-xinachtli = { path = "../../tooling/xinachtli", features = ["english", "spanish"] }
+xinachtli = { version = "0.1", features = ["english", "spanish"] }
 
 # Async
 tokio = { version = "^1.44" }
