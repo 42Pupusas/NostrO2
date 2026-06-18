@@ -48,7 +48,7 @@ impl FromHex for str {
         }
         let mut out = Vec::with_capacity(bytes.len() / 2);
         for pair in bytes.chunks_exact(2) {
-            out.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
+            out.push((HexError::nibble(pair[0])? << 4) | HexError::nibble(pair[1])?);
         }
         Ok(out)
     }
@@ -59,19 +59,9 @@ impl FromHex for str {
             return Err(HexError::LengthMismatch);
         }
         for (i, pair) in input.chunks_exact(2).enumerate() {
-            out[i] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+            out[i] = (HexError::nibble(pair[0])? << 4) | HexError::nibble(pair[1])?;
         }
         Ok(())
-    }
-}
-
-#[inline]
-const fn nibble(b: u8) -> Result<u8, HexError> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(HexError::InvalidChar(b)),
     }
 }
 
@@ -80,6 +70,23 @@ pub enum HexError {
     OddLength,
     LengthMismatch,
     InvalidChar(u8),
+}
+
+impl HexError {
+    /// Parse one hex nibble, returning the 4-bit value or `InvalidChar`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HexError::InvalidChar`] if `b` is not a hex digit.
+    #[inline]
+    pub const fn nibble(b: u8) -> Result<u8, Self> {
+        match b {
+            b'0'..=b'9' => Ok(b - b'0'),
+            b'a'..=b'f' => Ok(b - b'a' + 10),
+            b'A'..=b'F' => Ok(b - b'A' + 10),
+            _ => Err(Self::InvalidChar(b)),
+        }
+    }
 }
 
 impl std::fmt::Display for HexError {

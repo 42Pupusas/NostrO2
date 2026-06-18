@@ -23,6 +23,38 @@ pub mod bech32;
 pub mod hex;
 use hex::{FromHex as _, Hexable as _};
 
+// ── Private supertrait extensions (auto-implemented via blanket impls) ──
+
+/// Auto-derived bech32 encoding for any signer.
+///
+/// Blanket-implemented for every [`NostrSigner`] — no extra work for
+/// implementors. Used by `nostro2-signer` to provide `npub()` / `nsec()`
+/// without reaching into the `bech32` module directly.
+#[doc(hidden)]
+pub trait SignerBech32: NostrSigner {
+    /// Encode the public key as `npub1…` bech32.
+    ///
+    /// # Errors
+    /// Returns [`bech32::Bech32Error`] if encoding fails.
+    fn to_npub(&self) -> std::result::Result<String, bech32::Bech32Error> {
+        bech32::Bech32Crypto::encode("npub", &self.pubkey_bytes())
+    }
+}
+impl<T: NostrSigner + ?Sized> SignerBech32 for T {}
+
+/// Auto-derived bech32 encoding for any keypair.
+#[doc(hidden)]
+pub trait KeypairBech32: NostrKeypair {
+    /// Encode the secret key as `nsec1…` bech32.
+    ///
+    /// # Errors
+    /// Returns [`bech32::Bech32Error`] if encoding fails.
+    fn to_nsec(&self) -> std::result::Result<String, bech32::Bech32Error> {
+        bech32::Bech32Crypto::encode("nsec", &self.secret_bytes())
+    }
+}
+impl<T: NostrKeypair + ?Sized> KeypairBech32 for T {}
+
 /// Errors returned by signing and key-derivation operations.
 #[derive(Debug)]
 pub enum SignerError {
