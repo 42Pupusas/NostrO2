@@ -43,7 +43,7 @@ pub trait FromHex {
 impl FromHex for str {
     fn decode_hex(&self) -> Result<Vec<u8>, HexError> {
         let bytes = self.as_bytes();
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err(HexError::OddLength);
         }
         let mut out = Vec::with_capacity(bytes.len() / 2);

@@ -15,6 +15,65 @@ pub enum RelayEventTag {
     Closed,
 }
 
+/// Shared parser for NIP-01 relay-event wire frames.
+///
+/// Both the zero-copy [`NostrRelayEventView`](crate::NostrRelayEventView) and
+/// the owning [`NostrRelayEvent`] parse the same `["TAG", …]` array shapes —
+/// they differ only in allocation strategy and whether the tag is stored.
+/// This trait factors out the common dispatch logic so there is a single
+/// implementation to test and maintain.
+pub(crate) trait RelayFrameParser<'input>: Sized {
+    type Str: FromJson<'input>;
+    type Note: FromJson<'input>;
+
+    fn new_note(tag: RelayEventTag, sub_id: Self::Str, note: Self::Note) -> Self;
+    fn sent_ok(tag: RelayEventTag, event_id: Self::Str, success: bool, message: Self::Str) -> Self;
+    fn eose(tag: RelayEventTag, sub_id: Self::Str) -> Self;
+    fn closed(tag: RelayEventTag, sub_id: Self::Str) -> Self;
+    fn notice(tag: RelayEventTag, message: Self::Str) -> Self;
+    fn auth(tag: RelayEventTag, challenge: Self::Str) -> Self;
+
+    fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
+        let tag = lex.parse_frame_tag()?;
+        match tag {
+            RelayEventTag::Event => {
+                let sub_id = Self::Str::from_lex(lex)?;
+                lex.expect_more()?;
+                let note = Self::Note::from_lex(lex)?;
+                lex.expect_end()?;
+                Ok(Self::new_note(tag, sub_id, note))
+            }
+            RelayEventTag::Ok => {
+                let event_id = Self::Str::from_lex(lex)?;
+                lex.expect_more()?;
+                let success = bool::from_lex(lex)?;
+                lex.expect_more()?;
+                let message = Self::Str::from_lex(lex)?;
+                lex.expect_end()?;
+                Ok(Self::sent_ok(tag, event_id, success, message))
+            }
+            RelayEventTag::Eose
+            | RelayEventTag::Closed
+            | RelayEventTag::Notice
+            | RelayEventTag::Auth => {
+                let val = Self::Str::from_lex(lex)?;
+                lex.expect_end()?;
+                Ok(match tag {
+                    RelayEventTag::Eose => Self::eose(tag, val),
+                    RelayEventTag::Closed => Self::closed(tag, val),
+                    RelayEventTag::Notice => Self::notice(tag, val),
+                    RelayEventTag::Auth => Self::auth(tag, val),
+                    _ => unreachable!(),
+                })
+            }
+            _ => Err(BourneError::new(
+                BourneErrorKind::UnknownField,
+                lex.position(),
+            )),
+        }
+    }
+}
+
 impl RelayEventTag {
     const fn as_quoted(self) -> &'static str {
         match self {
@@ -58,6 +117,48 @@ impl ToJson for RelayEventTag {
     }
 }
 
+// ── Wire-frame parsing helpers ───────────────────────────────────
+
+/// Extension trait that adds nostr wire-frame parsing sugar to `Lexer`.
+pub trait WireFrameExt {
+    /// Consumes `[`, the tag string, and the following comma.
+    /// Returns `TypeMismatch` for an empty array, `UnknownField` for an
+    /// unrecognized tag, or `MissingField` if no further elements follow.
+    fn parse_frame_tag(&mut self) -> Result<RelayEventTag, BourneError>;
+    /// Asserts the array has at least one more element (comma, not `]`).
+    fn expect_more(&mut self) -> Result<(), BourneError>;
+    /// Asserts the array has been fully consumed (closing `]`).
+    fn expect_end(&mut self) -> Result<(), BourneError>;
+}
+
+impl WireFrameExt for Lexer<'_> {
+    fn parse_frame_tag(&mut self) -> Result<RelayEventTag, BourneError> {
+        if self.array_start()? {
+            return Err(BourneError::new(BourneErrorKind::TypeMismatch, self.position()));
+        }
+        let tag = RelayEventTag::from_str_wire(self.parse_str_value()?)
+            .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, self.position()))?;
+        self.expect_more()?;
+        Ok(tag)
+    }
+
+    fn expect_more(&mut self) -> Result<(), BourneError> {
+        if self.array_continue(b']')? {
+            Err(BourneError::new(BourneErrorKind::MissingField, self.position()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn expect_end(&mut self) -> Result<(), BourneError> {
+        if self.array_continue(b']')? {
+            Ok(())
+        } else {
+            Err(BourneError::new(BourneErrorKind::TrailingData, self.position()))
+        }
+    }
+}
+
 // ── FROM RELAY TO CLIENT ──────────────────────────────────────────
 //
 // Nostr wire frames are JSON arrays: `["EVENT", "sub_id", {note}]`,
@@ -75,72 +176,25 @@ pub enum NostrRelayEvent {
     Auth(RelayEventTag, String),
 }
 
+impl<'input> RelayFrameParser<'input> for NostrRelayEvent {
+    type Str = String;
+    type Note = crate::note::NostrNote;
+
+    fn new_note(tag: RelayEventTag, sub_id: String, note: Self::Note) -> Self {
+        Self::NewNote(tag, sub_id, note)
+    }
+    fn sent_ok(tag: RelayEventTag, event_id: String, success: bool, message: String) -> Self {
+        Self::SentOk(tag, event_id, success, message)
+    }
+    fn eose(tag: RelayEventTag, sub_id: String) -> Self { Self::EndOfSubscription(tag, sub_id) }
+    fn closed(tag: RelayEventTag, sub_id: String) -> Self { Self::ClosedSubscription(tag, sub_id) }
+    fn notice(tag: RelayEventTag, message: String) -> Self { Self::Notice(tag, message) }
+    fn auth(tag: RelayEventTag, challenge: String) -> Self { Self::Auth(tag, challenge) }
+}
+
 impl<'input> FromJson<'input> for NostrRelayEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        if lex.array_start()? {
-            return Err(BourneError::new(
-                BourneErrorKind::TypeMismatch,
-                lex.position(),
-            ));
-        }
-        let tag_str = lex.parse_str_value()?;
-        let tag = RelayEventTag::from_str_wire(tag_str)
-            .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
-        // expect comma (more elements) or end
-        if lex.array_continue(b']')? {
-            return Err(BourneError::new(
-                BourneErrorKind::MissingField,
-                lex.position(),
-            ));
-        }
-        match tag {
-            RelayEventTag::Event => {
-                let sub_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
-                let note = crate::note::NostrNote::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
-                Ok(Self::NewNote(RelayEventTag::Event, sub_id, note))
-            }
-            RelayEventTag::Ok => {
-                let event_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
-                let success = bool::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
-                let message = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
-                Ok(Self::SentOk(RelayEventTag::Ok, event_id, success, message))
-            }
-            RelayEventTag::Eose
-            | RelayEventTag::Closed
-            | RelayEventTag::Notice
-            | RelayEventTag::Auth => {
-                let val = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
-                Ok(match tag {
-                    RelayEventTag::Eose => Self::EndOfSubscription(tag, val),
-                    RelayEventTag::Closed => Self::ClosedSubscription(tag, val),
-                    RelayEventTag::Notice => Self::Notice(tag, val),
-                    RelayEventTag::Auth => Self::Auth(tag, val),
-                    _ => unreachable!(),
-                })
-            }
-            _ => Err(BourneError::new(
-                BourneErrorKind::UnknownField,
-                lex.position(),
-            )),
-        }
+        <Self as RelayFrameParser>::from_lex(lex)
     }
 }
 
@@ -271,52 +325,27 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
 
 impl<'input> FromJson<'input> for NostrClientEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        if lex.array_start()? {
-            return Err(BourneError::new(
-                BourneErrorKind::TypeMismatch,
-                lex.position(),
-            ));
-        }
-        let tag_str = lex.parse_str_value()?;
-        let tag = RelayEventTag::from_str_wire(tag_str)
-            .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
+        let tag = lex.parse_frame_tag()?;
         match tag {
             RelayEventTag::Event | RelayEventTag::Auth => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
                 let note = crate::note::NostrNote::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
+                lex.expect_end()?;
                 Ok(match tag {
                     RelayEventTag::Event => Self::SendNoteEvent(tag, note),
                     _ => Self::AuthEvent(tag, note),
                 })
             }
             RelayEventTag::Req => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
                 let sub_id = String::from_lex(lex)?;
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
+                lex.expect_more()?;
                 let filter = super::subscriptions::NostrSubscription::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
-                Ok(Self::Subscribe(RelayEventTag::Req, sub_id, filter))
+                lex.expect_end()?;
+                Ok(Self::Subscribe(tag, sub_id, filter))
             }
             RelayEventTag::Close => {
-                if lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::MissingField, lex.position()));
-                }
                 let sub_id = String::from_lex(lex)?;
-                if !lex.array_continue(b']')? {
-                    return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position()));
-                }
-                Ok(Self::CloseSubscriptionEvent(RelayEventTag::Close, sub_id))
+                lex.expect_end()?;
+                Ok(Self::CloseSubscriptionEvent(tag, sub_id))
             }
             _ => Err(BourneError::new(
                 BourneErrorKind::UnknownField,

@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, Lexer};
 
 use crate::event::NostrEvent;
+use crate::relay_events::{RelayFrameParser, WireFrameExt};
+use crate::RelayEventTag;
 
 // ── TagsView ─────────────────────────────────────────────────────
 
@@ -75,40 +77,67 @@ pub struct NostrNoteView<'a> {
     pub sig: Option<Cow<'a, str>>,
 }
 
-#[derive(Default)]
-struct NoteFields<'a> {
-    pubkey: Option<Cow<'a, str>>, created_at: Option<i64>, kind: Option<u32>,
-    tags: Option<TagsView<'a>>, content: Option<Cow<'a, str>>,
-    id: Option<Cow<'a, str>>, sig: Option<Cow<'a, str>>,
+/// Known keys in a NIP-01 event object.
+enum NoteFieldKey {
+    Pubkey,
+    CreatedAt,
+    Kind,
+    Tags,
+    Content,
+    Id,
+    Sig,
+    Unknown,
 }
 
-impl<'a> NoteFields<'a> {
-    fn require<T>(opt: Option<T>, lex: &Lexer<'_>) -> Result<T, BourneError> {
-        opt.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, lex.position()))
-    }
-    #[allow(unknown_lints, crappy)]
-    fn parse_field(&mut self, key: &str, lex: &mut Lexer<'a>) -> Result<(), BourneError> {
+impl NoteFieldKey {
+    fn from_str(key: &str) -> Self {
         match key {
-            "pubkey" => self.pubkey = Some(Cow::from_lex(lex)?),
-            "created_at" => self.created_at = Some(lex.parse_i64_value()?),
-            "kind" => self.kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position()))?),
-            "tags" => self.tags = Some(TagsView::from_lex(lex)?),
-            "content" => self.content = Some(Cow::from_lex(lex)?),
-            "id" => self.id = Option::<Cow<'a, str>>::from_lex(lex)?,
-            "sig" => self.sig = Option::<Cow<'a, str>>::from_lex(lex)?,
-            _ => lex.skip_value()?,
+            "pubkey" => Self::Pubkey,
+            "created_at" => Self::CreatedAt,
+            "kind" => Self::Kind,
+            "tags" => Self::Tags,
+            "content" => Self::Content,
+            "id" => Self::Id,
+            "sig" => Self::Sig,
+            _ => Self::Unknown,
         }
-        Ok(())
     }
 }
 
 impl<'input> FromJson<'input> for NostrNoteView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         lex.object_start()?;
-        let mut f = NoteFields::default();
+        let mut pubkey: Option<Cow<'input, str>> = None;
+        let mut created_at: Option<i64> = None;
+        let mut kind: Option<u32> = None;
+        let mut tags: Option<TagsView<'input>> = None;
+        let mut content: Option<Cow<'input, str>> = None;
+        let mut id: Option<Cow<'input, str>> = None;
+        let mut sig: Option<Cow<'input, str>> = None;
         let mut maybe_key = lex.object_first_key()?;
-        while let Some(key) = maybe_key { f.parse_field(key, lex)?; maybe_key = lex.object_next_key()?; }
-        Ok(Self { pubkey: NoteFields::require(f.pubkey, lex)?, created_at: NoteFields::require(f.created_at, lex)?, kind: NoteFields::require(f.kind, lex)?, tags: f.tags.unwrap_or_default(), content: NoteFields::require(f.content, lex)?, id: f.id, sig: f.sig })
+        while let Some(key) = maybe_key {
+            match NoteFieldKey::from_str(key) {
+                NoteFieldKey::Pubkey => pubkey = Some(Cow::from_lex(lex)?),
+                NoteFieldKey::CreatedAt => created_at = Some(lex.parse_i64_value()?),
+                NoteFieldKey::Kind => kind = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position()))?),
+                NoteFieldKey::Tags => tags = Some(TagsView::from_lex(lex)?),
+                NoteFieldKey::Content => content = Some(Cow::from_lex(lex)?),
+                NoteFieldKey::Id => id = Option::<Cow<'_, str>>::from_lex(lex)?,
+                NoteFieldKey::Sig => sig = Option::<Cow<'_, str>>::from_lex(lex)?,
+                NoteFieldKey::Unknown => lex.skip_value()?,
+            }
+            maybe_key = lex.object_next_key()?;
+        }
+        let pos = lex.position();
+        Ok(Self {
+            pubkey: pubkey.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, pos))?,
+            created_at: created_at.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, pos))?,
+            kind: kind.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, pos))?,
+            tags: tags.unwrap_or_default(),
+            content: content.ok_or_else(|| BourneError::new(BourneErrorKind::MissingField, pos))?,
+            id,
+            sig,
+        })
     }
 }
 
@@ -146,46 +175,35 @@ pub enum NostrRelayEventView<'a> {
     Auth(Cow<'a, str>),
 }
 
+impl<'input> RelayFrameParser<'input> for NostrRelayEventView<'input> {
+    type Str = Cow<'input, str>;
+    type Note = NostrNoteView<'input>;
+
+    fn new_note(_tag: RelayEventTag, sub: Self::Str, note: Self::Note) -> Self {
+        Self::NewNote(sub, note)
+    }
+    fn sent_ok(_tag: RelayEventTag, id: Self::Str, ok: bool, msg: Self::Str) -> Self {
+        Self::SentOk(id, ok, msg)
+    }
+    fn eose(_tag: RelayEventTag, val: Self::Str) -> Self { Self::EndOfSubscription(val) }
+    fn closed(_tag: RelayEventTag, val: Self::Str) -> Self { Self::ClosedSubscription(val) }
+    fn notice(_tag: RelayEventTag, msg: Self::Str) -> Self { Self::Notice(msg) }
+    fn auth(_tag: RelayEventTag, val: Self::Str) -> Self { Self::Auth(val) }
+}
+
 impl<'input> FromJson<'input> for NostrRelayEventView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        if lex.array_start()? { return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position())); }
-        let tag = crate::RelayEventTag::from_str_wire(lex.parse_str_value()?)
-            .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
-        if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
-        match tag {
-            crate::RelayEventTag::Event => {
-                let sub = Cow::from_lex(lex)?;
-                if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
-                let note = NostrNoteView::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
-                Ok(Self::NewNote(sub, note))
-            }
-            crate::RelayEventTag::Ok => {
-                let id = Cow::from_lex(lex)?;
-                if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
-                let ok = bool::from_lex(lex)?;
-                if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
-                let msg = Cow::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
-                Ok(Self::SentOk(id, ok, msg))
-            }
-            crate::RelayEventTag::Eose | crate::RelayEventTag::Closed | crate::RelayEventTag::Notice | crate::RelayEventTag::Auth => {
-                let val = Cow::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
-                Ok(match tag {
-                    crate::RelayEventTag::Eose => Self::EndOfSubscription(val),
-                    crate::RelayEventTag::Closed => Self::ClosedSubscription(val),
-                    crate::RelayEventTag::Notice => Self::Notice(val),
-                    crate::RelayEventTag::Auth => Self::Auth(val),
-                    _ => unreachable!(),
-                })
-            }
-            _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
-        }
+        <Self as RelayFrameParser>::from_lex(lex)
     }
 }
 
 impl<'a> NostrRelayEventView<'a> {
+    /// Parse a relay event from a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`bourne::Error`] if the input is not valid JSON matching
+    /// the expected relay-event schema.
     pub fn parse(s: &'a str) -> Result<Self, bourne::Error> { bourne::parse_str(s) }
 }
 
@@ -202,21 +220,50 @@ pub struct NostrSubscriptionView<'a> {
     pub tags: Option<BTreeMap<String, Vec<Cow<'a, str>>>>,
 }
 
+/// Known keys in a NIP-01 subscription filter object.
+enum SubFilterKey {
+    Authors,
+    Ids,
+    Kinds,
+    Since,
+    Until,
+    Limit,
+    /// `#x` — tag filter (e.g. `#e`, `#p`).
+    Tag(String),
+    /// Unknown key — caller should skip its value.
+    Unknown,
+}
+
+impl SubFilterKey {
+    fn from_str(key: &str) -> Self {
+        match key {
+            "authors" => Self::Authors,
+            "ids" => Self::Ids,
+            "kinds" => Self::Kinds,
+            "since" => Self::Since,
+            "until" => Self::Until,
+            "limit" => Self::Limit,
+            _ if key.starts_with('#') => Self::Tag(key[1..].to_string()),
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl<'input> FromJson<'input> for NostrSubscriptionView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         lex.object_start()?;
         let mut v = Self::default();
         let mut maybe_key = lex.object_first_key()?;
         while let Some(key) = maybe_key {
-            match key {
-                "authors" => v.authors = Some(Vec::from_lex(lex)?),
-                "ids" => v.ids = Some(Vec::from_lex(lex)?),
-                "kinds" => v.kinds = Some(Vec::from_lex(lex)?),
-                "since" => v.since = Option::from_lex(lex)?,
-                "until" => v.until = Option::from_lex(lex)?,
-                "limit" => { v.limit = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position()))?); }
-                _ if key.starts_with('#') => { v.tags.get_or_insert_with(Default::default).insert(key[1..].to_string(), Vec::from_lex(lex)?); }
-                _ => { lex.skip_value()?; }
+            match SubFilterKey::from_str(key) {
+                SubFilterKey::Authors => v.authors = Some(Vec::from_lex(lex)?),
+                SubFilterKey::Ids => v.ids = Some(Vec::from_lex(lex)?),
+                SubFilterKey::Kinds => v.kinds = Some(Vec::from_lex(lex)?),
+                SubFilterKey::Since => v.since = Option::from_lex(lex)?,
+                SubFilterKey::Until => v.until = Option::from_lex(lex)?,
+                SubFilterKey::Limit => { v.limit = Some(u32::try_from(lex.parse_i64_value()?).map_err(|_| BourneError::new(BourneErrorKind::NumberOutOfRange, lex.position()))?); }
+                SubFilterKey::Tag(name) => { v.tags.get_or_insert_with(Default::default).insert(name, Vec::from_lex(lex)?); }
+                SubFilterKey::Unknown => { lex.skip_value()?; }
             }
             maybe_key = lex.object_next_key()?;
         }
@@ -236,31 +283,28 @@ pub enum NostrClientEventView<'a> {
 
 impl<'input> FromJson<'input> for NostrClientEventView<'input> {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
-        if lex.array_start()? { return Err(BourneError::new(BourneErrorKind::TypeMismatch, lex.position())); }
-        let tag = crate::RelayEventTag::from_str_wire(lex.parse_str_value()?)
-            .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, lex.position()))?;
-        if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
+        let tag = lex.parse_frame_tag()?;
         match tag {
             crate::RelayEventTag::Event => {
                 let note = NostrNoteView::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
+                lex.expect_end()?;
                 Ok(Self::SendNoteEvent(note))
             }
             crate::RelayEventTag::Auth => {
                 let note = NostrNoteView::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
+                lex.expect_end()?;
                 Ok(Self::Auth(note))
             }
             crate::RelayEventTag::Req => {
                 let sub_id = Cow::from_lex(lex)?;
-                if lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::MissingField, lex.position())); }
+                lex.expect_more()?;
                 let filter = NostrSubscriptionView::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
+                lex.expect_end()?;
                 Ok(Self::Subscribe(sub_id, filter))
             }
             crate::RelayEventTag::Close => {
                 let sub_id = Cow::from_lex(lex)?;
-                if !lex.array_continue(b']')? { return Err(BourneError::new(BourneErrorKind::TrailingData, lex.position())); }
+                lex.expect_end()?;
                 Ok(Self::CloseSubscription(sub_id))
             }
             _ => Err(BourneError::new(BourneErrorKind::UnknownField, lex.position())),
@@ -269,6 +313,12 @@ impl<'input> FromJson<'input> for NostrClientEventView<'input> {
 }
 
 impl<'a> NostrClientEventView<'a> {
+    /// Parse a client event from a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`bourne::Error`] if the input is not valid JSON matching
+    /// the expected client-event schema.
     pub fn parse(s: &'a str) -> Result<Self, bourne::Error> { bourne::parse_str(s) }
 }
 
@@ -370,6 +420,20 @@ mod tests {
         assert!(view.verify(), "view of signed note must verify");
     }
 
+    /// Runs with `--features secp256k1` (requires matching dev-dep
+    /// `nostro2-signer = { features = ["secp256k1"] }`).
+    #[cfg(feature = "secp256k1")]
+    #[test] fn view_verify_signature_round_trips_secp() {
+        use nostro2_signer::nostro2_traits::NostrKeypair as _;
+        let kp = nostro2_signer::Secp256k1Keypair::generate();
+        let mut note = crate::NostrNoteBuilder::text_note("view verify test secp").build();
+        note.tags.add_custom_tag("t", "nostr");
+        note.sign_with(&kp).expect("sign");
+        let json = bourne::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        assert!(view.verify(), "view of signed note must verify");
+    }
+
     // ── Relay event view tests ───────────────────────────
 
     fn sample_note_json_str() -> String {
@@ -425,5 +489,91 @@ mod tests {
             assert!(matches!(sub_id, Cow::Borrowed(_)));
             assert!(matches!(note.pubkey, Cow::Borrowed(_)));
         }
+    }
+
+    // ── Subscription view tests ─────────────────────────
+
+    #[test] fn sub_view_empty_filter() {
+        let sv: NostrSubscriptionView<'_> = bourne::parse_str(r#"{}"#).unwrap();
+        assert!(sv.authors.is_none());
+        assert!(sv.ids.is_none());
+        assert!(sv.kinds.is_none());
+        assert!(sv.since.is_none());
+        assert!(sv.until.is_none());
+        assert!(sv.limit.is_none());
+        assert!(sv.tags.is_none());
+    }
+
+    #[test] fn sub_view_full_filter() {
+        let sv: NostrSubscriptionView<'_> = bourne::parse_str(
+            r#"{"authors":["aa","bb"],"ids":["cc"],"kinds":[0,1],"since":1000,"until":2000,"limit":10}"#
+        ).unwrap();
+        assert_eq!(sv.authors.as_deref(), Some(&["aa".into(), "bb".into()][..]));
+        assert_eq!(sv.ids.as_deref(), Some(&["cc".into()][..]));
+        assert_eq!(sv.kinds, Some(vec![0, 1]));
+        assert_eq!(sv.since, Some(1000));
+        assert_eq!(sv.until, Some(2000));
+        assert_eq!(sv.limit, Some(10));
+    }
+
+    #[test] fn sub_view_tag_filters() {
+        let json = "{\"#e\":[\"aa\",\"bb\"],\"#p\":[\"cc\"]}";
+        let sv: NostrSubscriptionView<'_> = bourne::parse_str(json).unwrap();
+        let tags = sv.tags.unwrap();
+        assert_eq!(tags.get("e").unwrap().as_slice(), &[Cow::Borrowed("aa"), Cow::Borrowed("bb")]);
+        assert_eq!(tags.get("p").unwrap().as_slice(), &[Cow::Borrowed("cc")]);
+    }
+
+    #[test] fn sub_view_skips_unknown_keys() {
+        let sv: NostrSubscriptionView<'_> = bourne::parse_str(
+            r#"{"extra":true,"kinds":[7],"nonsense":[1,2,3]}"#
+        ).unwrap();
+        assert_eq!(sv.kinds, Some(vec![7]));
+    }
+
+    #[test] fn sub_view_rejects_array() {
+        assert!(bourne::parse_str::<NostrSubscriptionView<'_>>("[]").is_err());
+    }
+
+    // ── Client event view tests ─────────────────────────
+
+    fn client_note_sample() -> String {
+        bourne::to_string(&crate::note::NostrNote {
+            pubkey: "a".repeat(64), created_at: 1, kind: 1, content: "client test".into(),
+            id: Some("b".repeat(64)), sig: Some("c".repeat(128)), ..Default::default()
+        }).unwrap()
+    }
+
+    #[test] fn client_view_send_note() {
+        let wire = format!(r#"["EVENT",{}]"#, client_note_sample());
+        let ev = NostrClientEventView::parse(&wire).unwrap();
+        assert!(matches!(ev, NostrClientEventView::SendNoteEvent(ref n) if n.content == "client test"));
+    }
+
+    #[test] fn client_view_subscribe() {
+        let wire = r#"["REQ","sub99",{"kinds":[0,1],"limit":5}]"#;
+        let ev = NostrClientEventView::parse(wire).unwrap();
+        if let NostrClientEventView::Subscribe(id, filter) = ev {
+            assert_eq!(id, "sub99");
+            assert_eq!(filter.kinds, Some(vec![0, 1]));
+            assert_eq!(filter.limit, Some(5));
+        } else { panic!("expected Subscribe"); }
+    }
+
+    #[test] fn client_view_close() {
+        let ev = NostrClientEventView::parse(r#"["CLOSE","sub42"]"#).unwrap();
+        assert!(matches!(ev, NostrClientEventView::CloseSubscription(id) if id == "sub42"));
+    }
+
+    #[test] fn client_view_auth() {
+        let wire = format!(r#"["AUTH",{}]"#, client_note_sample());
+        let ev = NostrClientEventView::parse(&wire).unwrap();
+        assert!(matches!(ev, NostrClientEventView::Auth(ref n) if n.content == "client test"));
+    }
+
+    #[test] fn client_view_rejects() {
+        assert!(NostrClientEventView::parse(r#"["BOGUS"]"#).is_err());
+        assert!(NostrClientEventView::parse("[]").is_err());
+        assert!(NostrClientEventView::parse(r#"["CLOSE"]"#).is_err());
     }
 }

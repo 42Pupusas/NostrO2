@@ -105,6 +105,12 @@ pub trait NostrEvent {
         stored == self.compute_id_bytes()
     }
 
+    /// Verify the note's Schnorr signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrErrors::MissingId`], [`NostrErrors::MissingSignature`],
+    /// [`NostrErrors::InvalidPublicKey`], or a key/signature conversion error.
     #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, NostrErrors> {
         use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
@@ -118,6 +124,12 @@ pub trait NostrEvent {
         Ok(verifying_key.verify_prehash(&id, &signature).is_ok())
     }
 
+    /// Verify the note's Schnorr signature (secp256k1 backend).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrErrors::MissingId`], [`NostrErrors::MissingSignature`],
+    /// [`NostrErrors::InvalidPublicKey`], or a key/signature conversion error.
     #[cfg(feature = "secp256k1")]
     #[allow(unknown_lints, crappy)]
     fn verify_signature(&self) -> Result<bool, NostrErrors> {

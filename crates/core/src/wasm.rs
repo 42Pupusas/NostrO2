@@ -90,6 +90,25 @@ impl TryFrom<JsValue> for NostrNote {
 
 // ── NostrEvent for JsValue (wasm32 only) ─────────────────────────
 
+/// Extension trait for writing a JS `Array` tag row as JSON.
+#[cfg(target_arch = "wasm32")]
+pub trait TagRowJson {
+    fn write_json_row<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
+}
+
+#[cfg(target_arch = "wasm32")]
+impl TagRowJson for Array {
+    #[allow(unknown_lints, crappy)]
+    fn write_json_row<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+        sink.write_byte(b'[')?;
+        for j in 0..self.length() {
+            if j > 0 { sink.write_byte(b',')?; }
+            if let Some(cell) = self.get(j).as_string() { sink.write_escaped_str(&cell)?; }
+        }
+        sink.write_byte(b']')
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 impl NostrEvent for JsValue {
     fn pubkey_str(&self) -> Cow<'_, str> { Cow::Owned(Reflect::get(self, &JsValue::from_str("pubkey")).ok().and_then(|v| v.as_string()).unwrap_or_default()) }
@@ -98,19 +117,14 @@ impl NostrEvent for JsValue {
     fn content_str(&self) -> Cow<'_, str> { Cow::Owned(Reflect::get(self, &JsValue::from_str("content")).ok().and_then(|v| v.as_string()).unwrap_or_default()) }
     fn id_hex(&self) -> Option<Cow<'_, str>> { Reflect::get(self, &JsValue::from_str("id")).ok().and_then(|v| v.as_string()).map(Cow::Owned) }
     fn sig_hex(&self) -> Option<Cow<'_, str>> { Reflect::get(self, &JsValue::from_str("sig")).ok().and_then(|v| v.as_string()).map(Cow::Owned) }
+    #[allow(unknown_lints, crappy)]
     fn write_tags<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         if let Ok(tags) = Reflect::get(self, &JsValue::from_str("tags")) {
             let outer = Array::from(&tags);
             for i in 0..outer.length() {
                 if i > 0 { sink.write_byte(b',')?; }
-                sink.write_byte(b'[')?;
-                let inner = Array::from(&outer.get(i));
-                for j in 0..inner.length() {
-                    if j > 0 { sink.write_byte(b',')?; }
-                    if let Some(cell) = inner.get(j).as_string() { sink.write_escaped_str(&cell)?; }
-                }
-                sink.write_byte(b']')?;
+                Array::from(&outer.get(i)).write_json_row(sink)?;
             }
         }
         sink.write_byte(b']')
