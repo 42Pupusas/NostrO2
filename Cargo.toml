@@ -30,7 +30,7 @@ base64 = "0.22"
 chacha20 = "0.10"
 hkdf = "0.13"
 hmac = "0.13"
-k256 = { version = "0.14.0-rc.9", default-features = false, features = ["schnorr", "ecdh", "precomputed-tables", "std"] }
+k256 = { version = "0.14.0-rc.12", default-features = false, features = ["schnorr", "ecdh", "precomputed-tables", "std"] }
 secp256k1 = { version = "0.31", features = ["rand", "global-context", "hashes"] }
 getrandom = "0.4"
 sha2 = "0.11"
