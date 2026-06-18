@@ -8,7 +8,7 @@
 //! hex / nsec / mnemonic / npub / `from_any` constructors fall out as default
 //! methods. That's how the per-backend code stays at ~30 lines.
 
-use nostro2_traits::NostrKeypair;
+use nostro2_traits::{NostrKeypair, SignerBech32, KeypairBech32};
 
 use crate::errors::NostrKeypairError;
 
@@ -37,7 +37,7 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if the HRP is not `nsec` or the payload is not 32 bytes.
     fn from_nsec(nsec: &str) -> Result<Self, NostrKeypairError> {
-        let (hrp, data) = nostro2_traits::bech32::decode(nsec)?;
+        let (hrp, data) = nostro2_traits::bech32::Bech32Crypto::decode(nsec)?;
         if hrp != "nsec" {
             return Err(NostrKeypairError::InvalidKey);
         }
@@ -104,10 +104,7 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if bech32 encoding fails.
     fn npub(&self) -> Result<String, NostrKeypairError> {
-        Ok(nostro2_traits::bech32::encode(
-            "npub",
-            &self.pubkey_bytes(),
-        )?)
+        Ok(SignerBech32::to_npub(self)?)
     }
 
     /// Encode the secret key as `nsec1…` bech32.
@@ -115,9 +112,6 @@ pub trait KeypairExt: NostrKeypair + Sized {
     /// # Errors
     /// Returns an error if bech32 encoding fails.
     fn nsec(&self) -> Result<String, NostrKeypairError> {
-        Ok(nostro2_traits::bech32::encode(
-            "nsec",
-            &self.secret_bytes(),
-        )?)
+        Ok(KeypairBech32::to_nsec(self)?)
     }
 }
