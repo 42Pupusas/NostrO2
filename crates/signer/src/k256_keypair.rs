@@ -124,11 +124,12 @@ impl std::str::FromStr for K256Keypair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostro2::NostrEvent;
 
     #[test]
     fn test_generate_and_sign() {
         let kp = K256Keypair::generate();
-        let mut note = nostro2::NostrNote::text_note("Hello from k256!");
+        let mut note = nostro2::NostrNoteBuilder::text_note("Hello from k256!").build();
         note.sign_with(&kp).unwrap();
         assert!(note.verify());
     }

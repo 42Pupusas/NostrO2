@@ -36,7 +36,7 @@
 //! assert_eq!(tags.len(), 3);
 //! ```
 
-use bourne::{Error, ErrorKind, FromJson, JsonWrite, Lexer, ToJson};
+use bourne::{Error, FromJson, JsonWrite, Lexer, ToJson};
 
 /// Collection of tags attached to a Nostr note.
 ///
@@ -211,42 +211,50 @@ impl NostrTags {
 // Wire format: `[[String]]`. Custom impls preserve the on-the-wire shape
 // while keeping the flat-cells storage internally.
 
-pub fn parse_tag_rows<'input, C: FromJson<'input>>(
-    lex: &mut Lexer<'input>,
-) -> Result<(Vec<C>, Vec<u32>), Error> {
-    let mut cells = Vec::new();
-    let mut offsets: Vec<u32> = vec![0];
+impl NostrTags {
+    /// Parse a `[[String]]` tag array from a bourne lexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JSON is malformed or a cell count overflows `u32`.
+    pub fn parse_rows<'input, C: bourne::FromJson<'input>>(
+        lex: &mut bourne::Lexer<'input>,
+    ) -> Result<(Vec<C>, Vec<u32>), bourne::Error> {
+        use bourne::{Error, ErrorKind};
+        let mut cells = Vec::new();
+        let mut offsets: Vec<u32> = vec![0];
 
-    if lex.array_start()? {
-        return Ok((cells, offsets));
-    }
-
-    loop {
         if lex.array_start()? {
-            // empty row
-        } else {
-            loop {
-                cells.push(C::from_lex(lex)?);
-                if lex.array_continue(b']')? {
-                    break;
+            return Ok((cells, offsets));
+        }
+
+        loop {
+            if lex.array_start()? {
+                // empty row
+            } else {
+                loop {
+                    cells.push(C::from_lex(lex)?);
+                    if lex.array_continue(b']')? {
+                        break;
+                    }
                 }
             }
-        }
-        let cell_count = u32::try_from(cells.len())
-            .map_err(|_| Error::new(ErrorKind::NumberOutOfRange, lex.position()))?;
-        offsets.push(cell_count);
+            let cell_count = u32::try_from(cells.len())
+                .map_err(|_| Error::new(ErrorKind::NumberOutOfRange, lex.position()))?;
+            offsets.push(cell_count);
 
-        if lex.array_continue(b']')? {
-            break;
+            if lex.array_continue(b']')? {
+                break;
+            }
         }
+
+        Ok((cells, offsets))
     }
-
-    Ok((cells, offsets))
 }
 
 impl<'input> FromJson<'input> for NostrTags {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, Error> {
-        let (cells, offsets) = parse_tag_rows(lex)?;
+        let (cells, offsets) = Self::parse_rows(lex)?;
         Ok(Self { cells, offsets })
     }
 }

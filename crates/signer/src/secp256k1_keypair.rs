@@ -9,7 +9,7 @@
 use std::ops::Deref;
 
 use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};
-use secp256k1::{Message, SECP256K1};
+use secp256k1::SECP256K1;
 
 use crate::errors::NostrKeypairError;
 use crate::ext::KeypairExt;
@@ -42,8 +42,9 @@ impl NostrSigner for Secp256k1Keypair {
         let mut aux_rand = [0_u8; 32];
         getrandom::fill(&mut aux_rand)
             .map_err(|e| SignerError::Backend(format!("getrandom: {e}")))?;
-        let msg = Message::from_digest(*id);
-        let sig = SECP256K1.sign_schnorr_with_aux_rand(&msg, &self.0, &aux_rand);
+        // secp256k1 0.31: sign_schnorr_with_aux_rand takes the raw message
+        // bytes; the prehash id is already the 32-byte digest, pass it directly.
+        let sig = SECP256K1.sign_schnorr_with_aux_rand(id, &self.0, &aux_rand);
         Ok(*sig.as_ref())
     }
 
@@ -63,11 +64,11 @@ impl NostrKeypair for Secp256k1Keypair {
         let mut secret = [0_u8; 32];
         for _ in 0..3 {
             getrandom::fill(&mut secret).expect("getrandom failed");
-            if let Ok(sk) = secp256k1::SecretKey::from_slice(&secret) {
+            if let Ok(sk) = secp256k1::SecretKey::from_byte_array(secret) {
                 return Self(secp256k1::Keypair::from_secret_key(SECP256K1, &sk));
             }
         }
-        panic!("secp256k1::SecretKey::from_slice rejected three CSPRNG draws — RNG is broken");
+        panic!("secp256k1::SecretKey::from_byte_array rejected three CSPRNG draws — RNG is broken");
     }
 
     fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {
@@ -76,7 +77,7 @@ impl NostrKeypair for Secp256k1Keypair {
         let mut compressed = [0_u8; 33];
         compressed[0] = 0x02;
         compressed[1..].copy_from_slice(peer_xonly);
-        let pk = secp256k1::PublicKey::from_slice(&compressed)
+        let pk = secp256k1::PublicKey::from_byte_array_compressed(compressed)
             .map_err(|_| SignerError::InvalidPublicKey)?;
         let shared = secp256k1::ecdh::shared_secret_point(&pk, &self.0.secret_key());
         // shared_secret_point returns a 64-byte serialized point; first 32 bytes are x.
@@ -88,7 +89,7 @@ impl NostrKeypair for Secp256k1Keypair {
 
 impl KeypairExt for Secp256k1Keypair {
     fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self, NostrKeypairError> {
-        let sk = secp256k1::SecretKey::from_slice(bytes)?;
+        let sk = secp256k1::SecretKey::from_byte_array(*bytes)?;
         Ok(Self(secp256k1::Keypair::from_secret_key(SECP256K1, &sk)))
     }
 }
@@ -106,11 +107,12 @@ impl std::str::FromStr for Secp256k1Keypair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostro2::NostrEvent;
 
     #[test]
     fn test_generate_and_sign() {
         let kp = Secp256k1Keypair::generate();
-        let mut note = nostro2::NostrNote::text_note("Hello from secp256k1!");
+        let mut note = nostro2::NostrNoteBuilder::text_note("Hello from secp256k1!").build();
         note.sign_with(&kp).unwrap();
         assert!(note.verify());
     }
@@ -130,11 +132,10 @@ mod tests {
         // Both must still verify against the same prehash + pubkey.
         use secp256k1::{schnorr::Signature, XOnlyPublicKey};
         let pk_bytes = kp.pubkey_bytes();
-        let xonly = XOnlyPublicKey::from_slice(&pk_bytes).unwrap();
-        let msg = Message::from_digest(prehash);
+        let xonly = XOnlyPublicKey::from_byte_array(pk_bytes).unwrap();
         for sig in [a, b] {
-            let s = Signature::from_slice(&sig).unwrap();
-            assert!(SECP256K1.verify_schnorr(&s, &msg, &xonly).is_ok());
+            let s = Signature::from_byte_array(sig);
+            assert!(SECP256K1.verify_schnorr(&s, &prehash, &xonly).is_ok());
         }
     }
 

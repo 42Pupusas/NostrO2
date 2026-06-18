@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub enum NostrRelayError {
     Tungstenite(Box<tokio_tungstenite::tungstenite::Error>),
-    Serde(serde_json::Error),
+    Serde(bourne::Error),
     TokioSend(Box<tokio::sync::broadcast::error::SendError<nostro2::NostrClientEvent>>),
     SendError,
 }

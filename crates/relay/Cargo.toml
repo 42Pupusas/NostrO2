@@ -23,8 +23,8 @@ tokio-tungstenite = { version = "0.26", default-features = false }
 
 nostro2.workspace = true
 nostro2-cache.workspace = true
+bourne.workspace = true
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
-serde_json.workspace = true
 
 [dev-dependencies]
 nostro2-signer.workspace = true

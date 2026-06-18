@@ -19,13 +19,13 @@
 //! ### Creating Notes
 //!
 //! ```rust
-//! use nostro2::NostrNote;
+//! use nostro2::{NostrNote, NostrNoteBuilder};
 //!
 //! // Simple text note
-//! let note = NostrNote::text_note("Hello, Nostr!");
+//! let note = NostrNoteBuilder::text_note("Hello, Nostr!").build();
 //!
 //! // Using the builder
-//! let note = NostrNote::builder()
+//! let note = NostrNoteBuilder::new()
 //!     .content("Hello, Nostr!")
 //!     .kind(1)
 //!     .tag_pubkey("abc123...")
@@ -33,7 +33,7 @@
 //!
 //! // Metadata note
 //! let metadata = r#"{"name":"Alice","about":"Nostr user"}"#;
-//! let note = NostrNote::metadata(metadata);
+//! let note = NostrNoteBuilder::metadata(metadata).build();
 //! ```
 //!
 //! ### Creating Subscriptions
@@ -64,9 +64,9 @@
 //! ### Validation
 //!
 //! ```rust
-//! use nostro2::validation;
+//! use nostro2::validation::NostrValidate;
 //!
-//! if validation::is_valid_pubkey("abc123...") {
+//! if "abc123...".is_valid_pubkey() {
 //!     // Valid hex-encoded public key
 //! }
 //! ```
@@ -85,10 +85,10 @@
 //! The crate uses a [`Result`](type.Result.html) type alias for convenience:
 //!
 //! ```rust
-//! use nostro2::{NostrNote, Result};
+//! use nostro2::{NostrNote, NostrNoteBuilder, Result};
 //!
 //! fn create_note() -> Result<NostrNote> {
-//!     let mut note = NostrNote::text_note("Hello");
+//! let mut note = NostrNoteBuilder::text_note("Hello").build();
 //!     note.serialize_id()?;
 //!     Ok(note)
 //! }
@@ -104,6 +104,8 @@
 compile_error!("features `k256` and `secp256k1` are mutually exclusive; pick exactly one");
 
 pub mod errors;
+pub mod event;
+pub(crate) mod hash;
 mod note;
 mod relay_events;
 mod subscriptions;
@@ -113,11 +115,12 @@ pub mod view;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
+pub use event::NostrEvent;
 pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
-pub use subscriptions::{CompiledSubscription, NostrSubscription};
+pub use subscriptions::NostrSubscription;
 pub use tags::NostrTags;
-pub use view::{NostrNoteView, TagsView};
+pub use view::{NostrClientEventView, NostrNoteView, NostrRelayEventView, NostrSubscriptionView, TagsView};
 
 /// Re-export of the signer traits. Defined in `nostro2-traits` so protocol
 /// crates (`nostro2-nips`) and signer impls (`nostro2-signer`) can share the
@@ -131,7 +134,8 @@ pub type Result<T> = std::result::Result<T, errors::NostrErrors>;
 mod tests {
     const PUB: &str = "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d";
 
-    use super::note::NostrNote;
+    use super::event::NostrEvent;
+    use super::note::{NostrNote, NostrNoteBuilder};
 
     // An unsigned note — no `id`, no `sig` — must not verify, and the
     // failure must hold even if `id` is later filled in but `sig` isn't.
@@ -228,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_note_builder() {
-        let note = NostrNote::builder()
+        let note = NostrNoteBuilder::new()
             .content("Hello, Nostr!")
             .kind(1)
             .tag_pubkey("abc123")
@@ -243,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_text_note() {
-        let note = NostrNote::text_note("Hello, world!");
+        let note = NostrNoteBuilder::text_note("Hello, world!").build();
         assert_eq!(note.kind, 1);
         assert_eq!(note.content, "Hello, world!");
     }
@@ -251,32 +255,32 @@ mod tests {
     #[test]
     fn test_metadata_note() {
         let metadata = r#"{"name":"Alice"}"#;
-        let note = NostrNote::metadata(metadata);
+        let note = NostrNoteBuilder::metadata(metadata).build();
         assert_eq!(note.kind, 0);
         assert_eq!(note.content, metadata);
     }
 
     #[test]
     fn test_with_kind() {
-        let note = NostrNote::with_kind(4);
+        let note = NostrNoteBuilder::new().kind(4).build();
         assert_eq!(note.kind, 4);
     }
 
     #[test]
     fn test_with_timestamp() {
-        let note = NostrNote::text_note("Hello").with_timestamp(1_234_567_890);
+        let note = NostrNoteBuilder::text_note("Hello").timestamp(1_234_567_890).build();
         assert_eq!(note.created_at, 1_234_567_890);
     }
 
     #[test]
     fn test_with_content() {
-        let note = NostrNote::with_kind(1).with_content("New content");
+        let note = NostrNoteBuilder::new().kind(1).content("New content").build();
         assert_eq!(note.content, "New content");
     }
 
     #[test]
     fn test_note_now() {
-        let timestamp = NostrNote::now();
+        let timestamp = NostrNoteBuilder::new().build().created_at;
         assert!(timestamp > 0);
         // Should be recent (after 2020-01-01)
         assert!(timestamp > 1_577_836_800);
@@ -284,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_builder_chaining() {
-        let note = NostrNote::builder()
+        let note = NostrNoteBuilder::new()
             .kind(1)
             .content("Test")
             .timestamp(1_234_567_890)
@@ -316,7 +320,7 @@ mod tests {
         use nostro2_signer::nostro2_traits::NostrKeypair as _;
         let kp = nostro2_signer::K256Keypair::generate();
 
-        let mut note = NostrNote::text_note("round trip");
+        let mut note = NostrNoteBuilder::text_note("round trip").build();
         note.tags.add_custom_tag("t", "nostr");
         note.tags.add_pubkey_tag(&"a".repeat(64), None);
 
@@ -331,6 +335,7 @@ mod tests {
     mod proptests {
         use super::*;
         use proptest::prelude::*;
+        use crate::event::NostrEvent;
 
         fn arb_note() -> impl Strategy<Value = NostrNote> {
             (
@@ -379,7 +384,7 @@ mod tests {
                 let json = bourne::to_string(&owned).unwrap();
                 let view: crate::view::NostrNoteView<'_> =
                     bourne::parse_str(&json).unwrap();
-                let view_id = view.compute_id_bytes().unwrap();
+                let view_id = view.compute_id_bytes();
                 let owned_id = owned.id_bytes().unwrap();
                 prop_assert_eq!(owned_id, view_id);
             }

@@ -14,7 +14,7 @@ mod _empty {} // bench binary compiles but runs nothing
 mod comparison {
     use divan::black_box;
     use nostr::JsonUtil;
-    use nostro2::{NostrKeypair as _, NostrSigner as _};
+    use nostro2::{NostrKeypair as _, NostrNoteBuilder, NostrSigner as _};
 
     #[cfg(feature = "k256")]
     use nostro2_signer::K256Keypair as Nostro2Keypair;
@@ -23,7 +23,7 @@ mod comparison {
 
     fn nostro2_signed_note() -> (Nostro2Keypair, nostro2::NostrNote) {
         let kp = Nostro2Keypair::generate();
-        let mut note = nostro2::NostrNote::text_note("Hello Nostr! Benchmark vs the nostr crate.");
+        let mut note = NostrNoteBuilder::text_note("Hello Nostr! Benchmark vs the nostr crate.").build();
         note.sign_with(&kp).expect("nostro2 signing failed");
         (kp, note)
     }
@@ -54,7 +54,7 @@ mod comparison {
     fn signing_nostro2(bencher: divan::Bencher) {
         let kp = Nostro2Keypair::generate();
         bencher.bench(|| {
-            let mut note = nostro2::NostrNote::text_note("Benchmark signing");
+            let mut note = NostrNoteBuilder::text_note("Benchmark signing").build();
             note.sign_with(black_box(&kp)).unwrap();
         });
     }
@@ -151,7 +151,7 @@ mod comparison {
         let kp = Nostro2Keypair::generate();
         let notes: Vec<nostro2::NostrNote> = (0..1000)
             .map(|i| {
-                let mut n = nostro2::NostrNote::text_note(format!("note {i}"));
+                let mut n = NostrNoteBuilder::text_note(format!("note {i}")).build();
                 n.kind = if i % 3 == 0 { 1 } else { 7 };
                 n.sign_with(&kp).unwrap();
                 n
