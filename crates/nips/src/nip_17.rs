@@ -24,11 +24,21 @@ impl From<crate::nip_59::Nip59Error> for Nip17Error {
 }
 
 pub trait Nip17: crate::nip_59::Nip59 {
+    /// Wraps a direct message (kind 14) in a NIP-59 giftwrap for the recipient.
+    ///
+    /// # Errors
+    ///
+    /// - `Nip59Error` if giftwrapping fails.
     fn private_dm(&self, dm: &str, recipient: &str) -> Result<nostro2::NostrNote, Nip17Error>
     where Self: Sized {
         let mut dm_note = nostro2::NostrNote { content: dm.to_string(), kind: 14, ..Default::default() };
         Ok(self.giftwrap(&mut dm_note, recipient)?)
     }
+    /// Creates a signed kind-10050 note listing preferred relays.
+    ///
+    /// # Errors
+    ///
+    /// - `SigningError` if the note cannot be signed.
     fn preffered_relays(&self, relays: &[&str]) -> Result<nostro2::NostrNote, Nip17Error> {
         let mut note = nostro2::NostrNote { kind: 10050, ..Default::default() };
         let mut relay_row = Vec::with_capacity(relays.len() + 1);

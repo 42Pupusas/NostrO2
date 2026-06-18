@@ -91,7 +91,7 @@ impl From<std::num::TryFromIntError> for Nip44Error {
     }
 }
 
-pub struct MacComponents<'a> {
+struct MacComponents<'a> {
     nonce: zeroize::Zeroizing<[u8; 12]>,
     ciphertext: &'a [u8],
 }
@@ -198,7 +198,7 @@ pub trait Nip44: nostro2::NostrKeypair {
         let shared_secret = self.shared_secret(peer_pubkey)?;
         let conversation_key = Self::derive_conversation_key(shared_secret, b"nip44-v2")?;
         let mut decoded = zeroize::Zeroizing::new(general_purpose::STANDARD.decode(ciphertext)?);
-        let MacComponents { nonce, ciphertext } = Self::extract_components(&decoded)?;
+        let MacComponents { nonce, ciphertext } = MacComponents::from_decoded(&decoded)?;
 
         let decrypted = Self::decrypt(ciphertext, conversation_key, nonce, buffer.as_mut_slice())?;
 
@@ -281,19 +281,6 @@ pub trait Nip44: nostro2::NostrKeypair {
         Ok(okm.into())
     }
 
-    /// Extracts nonce and ciphertext from the decoded payload.
-    ///
-    /// # Errors
-    /// - `InvalidLength`: if the input is too short to contain required components.
-    fn extract_components(decoded: &[u8]) -> Result<MacComponents<'_>, Nip44Error> {
-        if decoded.len() < 1 + 12 + 32 {
-            return Err(Nip44Error::InvalidLength);
-        }
-        Ok(MacComponents {
-            nonce: zeroize::Zeroizing::new(decoded[1..13].try_into()?),
-            ciphertext: &decoded[13..decoded.len() - 32],
-        })
-    }
     /// Calculates the HMAC-SHA256 MAC for the given data and key.
     ///
     /// # Errors
@@ -351,6 +338,18 @@ pub trait Nip44: nostro2::NostrKeypair {
         let mut out = String::with_capacity((buf.len() * 4).div_ceil(3));
         general_purpose::STANDARD.encode_string(&buf, &mut out);
         out
+    }
+}
+
+impl<'a> MacComponents<'a> {
+    fn from_decoded(decoded: &'a [u8]) -> Result<Self, Nip44Error> {
+        if decoded.len() < 1 + 12 + 32 {
+            return Err(Nip44Error::InvalidLength);
+        }
+        Ok(Self {
+            nonce: zeroize::Zeroizing::new(decoded[1..13].try_into()?),
+            ciphertext: &decoded[13..decoded.len() - 32],
+        })
     }
 }
 
