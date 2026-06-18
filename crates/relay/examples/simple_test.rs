@@ -37,7 +37,7 @@ async fn main() {
 
     // Subscribe to kind 1 events with limit 3000 per relay
     let subscription = nostro2::NostrSubscription {
-        kinds: vec![1].into(),
+        kinds: Some(vec![1].into_iter().collect()),
         limit: Some(1000),
         ..Default::default()
     };

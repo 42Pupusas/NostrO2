@@ -34,7 +34,7 @@ async fn main() {
 
     // Send a subscription for kind 1 events
     let subscription = nostro2::NostrSubscription {
-        kinds: vec![1].into(),
+        kinds: Some(vec![1].into_iter().collect()),
         limit: Some(1000),
         ..Default::default()
     };

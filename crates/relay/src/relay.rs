@@ -22,7 +22,7 @@ impl Default for ReconnectConfig {
         Self {
             max_retries: 0, // Infinite retries by default
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             backoff_multiplier: 2.0,
         }
     }
@@ -175,7 +175,7 @@ impl NostrRelay {
     }
 
     /// Manages the connection lifecycle with automatic reconnection
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, unknown_lints, crappy)]
     async fn connection_manager(
         url: String,
         config: ReconnectConfig,
@@ -273,6 +273,7 @@ impl NostrRelay {
                 // Handle incoming messages from WebSocket
                 Some(msg) = stream.next() => {
                     match msg {
+                        #[allow(clippy::collapsible_match)]
                         Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                             if incoming_tx.send(text).is_err() {
                                 // Receiver dropped, exit
@@ -384,7 +385,7 @@ mod tests {
             .await
             .unwrap();
         let subscription = nostro2::NostrSubscription {
-            kinds: vec![20001].into(),
+            kinds: Some(vec![20001].into_iter().collect()),
             ..Default::default()
         };
         relay.send(subscription).unwrap();
@@ -393,5 +394,18 @@ mod tests {
             println!("{msg:?}",);
         }
         println!("Done in {:?}", time.elapsed());
+    }
+
+    #[test]
+    fn error_display_and_source() {
+        use std::error::Error as _;
+        let e = crate::errors::NostrRelayError::SendError;
+        assert_eq!(e.to_string(), "mpsc send error");
+        assert!(e.source().is_none());
+
+        let inner = bourne::Error::new(bourne::ErrorKind::ExpectedArray, bourne::Position { offset: 0 });
+        let e = crate::errors::NostrRelayError::Serde(inner);
+        assert!(e.to_string().contains("serialization error"));
+        assert!(e.source().is_some());
     }
 }

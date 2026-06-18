@@ -1,3 +1,4 @@
+#![allow(unknown_lints, crappy)]
 use std::env;
 use std::time::Instant;
 

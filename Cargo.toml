@@ -8,7 +8,7 @@ members = [
     "crates/nips",
     "crates/signer",
     "crates/cache",
-    #"crates/relay",
+    "crates/relay",
     "benches",
 ]
 

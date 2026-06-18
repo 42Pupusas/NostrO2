@@ -1,3 +1,4 @@
+#![allow(unknown_lints, crappy)]
 use std::time::Instant;
 
 /// Simulates the SeenNotes structure used in NostrPool

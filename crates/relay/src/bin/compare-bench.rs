@@ -1,3 +1,4 @@
+#![allow(unknown_lints, crappy)]
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
