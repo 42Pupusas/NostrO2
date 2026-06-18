@@ -317,8 +317,8 @@ mod tests {
     #[cfg(feature = "k256")]
     #[test]
     fn sign_with_then_verify_round_trips() {
-        use nostro2_signer::nostro2_traits::NostrKeypair as _;
-        let kp = nostro2_signer::K256Keypair::generate();
+        use nostro2_traits::NostrKeypair as _;
+        let kp = nostro2_signer::NostrKeypair::generate();
 
         let mut note = NostrNoteBuilder::text_note("round trip").build();
         note.tags.add_custom_tag("t", "nostr");

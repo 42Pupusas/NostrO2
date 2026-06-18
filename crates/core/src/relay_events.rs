@@ -22,7 +22,7 @@ pub enum RelayEventTag {
 /// they differ only in allocation strategy and whether the tag is stored.
 /// This trait factors out the common dispatch logic so there is a single
 /// implementation to test and maintain.
-pub(crate) trait RelayFrameParser<'input>: Sized {
+pub trait RelayFrameParser<'input>: Sized {
     type Str: FromJson<'input>;
     type Note: FromJson<'input>;
 
@@ -176,7 +176,7 @@ pub enum NostrRelayEvent {
     Auth(RelayEventTag, String),
 }
 
-impl<'input> RelayFrameParser<'input> for NostrRelayEvent {
+impl RelayFrameParser<'_> for NostrRelayEvent {
     type Str = String;
     type Note = crate::note::NostrNote;
 

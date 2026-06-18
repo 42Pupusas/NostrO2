@@ -18,7 +18,6 @@ pub enum NostrKeypairError {
 }
 
 impl std::fmt::Display for NostrKeypairError {
-    #[allow(unknown_lints, crappy)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidKey => f.write_str("invalid key"),

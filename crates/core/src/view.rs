@@ -410,8 +410,8 @@ mod tests {
 
     #[cfg(feature = "k256")]
     #[test] fn view_verify_signature_round_trips() {
-        use nostro2_signer::nostro2_traits::NostrKeypair as _;
-        let kp = nostro2_signer::K256Keypair::generate();
+        use nostro2_traits::NostrKeypair as _;
+        let kp = nostro2_signer::NostrKeypair::generate();
         let mut note = crate::NostrNoteBuilder::text_note("view verify test").build();
         note.tags.add_custom_tag("t", "nostr");
         note.sign_with(&kp).expect("sign");
