@@ -29,6 +29,7 @@ rustls = { version = "0.23", features = ["std", "tls12"], default-features = fal
 [dev-dependencies]
 nostro2-signer = { workspace = true, features = ["k256"] }
 nostro2-nips = { workspace = true, features = ["k256"] }
+nostro2-traits.workspace = true
 divan.workspace = true
 lru.workspace = true
 
