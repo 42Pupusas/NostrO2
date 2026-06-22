@@ -33,6 +33,17 @@ use std::collections::BTreeMap;
 /// reference implementation's `MAX_SKIP`.
 pub const MAX_SKIP: usize = 1000;
 
+/// Nostr event kind carrying a double-ratchet message.
+///
+/// Mirrors the reference `MESSAGE_EVENT_KIND`. The event is signed by the
+/// sender's *current ephemeral* key (not their identity key), its `content`
+/// is the ratchet ciphertext, and the encrypted header rides in a
+/// `["header", …]` tag.
+pub const MESSAGE_EVENT_KIND: u32 = 1060;
+
+/// Tag name under which the NIP-44-encrypted ratchet header is carried.
+const HEADER_TAG: &str = "header";
+
 /// Errors raised by the double-ratchet session.
 #[derive(Debug)]
 pub enum Nip104Error {
@@ -403,6 +414,110 @@ impl<K: NostrKeypair> Session<K> {
     /// [`Session::plan_receive`].
     pub fn apply(&mut self, next: SessionState) {
         self.state = next;
+    }
+
+    /// Like [`plan_send`](Self::plan_send), but also renders a ready-to-publish,
+    /// signed kind-[`MESSAGE_EVENT_KIND`] Nostr event.
+    ///
+    /// The event is signed by the sender's *current ephemeral* key (the one
+    /// driving the ratchet), exactly as the reference implementation does — so
+    /// the published event interoperates with Iris. The session is not
+    /// mutated; commit the returned state with [`apply`](Self::apply).
+    ///
+    /// `created_at` is the Unix timestamp to stamp on the event.
+    ///
+    /// # Errors
+    /// Propagates [`plan_send`](Self::plan_send) failures plus any signing
+    /// error.
+    pub fn plan_send_event(
+        &self,
+        payload: &[u8],
+        created_at: i64,
+    ) -> Result<(SessionState, nostro2::NostrNote)> {
+        let (next, envelope) = self.plan_send(payload)?;
+        let our_current = self
+            .state
+            .our_current_nostr_key
+            .as_ref()
+            .ok_or(Nip104Error::SessionNotReady)?;
+        let signer = K::from_secret_bytes(&our_current.secret_bytes()?)?;
+        let event = envelope.to_event(&signer, created_at)?;
+        Ok((next, event))
+    }
+
+    /// Like [`plan_receive`](Self::plan_receive), but takes a raw kind-1060
+    /// Nostr event, verifies it, and extracts the envelope before decrypting.
+    ///
+    /// # Errors
+    /// [`Nip104Error::InvalidHeader`] if the event is malformed or fails
+    /// signature verification, plus any [`plan_receive`](Self::plan_receive)
+    /// failure.
+    pub fn plan_receive_event(
+        &self,
+        event: &nostro2::NostrNote,
+    ) -> Result<(SessionState, Vec<u8>)> {
+        let envelope = MessageEnvelope::from_event(event)?;
+        self.plan_receive(&envelope)
+    }
+}
+
+impl MessageEnvelope {
+    /// Render this envelope as a signed kind-[`MESSAGE_EVENT_KIND`] Nostr event.
+    ///
+    /// `signer` must be the sender's current ephemeral keypair (its public key
+    /// must equal [`self.sender`](Self::sender)); the reference implementation
+    /// signs ratchet messages with that key, and the recipient locates the
+    /// chain by the event's `pubkey`.
+    ///
+    /// # Errors
+    /// Returns [`Nip104Error::Signer`] if signing fails.
+    pub fn to_event<S: nostro2::NostrSigner>(
+        &self,
+        signer: &S,
+        created_at: i64,
+    ) -> Result<nostro2::NostrNote> {
+        let mut tags = nostro2::NostrTags::new();
+        tags.add_custom_tag(HEADER_TAG, &self.encrypted_header);
+        let mut note = nostro2::NostrNote {
+            kind: MESSAGE_EVENT_KIND,
+            content: self.ciphertext.clone(),
+            created_at,
+            tags,
+            ..Default::default()
+        };
+        note.sign_with(signer)
+            .map_err(|_| Nip104Error::Signer(SignerError::InvalidSignature))?;
+        Ok(note)
+    }
+
+    /// Parse and verify a kind-[`MESSAGE_EVENT_KIND`] Nostr event into an
+    /// envelope. The event's `pubkey` becomes the [`sender`](Self::sender),
+    /// its `content` the ciphertext, and the `["header", …]` tag the encrypted
+    /// header.
+    ///
+    /// # Errors
+    /// [`Nip104Error::InvalidHeader`] if the kind is wrong, the signature is
+    /// invalid, or the `header` tag is missing.
+    pub fn from_event(event: &nostro2::NostrNote) -> Result<Self> {
+        use nostro2::NostrEvent as _;
+        if event.kind != MESSAGE_EVENT_KIND {
+            return Err(Nip104Error::InvalidHeader);
+        }
+        if !event.verify() {
+            return Err(Nip104Error::InvalidHeader);
+        }
+        let encrypted_header = event
+            .tags
+            .find_tags_ref(HEADER_TAG)
+            .into_iter()
+            .next()
+            .ok_or(Nip104Error::InvalidHeader)?
+            .to_owned();
+        Ok(Self {
+            sender: event.pubkey.clone(),
+            encrypted_header,
+            ciphertext: event.content.clone(),
+        })
     }
 }
 
@@ -798,6 +913,104 @@ mod tests {
             decoded.contains(&plaintext),
             "decrypted rumor {decoded:?} must contain plaintext {plaintext:?}"
         );
+    }
+
+    /// Cross-implementation codec oracle. Parse the reference Rust impl's
+    /// **actual signed kind-1060 event** (verifying its real Schnorr
+    /// signature) and decrypt it end-to-end through our wire codec. Proves the
+    /// event shape — kind, `header` tag, signing key — matches the reference,
+    /// on top of the crypto.
+    #[test]
+    fn rust_reference_msg1_event_decrypts_via_codec() {
+        let vec_json = include_str!("../test-vectors/nip104-rust-generated.json");
+
+        let field = |key: &str| -> String {
+            let needle = format!("\"{key}\":");
+            let start = vec_json.find(&needle).expect("key present") + needle.len();
+            let rest = &vec_json[start..];
+            let q1 = rest.find('"').unwrap() + 1;
+            let q2 = rest[q1..].find('"').unwrap();
+            rest[q1..q1 + q2].to_string()
+        };
+
+        let bob_sk = decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
+        let alice_pk = decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
+        let shared = decode_hex_32(&field("shared_secret")).unwrap();
+        let plaintext = field("plaintext");
+
+        // Extract the embedded `msg1_event` JSON object and parse it as a note.
+        let ev_start = vec_json.find("\"msg1_event\":").unwrap()
+            + "\"msg1_event\":".len();
+        let obj_start = vec_json[ev_start..].find('{').unwrap() + ev_start;
+        let obj_end = vec_json[obj_start..].find('}').unwrap() + obj_start + 1;
+        let event: nostro2::NostrNote = vec_json[obj_start..obj_end].parse().unwrap();
+
+        let mut bob = Session::<K>::new_responder(&alice_pk, &bob_sk, &shared).unwrap();
+        let (next, payload) = bob
+            .plan_receive_event(&event)
+            .expect("reference event must decrypt via the native codec");
+        bob.apply(next);
+
+        let decoded = String::from_utf8(payload).unwrap();
+        assert!(decoded.contains(&plaintext), "got {decoded:?}");
+    }
+
+    /// Full transport round-trip: Alice ratchet-encrypts, renders a *signed
+    /// kind-1060 Nostr event*, and Bob decrypts straight from that event. This
+    /// exercises the wire codec (kind, `header` tag, ephemeral-key signature)
+    /// end-to-end, not just the in-memory envelope.
+    #[test]
+    fn message_event_codec_round_trips() {
+        use nostro2::NostrEvent as _;
+
+        let alice_secret = [1_u8; 32];
+        let bob_secret = [2_u8; 32];
+        let alice_pub = K::from_secret_bytes(&alice_secret).unwrap().pubkey_bytes();
+        let bob_pub = K::from_secret_bytes(&bob_secret).unwrap().pubkey_bytes();
+
+        let mut alice =
+            Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
+        let mut bob =
+            Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
+
+        let (anext, event) = alice.plan_send_event(b"over the wire", 1_700_000_000).unwrap();
+        alice.apply(anext);
+
+        // The rendered event must look like a real NIP-104 message.
+        assert_eq!(event.kind, MESSAGE_EVENT_KIND);
+        assert!(event.verify(), "event must be self-consistently signed");
+        assert_eq!(event.created_at, 1_700_000_000);
+        assert_eq!(event.tags.find_tags_ref(HEADER_TAG).len(), 1);
+        // Signed by Alice's *current ephemeral* key (the chain locator).
+        assert_eq!(event.pubkey, alice_pub.to_hex());
+
+        // Bob decrypts straight from the wire event.
+        let (bnext, pt) = bob.plan_receive_event(&event).unwrap();
+        bob.apply(bnext);
+        assert_eq!(pt, b"over the wire");
+    }
+
+    /// A tampered ciphertext invalidates the signature, so the codec rejects
+    /// the event before it ever reaches the ratchet.
+    #[test]
+    fn message_event_rejects_tampering() {
+        let alice_secret = [1_u8; 32];
+        let bob_secret = [2_u8; 32];
+        let alice_pub = K::from_secret_bytes(&alice_secret).unwrap().pubkey_bytes();
+        let bob_pub = K::from_secret_bytes(&bob_secret).unwrap().pubkey_bytes();
+
+        let alice =
+            Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
+        let bob =
+            Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
+
+        let (_anext, mut event) = alice.plan_send_event(b"tamper me", 1_700_000_000).unwrap();
+        event.content.push('A'); // breaks the id/signature
+
+        assert!(matches!(
+            bob.plan_receive_event(&event),
+            Err(Nip104Error::InvalidHeader)
+        ));
     }
 
     #[test]
