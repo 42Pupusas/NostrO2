@@ -20,13 +20,21 @@
 
 use std::collections::BTreeMap;
 
+use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
 
-use crate::nip_104::{decode_hex_32, Nip104Error};
+use crate::nip_104::{decode_hex_32, Nip104Error, MESSAGE_EVENT_KIND};
 use crate::nip_104_sender_key::SenderKeyState;
 
 type Result<T> = std::result::Result<T, Nip104Error>;
+
+/// Outer Nostr event kind for group messages.
+///
+/// Same kind as 1:1 ratchet messages (the reference's `MESSAGE_EVENT_KIND` =
+/// 1060); members tell the two apart by whether the event `pubkey` maps to a
+/// sender-key chain.
+pub const GROUP_MESSAGE_KIND: u32 = MESSAGE_EVENT_KIND;
 
 bourne::json! {
     /// Seed for one sender-key chain, distributed to members over their 1:1
@@ -58,11 +66,12 @@ bourne::json! {
     }
 }
 
-/// Our own sending side for one group: the chain plus the sender-event key it
-/// is published under.
+/// Our own sending side for one group: the chain plus the sender-event keypair
+/// it is published/signed under.
 #[derive(Debug, Clone)]
 struct SendingChain {
     sender_event_pubkey: String,
+    sender_event_secret: [u8; 32],
     state: SenderKeyState,
 }
 
@@ -94,6 +103,10 @@ pub struct GroupReceivedMessage {
 pub struct GroupManager<K: NostrKeypair> {
     our_pubkey: String,
     groups: BTreeMap<String, GroupRecord>,
+    /// Reverse index: a sender-event pubkey → the `group_id` its chain belongs
+    /// to. Lets us route a bare outer event (which carries no `group_id`) to
+    /// the right chain by its author pubkey alone.
+    sender_to_group: BTreeMap<String, String>,
     _marker: std::marker::PhantomData<fn() -> K>,
 }
 
@@ -104,6 +117,7 @@ impl<K: NostrKeypair> GroupManager<K> {
         Self {
             our_pubkey: our_pubkey.into(),
             groups: BTreeMap::new(),
+            sender_to_group: BTreeMap::new(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -147,6 +161,7 @@ impl<K: NostrKeypair> GroupManager<K> {
     ) -> Result<SenderKeyDistribution> {
         let sender_event = K::generate();
         let sender_event_pubkey = sender_event.public_key();
+        let sender_event_secret = sender_event.secret_bytes();
         let chain_key = K::generate().secret_bytes();
         let state = SenderKeyState::new(key_id, &chain_key, 0);
 
@@ -159,8 +174,11 @@ impl<K: NostrKeypair> GroupManager<K> {
             created_at,
         };
 
+        self.sender_to_group
+            .insert(sender_event_pubkey.clone(), group_id.to_owned());
         self.groups.entry(group_id.to_owned()).or_default().sending = Some(SendingChain {
             sender_event_pubkey,
+            sender_event_secret,
             state,
         });
         Ok(dist)
@@ -203,6 +221,8 @@ impl<K: NostrKeypair> GroupManager<K> {
     pub fn apply_distribution(&mut self, dist: &SenderKeyDistribution) -> Result<()> {
         let chain_key = decode_hex_32(&dist.chain_key)?;
         let state = SenderKeyState::new(dist.key_id, &chain_key, dist.iteration);
+        self.sender_to_group
+            .insert(dist.sender_event_pubkey.clone(), dist.group_id.clone());
         self.groups
             .entry(dist.group_id.clone())
             .or_default()
@@ -261,6 +281,119 @@ impl<K: NostrKeypair> GroupManager<K> {
             plaintext,
         })
     }
+
+    /// **Encrypt and build the publishable outer event** for `group_id`. The
+    /// returned [`nostro2::NostrNote`] is a signed kind-[`GROUP_MESSAGE_KIND`]
+    /// event authored by our per-group sender-event key, with
+    /// `content = base64(key_id_be32 || message_number_be32 || nip44_bytes)`
+    /// and empty tags — byte-compatible with the reference `OneToManyChannel`.
+    /// Publish it **once**; every member decrypts it.
+    ///
+    /// # Errors
+    /// [`Nip104Error::SessionNotReady`] if we have no sending chain; plus
+    /// cipher/signing failures.
+    pub fn encrypt_to_event(
+        &mut self,
+        group_id: &str,
+        plaintext: &[u8],
+        created_at: i64,
+    ) -> Result<nostro2::NostrNote> {
+        let send = self
+            .groups
+            .get_mut(group_id)
+            .and_then(|g| g.sending.as_mut())
+            .ok_or(Nip104Error::SessionNotReady)?;
+        let key_id = send.state.key_id();
+        let (message_number, ciphertext_b64) = send.state.encrypt::<K>(plaintext)?;
+        let content = encode_outer_content(key_id, message_number, &ciphertext_b64)?;
+
+        let signer = K::from_secret_bytes(&send.sender_event_secret)
+            .map_err(Nip104Error::Signer)?;
+        let mut note = nostro2::NostrNote {
+            kind: GROUP_MESSAGE_KIND,
+            content,
+            created_at,
+            tags: nostro2::NostrTags::new(),
+            ..Default::default()
+        };
+        note.sign_with(&signer)
+            .map_err(|_| Nip104Error::Signer(nostro2_traits::SignerError::InvalidSignature))?;
+        Ok(note)
+    }
+
+    /// **Decrypt an inbound outer event.** Verifies the event, routes by its
+    /// `pubkey` (the sender-event key) to the matching receiving chain, parses
+    /// the compact payload, and decrypts. Returns `Ok(None)` if the author is
+    /// not a sender-key chain we know (e.g. a 1:1 message, or a member whose
+    /// distribution we have not yet received).
+    ///
+    /// # Errors
+    /// [`Nip104Error`] on a bad signature, malformed payload, or chain
+    /// decrypt failure.
+    pub fn decrypt_event(
+        &mut self,
+        event: &nostro2::NostrNote,
+    ) -> Result<Option<GroupReceivedMessage>> {
+        use nostro2::NostrEvent as _;
+        if event.kind != GROUP_MESSAGE_KIND {
+            return Ok(None);
+        }
+        // Route by author: do we hold a receiving chain for this sender?
+        let Some(group_id) = self.sender_to_group.get(&event.pubkey).cloned() else {
+            return Ok(None);
+        };
+        let known = self
+            .groups
+            .get(&group_id)
+            .is_some_and(|g| g.receiving.contains_key(&event.pubkey));
+        if !known {
+            return Ok(None);
+        }
+        if !event.verify() {
+            return Err(Nip104Error::InvalidHeader);
+        }
+        let (key_id, message_number, ciphertext_b64) = decode_outer_content(&event.content)?;
+        let msg = GroupSenderKeyMessage {
+            group_id,
+            sender_event_pubkey: event.pubkey.clone(),
+            key_id,
+            message_number,
+            created_at: event.created_at,
+            ciphertext: ciphertext_b64,
+        };
+        Ok(Some(self.decrypt(&msg)?))
+    }
+}
+
+/// Build the reference's compact outer payload:
+/// `base64(key_id_be32 || message_number_be32 || raw_nip44_bytes)`.
+///
+/// Our [`SenderKeyState`] ciphertext is the **base64** NIP-44 payload; we
+/// decode it back to the raw bytes the reference frames.
+fn encode_outer_content(key_id: u32, message_number: u32, ciphertext_b64: &str) -> Result<String> {
+    let nip44_bytes = general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .map_err(|_| Nip104Error::InvalidHeader)?;
+    let mut payload = Vec::with_capacity(8 + nip44_bytes.len());
+    payload.extend_from_slice(&key_id.to_be_bytes());
+    payload.extend_from_slice(&message_number.to_be_bytes());
+    payload.extend_from_slice(&nip44_bytes);
+    Ok(general_purpose::STANDARD.encode(&payload))
+}
+
+/// Inverse of [`encode_outer_content`], returning
+/// `(key_id, message_number, base64 nip44 ciphertext)` ready for the chain.
+fn decode_outer_content(content: &str) -> Result<(u32, u32, String)> {
+    let bytes = general_purpose::STANDARD
+        .decode(content)
+        .map_err(|_| Nip104Error::InvalidHeader)?;
+    if bytes.len() < 8 {
+        return Err(Nip104Error::InvalidHeader);
+    }
+    let key_id = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let message_number = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let ciphertext_b64 = general_purpose::STANDARD.encode(&bytes[8..]);
+    Ok((key_id, message_number, ciphertext_b64))
 }
 
 #[cfg(test)]
@@ -388,5 +521,60 @@ mod tests {
         let json = bourne::to_string(&msg).unwrap();
         let back: GroupSenderKeyMessage = bourne::parse_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn outer_event_roundtrip_one_to_many() {
+        use nostro2::NostrEvent as _;
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let mut carol = mgr("carol");
+
+        let dist = alice.rotate_sending_chain("g1", 1, 1000).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+        carol.apply_distribution(&dist).unwrap();
+
+        // One signed outer event, published once.
+        let ev = alice.encrypt_to_event("g1", b"gm group", 1001).unwrap();
+        assert_eq!(ev.kind, GROUP_MESSAGE_KIND);
+        assert_eq!(ev.pubkey, dist.sender_event_pubkey);
+        assert!(ev.verify());
+        assert_eq!(ev.tags.iter().count(), 0);
+
+        // Every member decrypts the same wire event.
+        let b = bob.decrypt_event(&ev).unwrap().unwrap();
+        let c = carol.decrypt_event(&ev).unwrap().unwrap();
+        assert_eq!(b.plaintext, b"gm group");
+        assert_eq!(c.plaintext, b"gm group");
+        assert_eq!(b.group_id, "g1");
+    }
+
+    #[test]
+    fn decrypt_event_ignores_unknown_author() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        alice.rotate_sending_chain("g", 1, 0).unwrap();
+        // Bob has no distribution → unknown author → Ok(None), not an error.
+        let ev = alice.encrypt_to_event("g", b"secret", 1).unwrap();
+        assert!(bob.decrypt_event(&ev).unwrap().is_none());
+    }
+
+    #[test]
+    fn outer_content_frames_match_reference_layout() {
+        // key_id and message_number are big-endian u32 prefixes.
+        let content = encode_outer_content(0x0102_0304, 0x0506_0708, &{
+            // a minimal valid base64 of some bytes
+            general_purpose::STANDARD.encode([0xAA_u8; 40])
+        })
+        .unwrap();
+        let raw = general_purpose::STANDARD.decode(&content).unwrap();
+        assert_eq!(&raw[..4], &[0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(&raw[4..8], &[0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(&raw[8..], &[0xAA_u8; 40]);
+
+        let (k, n, ct) = decode_outer_content(&content).unwrap();
+        assert_eq!(k, 0x0102_0304);
+        assert_eq!(n, 0x0506_0708);
+        assert_eq!(general_purpose::STANDARD.decode(ct).unwrap(), [0xAA_u8; 40]);
     }
 }
