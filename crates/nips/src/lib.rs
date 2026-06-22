@@ -8,6 +8,7 @@
 )]
 mod nip_104;
 mod nip_104_invite;
+mod nip_104_manager;
 mod nip_17;
 mod nip_44;
 mod nip_46;
@@ -15,6 +16,7 @@ mod nip_59;
 
 pub use nip_104::*;
 pub use nip_104_invite::*;
+pub use nip_104_manager::*;
 pub use nip_17::*;
 pub use nip_44::*;
 pub use nip_46::*;

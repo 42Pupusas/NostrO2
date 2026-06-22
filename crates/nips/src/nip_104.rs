@@ -60,6 +60,8 @@ pub enum Nip104Error {
     /// An invite or invite-response was malformed, unsigned, or failed to
     /// decrypt at one of its layers.
     InvalidInvite(String),
+    /// A send was requested for a peer the manager has no session with.
+    UnknownPeer(String),
     /// Underlying signer / key error.
     Signer(SignerError),
     /// NIP-44 layer error.
@@ -79,6 +81,7 @@ impl std::fmt::Display for Nip104Error {
             Self::TooManySkippedMessages => f.write_str("too many skipped messages"),
             Self::InvalidHeader => f.write_str("could not decrypt message header"),
             Self::InvalidInvite(e) => write!(f, "invalid invite: {e}"),
+            Self::UnknownPeer(p) => write!(f, "no session with peer {p}"),
             Self::Signer(e) => write!(f, "signer error: {e}"),
             Self::Nip44(e) => write!(f, "nip-44 error: {e}"),
             Self::Json(e) => write!(f, "json error: {e}"),
