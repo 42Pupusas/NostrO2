@@ -577,7 +577,7 @@ mod tests {
         );
     }
 
-    /// `valid.encrypt_decrypt`: fixed conversation_key + nonce + "a" → payload.
+    /// `valid.encrypt_decrypt`: fixed `conversation_key` + nonce + "a" → payload.
     #[test]
     fn vector_known_answer_payload() {
         use nostro2_traits::hex::FromHex as _;

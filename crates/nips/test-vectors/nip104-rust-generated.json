@@ -1,0 +1,15 @@
+{
+  "_comment": "Vendored from mmalmi/nostr-double-ratchet rust/crates/test-vectors/rust-generated.json (master). Cross-implementation oracle: fixed keys + shared secret, real ciphertexts produced by the reference Rust implementation. Encryption is non-reproducible (random next-keys + nonces), so we gate on DECRYPTION of msg1 (alice->bob, with bob as responder), which is a pure function of the vector inputs.",
+  "alice_ephemeral_sk": "1111111111111111111111111111111111111111111111111111111111111111",
+  "alice_ephemeral_pk": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+  "bob_ephemeral_sk": "2222222222222222222222222222222222222222222222222222222222222222",
+  "bob_ephemeral_pk": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+  "shared_secret": "3333333333333333333333333333333333333333333333333333333333333333",
+  "msg1": {
+    "sender": "alice",
+    "plaintext": "Hello from Rust!",
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "header": "AhSiPUf67C4fX6vP7NGVE5EDZzyOMs/f7E3/cqW/+RWJJdkT55Ewptis484HFrAnrAgjvABcHZ6cgRG/zWZCKYRylUvcM+sbpON/yddFPVn0WLqOgP0aqc5PNYm3GUgeuIIGCUmSZbODFHKzo27tW634CReMWf4NYV1iIDRWqz+MLzWzTk9Nm6HwksBHcM4dL6CaiP9l+WoaNSGO20a9CliUG68dol5DGygaemvHbQZrd2KEUcaeAeZR/zFSCjE4+OUB",
+    "content": "Agjfb1k/Bk8GcDAL8YiWv6H3jtozSXrrS5ADx50ylf0ijldvgNUz8fgp+2MCnEx6SdYOoL+9aBp5pHh8Tb6WmSPp30zoUIy8/chkYWB0QrsTfMnx2rfofA6qMV5JmVkp6+UXPW51hSlMIh9YwhNuG7dVoxmzE9nAtBxxpRYMVrvUt5xVhbx2lbsMscoTJ+8AuPDxuntbYZEUY6yJb5BIYZYcXeFsr3Oa5pqt8RuRboc1Ga8YxsCy20xvcImKHvU2VMaF1uUXiq5FKxGeK8bg+Brn3jeV9rCDvj10MxkT4/BxIL4Wvm//BkG3heFNvVu+oXraiwuCfvbvpx3tn2azC8pwNxbbwyHrVmSsDNqgWdFQ3RO67e6WbNXkhd7vsy382x+LIu4U6YWH5y1LlFR5YpKAroqmkpUDzD3/00jbuCwfBW8="
+  }
+}

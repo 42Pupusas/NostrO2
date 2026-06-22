@@ -748,6 +748,58 @@ mod tests {
         assert_eq!(pt2, b"second");
     }
 
+    /// Cross-implementation oracle. Bob, reconstructed as the responder from
+    /// the vector's fixed keys, must decrypt the **actual msg1 event produced
+    /// by the reference Rust implementation** (mmalmi/nostr-double-ratchet).
+    ///
+    /// This is the real interop proof: a foreign implementation's ciphertext,
+    /// header, and KDF chain all decrypt under our native ratchet. (Encryption
+    /// is non-reproducible — random next-keys + nonces — so only decryption is
+    /// a pure function of the published inputs.)
+    #[test]
+    fn rust_reference_vector_msg1_decrypts() {
+        let vec_json = include_str!("../test-vectors/nip104-rust-generated.json");
+
+        // Minimal field extraction (avoids a serde dep; bourne can't do
+        // arbitrary maps). The vector file is fixed, so this is safe.
+        let field = |key: &str| -> String {
+            let needle = format!("\"{key}\":");
+            let start = vec_json.find(&needle).expect("key present") + needle.len();
+            let rest = &vec_json[start..];
+            let q1 = rest.find('"').unwrap() + 1;
+            let q2 = rest[q1..].find('"').unwrap();
+            rest[q1..q1 + q2].to_string()
+        };
+
+        let bob_sk = decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
+        let alice_pk = decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
+        let shared = decode_hex_32(&field("shared_secret")).unwrap();
+        let plaintext = field("plaintext");
+        let sender = field("pubkey");
+        let header = field("header");
+        let content = field("content");
+
+        let mut bob = Session::<K>::new_responder(&alice_pk, &bob_sk, &shared).unwrap();
+        let envelope = MessageEnvelope {
+            sender,
+            encrypted_header: header,
+            ciphertext: content,
+        };
+
+        let (next, payload) = bob
+            .plan_receive(&envelope)
+            .expect("reference msg1 must decrypt under native ratchet");
+        bob.apply(next);
+
+        // The ratchet payload is a rumor-event JSON; its `content` carries the
+        // human plaintext. Assert the foreign plaintext survived round-trip.
+        let decoded = String::from_utf8(payload).expect("payload is UTF-8 JSON");
+        assert!(
+            decoded.contains(&plaintext),
+            "decrypted rumor {decoded:?} must contain plaintext {plaintext:?}"
+        );
+    }
+
     #[test]
     fn unknown_sender_rejected() {
         let bob_secret = [2_u8; 32];
