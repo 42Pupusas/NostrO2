@@ -57,6 +57,9 @@ pub enum Nip104Error {
     TooManySkippedMessages,
     /// The encrypted header could not be decrypted with any of our keys.
     InvalidHeader,
+    /// An invite or invite-response was malformed, unsigned, or failed to
+    /// decrypt at one of its layers.
+    InvalidInvite(String),
     /// Underlying signer / key error.
     Signer(SignerError),
     /// NIP-44 layer error.
@@ -75,6 +78,7 @@ impl std::fmt::Display for Nip104Error {
             Self::UnexpectedSender => f.write_str("envelope sender matches no known chain"),
             Self::TooManySkippedMessages => f.write_str("too many skipped messages"),
             Self::InvalidHeader => f.write_str("could not decrypt message header"),
+            Self::InvalidInvite(e) => write!(f, "invalid invite: {e}"),
             Self::Signer(e) => write!(f, "signer error: {e}"),
             Self::Nip44(e) => write!(f, "nip-44 error: {e}"),
             Self::Json(e) => write!(f, "json error: {e}"),
@@ -707,7 +711,8 @@ fn derive_conv_key<K: NostrKeypair>(sk: &[u8; 32], pk: &[u8; 32]) -> Result<[u8;
 /// Encrypt with a raw 32-byte message key as the NIP-44 v2 conversation key,
 /// returning the standard base64 payload (`Ag…`). Equivalent to the reference's
 /// `ConversationKey::new(mk)` + `encrypt_to_bytes` + base64.
-fn encrypt_with_message_key<K: NostrKeypair>(
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn encrypt_with_message_key<K: NostrKeypair>(
     message_key: &[u8; 32],
     plaintext: &[u8],
 ) -> Result<String> {
@@ -716,7 +721,8 @@ fn encrypt_with_message_key<K: NostrKeypair>(
 }
 
 /// Inverse of [`encrypt_with_message_key`], returning the raw plaintext bytes.
-fn decrypt_with_message_key<K: NostrKeypair>(
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn decrypt_with_message_key<K: NostrKeypair>(
     message_key: &[u8; 32],
     ciphertext_b64: &str,
 ) -> Result<Vec<u8>> {
@@ -725,7 +731,8 @@ fn decrypt_with_message_key<K: NostrKeypair>(
     Ok(s)
 }
 
-fn decode_hex_32(s: &str) -> Result<[u8; 32]> {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn decode_hex_32(s: &str) -> Result<[u8; 32]> {
     let mut buf = [0_u8; 32];
     nostro2_traits::hex::FromHex::decode_hex_to_slice(s, &mut buf)
         .map_err(|_| Nip104Error::Signer(SignerError::InvalidPublicKey))?;
