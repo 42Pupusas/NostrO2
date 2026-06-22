@@ -36,6 +36,16 @@ type Result<T> = std::result::Result<T, Nip104Error>;
 /// sender-key chain.
 pub const GROUP_MESSAGE_KIND: u32 = MESSAGE_EVENT_KIND;
 
+/// Inner-rumor kind for a sender-key distribution, delivered pairwise over
+/// each member's 1:1 Double Ratchet session (reference
+/// `GROUP_SENDER_KEY_DISTRIBUTION_KIND`).
+pub const GROUP_SENDER_KEY_DISTRIBUTION_KIND: u32 = 10446;
+
+/// Inner-rumor kind for a group chat message (reference `CHAT_MESSAGE_KIND`,
+/// the NIP-17 private-DM kind). The plaintext inside an outer group event is a
+/// JSON rumor of this kind.
+pub const GROUP_CHAT_MESSAGE_KIND: u32 = 14;
+
 bourne::json! {
     /// Seed for one sender-key chain, distributed to members over their 1:1
     /// sessions. Field names match the reference `SenderKeyDistribution`
@@ -229,6 +239,55 @@ impl<K: NostrKeypair> GroupManager<K> {
             .receiving
             .insert(dist.sender_event_pubkey.clone(), state);
         Ok(())
+    }
+
+    /// Frame a distribution as the unsigned kind-10446 session rumor to hand to
+    /// the `SessionManager` for every member; its serialized JSON becomes the
+    /// inner ratchet plaintext. Tags match the reference: l/key/ms; pubkey is
+    /// our device identity; id is the rumor hash.
+    ///
+    /// # Errors
+    /// JSON serialization failure of the distribution payload.
+    pub fn distribution_to_rumor(
+        &self,
+        dist: &SenderKeyDistribution,
+        created_at: i64,
+        now_ms: i64,
+    ) -> Result<nostro2::NostrNote> {
+        let mut tags = nostro2::NostrTags::new();
+        tags.add_custom_tag("l", &dist.group_id);
+        tags.add_custom_tag("key", &dist.key_id.to_string());
+        tags.add_custom_tag("ms", &now_ms.to_string());
+        let mut rumor = nostro2::NostrNote {
+            pubkey: self.our_pubkey.clone(),
+            kind: GROUP_SENDER_KEY_DISTRIBUTION_KIND,
+            content: bourne::to_string(dist)?,
+            created_at,
+            tags,
+            ..Default::default()
+        };
+        rumor
+            .serialize_id()
+            .map_err(|e| Nip104Error::Json(e.to_string()))?;
+        Ok(rumor)
+    }
+
+    /// Consume an inbound session rumor. If it is a kind-10446 distribution,
+    /// parse and install it, returning the applied distribution. Returns
+    /// Ok(None) for any other rumor kind, so it composes with a 1:1 loop.
+    ///
+    /// # Errors
+    /// Malformed payload or bad chain-key hex.
+    pub fn apply_distribution_rumor(
+        &mut self,
+        rumor: &nostro2::NostrNote,
+    ) -> Result<Option<SenderKeyDistribution>> {
+        if rumor.kind != GROUP_SENDER_KEY_DISTRIBUTION_KIND {
+            return Ok(None);
+        }
+        let dist: SenderKeyDistribution = bourne::parse_str(&rumor.content)?;
+        self.apply_distribution(&dist)?;
+        Ok(Some(dist))
     }
 
     /// **Encrypt** `plaintext` as the next message on our sending chain for
@@ -521,6 +580,43 @@ mod tests {
         let json = bourne::to_string(&msg).unwrap();
         let back: GroupSenderKeyMessage = bourne::parse_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn distribution_rumor_roundtrips_over_session() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+
+        let dist = alice.rotate_sending_chain("g7", 1, 1000).unwrap();
+        // Alice frames the kind-10446 rumor she'd send Bob over their 1:1 session.
+        let rumor = alice.distribution_to_rumor(&dist, 1000, 1_000_000).unwrap();
+        assert_eq!(rumor.kind, GROUP_SENDER_KEY_DISTRIBUTION_KIND);
+        assert_eq!(rumor.pubkey, "alice");
+        assert!(rumor.id.is_some());
+        assert_eq!(rumor.tags.find_tags("l"), vec!["g7".to_owned()]);
+        assert_eq!(rumor.tags.find_tags("key"), vec!["1".to_owned()]);
+        assert_eq!(rumor.tags.find_tags("ms"), vec!["1000000".to_owned()]);
+
+        // Bob receives that rumor (out of his session) and installs the chain.
+        let applied = bob.apply_distribution_rumor(&rumor).unwrap().unwrap();
+        assert_eq!(applied, dist);
+
+        // Now the one-to-many outer event decrypts for Bob.
+        let ev = alice.encrypt_to_event("g7", b"after distro", 1001).unwrap();
+        let got = bob.decrypt_event(&ev).unwrap().unwrap();
+        assert_eq!(got.plaintext, b"after distro");
+    }
+
+    #[test]
+    fn apply_distribution_rumor_ignores_other_kinds() {
+        let mut bob = mgr("bob");
+        let mut other = nostro2::NostrNote {
+            kind: GROUP_CHAT_MESSAGE_KIND,
+            content: "hi".to_owned(),
+            ..Default::default()
+        };
+        let _ = other.serialize_id();
+        assert!(bob.apply_distribution_rumor(&other).unwrap().is_none());
     }
 
     #[test]
