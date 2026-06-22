@@ -15,6 +15,13 @@
 //! 3. First message → `Session::new_responder(sender, our_ephemeral_sk,
 //!    shared_secret)`; decrypt; keep the evolving session for the rest.
 //! 4. Print every decrypted message.
+//! 5. On a kind:14 DM, reply through the evolved session: build a NIP-17
+//!    rumor, `plan_send_event`, publish the kind-1060 back.
+//!
+//! CONFIRMED LIVE against chat.iris.to: decrypted a real kind:14 DM and our
+//! reply ("hello from nostro2 — native NIP-104 ratchet 🦀") rendered in the
+//! Iris chat, emoji intact — a fully bidirectional native double-ratchet
+//! conversation with no rust-nostr dependency.
 //!
 //! Run: `cargo run -p nostro2-relay --example nip104_iris_listen`
 
