@@ -87,6 +87,7 @@ async fn main() {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut decrypted = 0_u32;
     let mut total_1060 = 0_u32;
+    let mut replied = false;
 
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(120) {
@@ -121,6 +122,44 @@ async fn main() {
                     "\n\u{1f4e9} DECRYPTED from {} (t={}) : \"{text}\"\n",
                     short(&sender), note.created_at
                 );
+
+                // The ratchet payload IS a NIP-17 rumor (a NostrNote). Parse it.
+                // Only reply to real DMs (kind 14), not typing (kind 25), once.
+                let Ok(rumor): Result<nostro2::NostrNote, _> = bourne::parse_str(&text) else {
+                    continue;
+                };
+                let their_id = rumor.pubkey.clone();
+                if rumor.kind != 14 || their_id.is_empty() || replied {
+                    continue;
+                }
+
+                // Build a NIP-17 kind:14 rumor reply: our pubkey, their id in `p`.
+                let reply_text = "hello from nostro2 — native NIP-104 ratchet 🦀";
+                let mut rumor_reply = nostro2::NostrNote {
+                    pubkey: our_hex.clone(),
+                    created_at: unix_now(),
+                    kind: 14,
+                    content: reply_text.to_string(),
+                    ..Default::default()
+                };
+                rumor_reply.tags.add_custom_tag("p", &their_id);
+                rumor_reply.serialize_id().ok();
+                let rumor_json = rumor_reply.serialize().unwrap();
+
+                // Send it through the evolved ratchet session.
+                match entry.plan_send_event(rumor_json.as_bytes(), unix_now()) {
+                    Ok((next2, reply_event)) => {
+                        entry.apply(next2);
+                        pool.send(&reply_event).expect("publish reply");
+                        replied = true;
+                        println!(
+                            "\u{2709}  REPLIED to {} : \"{reply_text}\" (kind-1060 {})\n",
+                            short(&their_id),
+                            reply_event.id.as_deref().map_or("?", |s| &s[..8])
+                        );
+                    }
+                    Err(e) => println!("  · reply send failed: {e}"),
+                }
             }
             Err(e) => {
                 println!("  · 1060 from {} (t={}) — no decrypt ({e})", short(&sender), note.created_at);
