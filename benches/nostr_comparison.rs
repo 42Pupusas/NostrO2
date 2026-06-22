@@ -14,16 +14,14 @@ mod _empty {} // bench binary compiles but runs nothing
 mod comparison {
     use divan::black_box;
     use nostr::JsonUtil;
-    use nostro2::{NostrKeypair as _, NostrNoteBuilder, NostrSigner as _};
+    use nostro2::{NostrEvent, NostrNoteBuilder, NostrSigner as _};
+    use nostro2_signer::NostrKeypair;
+    use nostro2_signer::nostro2_traits::NostrKeypair as _;
 
-    #[cfg(feature = "k256")]
-    use nostro2_signer::K256Keypair as Nostro2Keypair;
-    #[cfg(feature = "secp256k1")]
-    use nostro2_signer::Secp256k1Keypair as Nostro2Keypair;
-
-    fn nostro2_signed_note() -> (Nostro2Keypair, nostro2::NostrNote) {
-        let kp = Nostro2Keypair::generate();
-        let mut note = NostrNoteBuilder::text_note("Hello Nostr! Benchmark vs the nostr crate.").build();
+    fn nostro2_signed_note() -> (NostrKeypair, nostro2::NostrNote) {
+        let kp = NostrKeypair::generate();
+        let mut note =
+            NostrNoteBuilder::text_note("Hello Nostr! Benchmark vs the nostr crate.").build();
         note.sign_with(&kp).expect("nostro2 signing failed");
         (kp, note)
     }
@@ -39,8 +37,8 @@ mod comparison {
     // ── Key Generation ────────────────────────────────────────────────
 
     #[divan::bench]
-    fn keygen_nostro2() -> Nostro2Keypair {
-        black_box(Nostro2Keypair::generate())
+    fn keygen_nostro2() -> NostrKeypair {
+        black_box(NostrKeypair::generate())
     }
 
     #[divan::bench]
@@ -52,7 +50,7 @@ mod comparison {
 
     #[divan::bench]
     fn signing_nostro2(bencher: divan::Bencher) {
-        let kp = Nostro2Keypair::generate();
+        let kp = NostrKeypair::generate();
         bencher.bench(|| {
             let mut note = NostrNoteBuilder::text_note("Benchmark signing").build();
             note.sign_with(black_box(&kp)).unwrap();
@@ -124,7 +122,9 @@ mod comparison {
         let (_, note) = nostro2_signed_note();
         let json = bourne::to_string(&note).unwrap();
         bencher.bench(|| {
-            black_box(bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap());
+            black_box(
+                bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap(),
+            );
         });
     }
 
@@ -148,7 +148,7 @@ mod comparison {
 
     #[divan::bench]
     fn filter_match_nostro2(bencher: divan::Bencher) {
-        let kp = Nostro2Keypair::generate();
+        let kp = NostrKeypair::generate();
         let notes: Vec<nostro2::NostrNote> = (0..1000)
             .map(|i| {
                 let mut n = NostrNoteBuilder::text_note(format!("note {i}")).build();
@@ -235,8 +235,8 @@ mod comparison {
     #[divan::bench]
     fn nip44_encrypt_nostro2(bencher: divan::Bencher) {
         use nostro2_nips::Nip44 as _;
-        let alice = Nostro2Keypair::generate();
-        let bob = Nostro2Keypair::generate();
+        let alice = NostrKeypair::generate();
+        let bob = NostrKeypair::generate();
         let bob_pk = bob.public_key();
         let plaintext = "Hello, Nostr! NIP-44 round-trip benchmark payload.";
         bencher.bench(|| {
@@ -273,8 +273,8 @@ mod comparison {
     #[divan::bench]
     fn nip44_decrypt_nostro2(bencher: divan::Bencher) {
         use nostro2_nips::Nip44 as _;
-        let alice = Nostro2Keypair::generate();
-        let bob = Nostro2Keypair::generate();
+        let alice = NostrKeypair::generate();
+        let bob = NostrKeypair::generate();
         let bob_pk = bob.public_key();
         let alice_pk = alice.public_key();
         let mut note = nostro2::NostrNote {
@@ -323,8 +323,8 @@ mod comparison {
 
     #[divan::bench(args = SIZES)]
     fn serialize_by_size_nostro2(bencher: divan::Bencher, size: usize) {
-        let kp = Nostro2Keypair::generate();
-        let mut note = nostro2::NostrNote::text_note("x".repeat(size));
+        let kp = NostrKeypair::generate();
+        let mut note = NostrNoteBuilder::text_note("x".repeat(size)).build();
         note.sign_with(&kp).unwrap();
         bencher.bench(|| bourne::to_string(black_box(&note)).unwrap());
     }
@@ -342,9 +342,9 @@ mod comparison {
 
     #[divan::bench]
     fn full_roundtrip_nostro2(bencher: divan::Bencher) {
-        let kp = Nostro2Keypair::generate();
+        let kp = NostrKeypair::generate();
         bencher.bench(|| {
-            let mut note = nostro2::NostrNote::text_note("Roundtrip");
+            let mut note = NostrNoteBuilder::text_note("Roundtrip").build();
             note.sign_with(&kp).unwrap();
             let json = bourne::to_string(&note).unwrap();
             let parsed: nostro2::NostrNote = bourne::parse_str(&json).unwrap();

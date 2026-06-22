@@ -7,9 +7,9 @@
 //! ```
 
 use divan::black_box;
-use nostro2::{NostrEvent, NostrNote, NostrNoteBuilder};
+use nostro2::{NostrEvent, NostrNoteBuilder};
 use nostro2_signer::NostrKeypair;
-use nostro2_traits::{NostrKeypair as _, NostrSigner as _};
+use nostro2_signer::nostro2_traits::{NostrKeypair as _, NostrSigner as _};
 
 fn main() {
     divan::main();
