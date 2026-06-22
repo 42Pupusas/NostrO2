@@ -26,6 +26,22 @@ impl std::error::Error for Nip59Error {
 }
 impl From<crate::nip_44::Nip44Error> for Nip59Error { fn from(err: crate::nip_44::Nip44Error) -> Self { Self::Nip44Error(err) } }
 
+/// Current Unix time minus a random jitter (0..=172800s, i.e. up to 2 days),
+/// per NIP-59's recommendation to randomize seal/giftwrap timestamps so the
+/// real send time is obscured. Never returns a future or zero timestamp.
+#[must_use]
+fn jittered_timestamp() -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    let mut buf = [0_u8; 8];
+    let _ = getrandom::fill(&mut buf);
+    let jitter = i64::from_le_bytes(buf).rem_euclid(172_800);
+    now - jitter
+}
+
 pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// Unwraps a giftwrapped rumor, verifying all layers.
     ///
@@ -52,10 +68,11 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// - `Nip44Error` if NIP-44 encryption fails.
     fn seal(&self, rumor: &mut nostro2::NostrNote, peer_pubkey: &str) -> Result<nostro2::NostrNote, Nip59Error> {
         use nostro2::NostrEvent;
+        if rumor.created_at == 0 { rumor.created_at = jittered_timestamp(); }
         rumor.sign_with(self).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         if !rumor.verify() { return Err(Nip59Error::SigningError); }
         rumor.sig.take();
-        let mut seal = nostro2::NostrNote { content: bourne::to_string(rumor).map_err(Nip59Error::SerializationError)?, kind: 13, ..Default::default() };
+        let mut seal = nostro2::NostrNote { content: bourne::to_string(rumor).map_err(Nip59Error::SerializationError)?, kind: 13, created_at: jittered_timestamp(), ..Default::default() };
         self.nip44_encrypt_note(&mut seal, peer_pubkey)?;
         seal.sign_with(self).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         if !seal.verify() { return Err(Nip59Error::SigningError); }
@@ -72,7 +89,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     where Self: Sized {
         let tk = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 1059, pubkey: tk.public_key(), ..Default::default() };
+        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 1059, pubkey: tk.public_key(), created_at: jittered_timestamp(), ..Default::default() };
         gw.tags.add_pubkey_tag(peer_pubkey, None);
         tk.nip44_encrypt_note(&mut gw, peer_pubkey).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         gw.sign_with(&tk).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
@@ -87,7 +104,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// - `ParseError` if NIP-44 encryption or signing of the giftwrap fails.
     fn replaceable_giftwrap(&self, rumor: &mut nostro2::NostrNote, peer_pubkey: &str) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 10059, pubkey: self.public_key(), ..Default::default() };
+        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 10059, pubkey: self.public_key(), created_at: jittered_timestamp(), ..Default::default() };
         gw.tags.add_pubkey_tag(peer_pubkey, None);
         self.nip44_encrypt_note(&mut gw, peer_pubkey).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         gw.sign_with(self).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
@@ -103,7 +120,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     where Self: Sized {
         let tk = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 20059, pubkey: tk.public_key(), ..Default::default() };
+        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 20059, pubkey: tk.public_key(), created_at: jittered_timestamp(), ..Default::default() };
         gw.tags.add_pubkey_tag(peer_pubkey, None);
         tk.nip44_encrypt_note(&mut gw, peer_pubkey).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         gw.sign_with(&tk).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
@@ -118,7 +135,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     /// - `ParseError` if NIP-44 encryption or signing of the giftwrap fails.
     fn parameterized_giftwrap(&self, rumor: &mut nostro2::NostrNote, peer_pubkey: &str, d_tag: &str) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
-        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 30059, pubkey: self.public_key(), ..Default::default() };
+        let mut gw = nostro2::NostrNote { content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?, kind: 30059, pubkey: self.public_key(), created_at: jittered_timestamp(), ..Default::default() };
         gw.tags.add_pubkey_tag(peer_pubkey, None); gw.tags.add_parameter_tag(d_tag);
         self.nip44_encrypt_note(&mut gw, peer_pubkey).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
         gw.sign_with(self).map_err(|_| Nip59Error::ParseError("Failed to sign NostrNote".into()))?;
