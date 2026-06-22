@@ -7,6 +7,7 @@
     clippy::nursery
 )]
 mod nip_104;
+mod nip_104_group;
 mod nip_104_invite;
 mod nip_104_manager;
 mod nip_104_sender_key;
@@ -16,6 +17,7 @@ mod nip_46;
 mod nip_59;
 
 pub use nip_104::*;
+pub use nip_104_group::*;
 pub use nip_104_invite::*;
 pub use nip_104_manager::*;
 pub use nip_104_sender_key::*;

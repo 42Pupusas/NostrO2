@@ -119,6 +119,13 @@ impl SenderKeyState {
         self.iteration
     }
 
+    /// The current chain key as 64-char hex (used to re-derive a
+    /// [`crate::nip_104_group::SenderKeyDistribution`] for late joiners).
+    #[must_use]
+    pub fn chain_key_hex(&self) -> String {
+        self.chain_key.clone()
+    }
+
     /// Number of skipped message keys currently stored.
     #[must_use]
     pub fn skipped_len(&self) -> usize {
