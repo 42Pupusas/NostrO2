@@ -126,6 +126,18 @@ pub trait NostrKeypair: NostrSigner {
     where
         Self: Sized;
 
+    /// Rebuild a keypair from raw 32-byte secret material.
+    ///
+    /// Needed to revive ephemeral keys persisted in protocol state (e.g. the
+    /// NIP-104 double ratchet), where only the secret bytes are stored.
+    ///
+    /// # Errors
+    /// Returns [`SignerError::InvalidSignature`] if the bytes are not a valid
+    /// scalar for the curve.
+    fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self>
+    where
+        Self: Sized;
+
     /// Derive the ECDH shared point with a peer's x-only public key. Returns
     /// the 32-byte X coordinate of the shared point — the same value NIP-04
     /// and NIP-44 use as their shared-secret seed.

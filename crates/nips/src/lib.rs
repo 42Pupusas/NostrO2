@@ -6,11 +6,13 @@
     clippy::pedantic,
     clippy::nursery
 )]
+mod nip_104;
 mod nip_17;
 mod nip_44;
 mod nip_46;
 mod nip_59;
 
+pub use nip_104::*;
 pub use nip_17::*;
 pub use nip_44::*;
 pub use nip_46::*;
@@ -83,6 +85,12 @@ mod tests {
             getrandom::fill(&mut secret).expect("getrandom failed");
             let field_bytes = k256::FieldBytes::from(secret);
             Self(k256::schnorr::SigningKey::from_bytes(&field_bytes).expect("invalid key bytes"))
+        }
+        fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self, SignerError> {
+            let field_bytes = k256::FieldBytes::from(*bytes);
+            k256::schnorr::SigningKey::from_bytes(&field_bytes)
+                .map(Self)
+                .map_err(|_| SignerError::InvalidSignature)
         }
         fn ecdh_x(&self, peer_xonly: &[u8; 32]) -> Result<[u8; 32], SignerError> {
             let mut compressed = [0_u8; 33];

@@ -63,6 +63,12 @@ impl NostrSigner for NostrKeypair {
 // ── NostrKeypair ───────────────────────────────────────────────────────
 
 impl NostrKeypairTrait for NostrKeypair {
+    fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self, SignerError> {
+        // Delegate to the inherent constructor, mapping its error into the
+        // trait's signer-error vocabulary.
+        Self::from_secret_bytes(bytes).map_err(|_| SignerError::InvalidSignature)
+    }
+
     #[cfg(feature = "k256")]
     fn secret_bytes(&self) -> [u8; 32] {
         self.inner.to_bytes().into()
