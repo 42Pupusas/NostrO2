@@ -221,6 +221,9 @@ async fn main() {
     let mut distributions = 0_u32;
     let mut group_msgs = 0_u32;
     let mut dms = 0_u32;
+    // Once we've decrypted one of their group messages we know the group id and
+    // have a live session — reply into the group exactly once.
+    let mut replied = false;
 
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(150) {
@@ -259,9 +262,22 @@ async fn main() {
                             // May unlock buffered group outer events.
                             let retry = std::mem::take(&mut pending);
                             for g in retry {
-                                if !try_group(&g, &mut groups, &mut group_msgs) {
+                                if try_group(&g, &mut groups, &mut group_msgs).is_none() {
                                     pending.push(g);
                                 }
+                            }
+                            // A distribution alone gives us the group id AND a
+                            // live session — enough to post. Reply once.
+                            if !replied {
+                                replied = true;
+                                reply_to_group(
+                                    &dist.group_id,
+                                    &mut groups,
+                                    &mut manager,
+                                    &peer_keys,
+                                    &pool,
+                                    "hello group, from nostro2 🦀",
+                                );
                             }
                         }
                         _ => {
@@ -278,8 +294,20 @@ async fn main() {
             }
         } else {
             // Empty-tag 1060 — a group outer event.
-            if !try_group(&note, &mut groups, &mut group_msgs) {
-                pending.push(note);
+            match try_group(&note, &mut groups, &mut group_msgs) {
+                Some(group_id) if !replied => {
+                    replied = true;
+                    reply_to_group(
+                        &group_id,
+                        &mut groups,
+                        &mut manager,
+                        &peer_keys,
+                        &pool,
+                        "hello group, from nostro2 🦀",
+                    );
+                }
+                Some(_) => {}
+                None => pending.push(note),
             }
         }
     }
@@ -291,12 +319,13 @@ async fn main() {
     );
 }
 
-/// Try to decrypt `note` as a group outer event. Returns true on success.
+/// Try to decrypt `note` as a group outer event. Returns the group id on
+/// success (so the caller can reply into that group), else None.
 fn try_group(
     note: &nostro2::NostrNote,
     groups: &mut GroupManager<NostrKeypair>,
     group_msgs: &mut u32,
-) -> bool {
+) -> Option<String> {
     match groups.decrypt_event(note) {
         Ok(Some(msg)) => {
             *group_msgs += 1;
@@ -309,10 +338,83 @@ fn try_group(
                 short(&msg.group_id),
                 short(&msg.sender_event_pubkey),
             );
-            true
+            Some(msg.group_id)
         }
-        _ => false,
+        _ => None,
     }
+}
+
+/// Post a message into `group_id`: mint our sending chain (if needed),
+/// distribute our sender key to the target's device sessions over the 1:1
+/// ratchet, then publish exactly one kind-1060 outer event the members decrypt.
+fn reply_to_group(
+    group_id: &str,
+    groups: &mut GroupManager<NostrKeypair>,
+    manager: &mut SessionManager<NostrKeypair>,
+    peer_keys: &[String],
+    pool: &nostro2_relay::NostrPool,
+    text: &str,
+) {
+    let now = unix_now();
+    // 1. Mint our per-group sending chain + sender-event key, then hand the
+    //    resulting distribution to each member over their 1:1 session.
+    if !groups.has_sending_chain(group_id) {
+        let key_id = random_u32();
+        let dist = match groups.rotate_sending_chain(group_id, key_id, now) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("  · reply: mint chain failed: {e}");
+                return;
+            }
+        };
+        let rumor = match groups.distribution_to_rumor(&dist, now, now * 1000) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  · reply: build distribution failed: {e}");
+                return;
+            }
+        };
+        let payload = bourne::to_string(&rumor).unwrap_or_default();
+        let mut pushed = 0_u32;
+        for peer in peer_keys {
+            if let Ok(events) = manager.send(peer, payload.as_bytes(), now) {
+                for e in &events {
+                    pool.send(e).ok();
+                }
+                pushed += 1;
+            }
+        }
+        println!(
+            "📤 reply: minted sending chain, distributed sender key to {pushed} session(s)",
+        );
+    }
+
+    // 2. Build the inner kind-14 group chat rumor and publish one outer event.
+    let inner = group_chat_rumor(manager.our_pubkey(), group_id, text);
+    match groups.encrypt_to_event(group_id, inner.as_bytes(), now) {
+        Ok(outer) => {
+            let id = outer.id.clone().unwrap_or_default();
+            pool.send(&outer).ok();
+            println!("📨 reply: published group message {} : \"{text}\"\n", short(&id));
+        }
+        Err(e) => println!("  · reply: encrypt group message failed: {e}"),
+    }
+}
+
+/// A kind-14 group chat inner rumor: content + the group `l` tag, authored by
+/// our device identity — matching the reference `buildGroupInnerRumor`.
+fn group_chat_rumor(our_hex: &str, group_id: &str, text: &str) -> String {
+    format!(
+        r#"{{"pubkey":"{our_hex}","created_at":{},"kind":14,"tags":[["l","{group_id}"]],"content":"{text}"}}"#,
+        unix_now(),
+    )
+}
+
+/// 32 random bits for a fresh sender-key id (reference `randomU32`).
+fn random_u32() -> u32 {
+    use nostro2::NostrKeypair as _;
+    let b = NostrKeypair::generate().secret_bytes();
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
 
 /// Build a minimal kind-14 chat rumor as our hello plaintext.
