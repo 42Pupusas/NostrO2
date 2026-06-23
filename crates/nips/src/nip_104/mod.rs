@@ -1065,4 +1065,28 @@ mod tests {
             Err(Nip104Error::UnexpectedSender)
         ));
     }
+
+    #[test]
+    fn error_display_covers_all_variants() {
+        use std::error::Error as _;
+
+        let cases: Vec<Nip104Error> = vec![
+            Nip104Error::CannotSendYet,
+            Nip104Error::SessionNotReady,
+            Nip104Error::UnexpectedSender,
+            Nip104Error::TooManySkippedMessages,
+            Nip104Error::InvalidHeader,
+            Nip104Error::InvalidInvite("bad layer".into()),
+            Nip104Error::UnknownPeer("npub1xyz".into()),
+            Nip104Error::Signer(SignerError::InvalidSignature),
+            Nip104Error::Nip44(crate::Nip44Error::MacMismatch),
+            Nip104Error::Json("unexpected token".into()),
+            Nip104Error::Base64(general_purpose::STANDARD.decode("!!!").unwrap_err()),
+        ];
+        for err in &cases {
+            assert!(!format!("{err}").is_empty(), "Display empty for {err:?}");
+            // The blanket `Error` impl carries no source; just exercise it.
+            let _ = err.source();
+        }
+    }
 }
