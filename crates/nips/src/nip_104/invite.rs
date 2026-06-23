@@ -39,9 +39,7 @@
 //! *and* the link, as long as the per-session keys stay secret.
 #![allow(clippy::similar_names)]
 
-use super::{
-    decode_hex_32, decrypt_with_message_key, encrypt_with_message_key, Nip104Error, Session,
-};
+use super::{Nip104Crypto, Nip104Error, Session};
 use crate::Nip44;
 use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
 
@@ -141,7 +139,7 @@ impl Invite {
             r#"{{"inviter":"{}","ephemeralKey":"{}","sharedSecret":"{}"}}"#,
             self.inviter, self.inviter_ephemeral_pubkey, self.shared_secret
         );
-        format!("{root}#{}", urlencode(&json))
+        format!("{root}#{}", Self::urlencode(&json))
     }
 
     /// Parse an invite from a shared URL (data in the `#` hash).
@@ -155,15 +153,15 @@ impl Invite {
             .map(|(_, h)| h)
             .filter(|h| !h.is_empty())
             .ok_or_else(|| Nip104Error::InvalidInvite("no invite data in URL hash".into()))?;
-        let decoded = urldecode(hash);
-        let inviter = json_str_field(&decoded, "inviter")
+        let decoded = Self::urldecode(hash);
+        let inviter = Self::json_str_field(&decoded, "inviter")
             .ok_or_else(|| Nip104Error::InvalidInvite("missing inviter".into()))?;
         // The reference accepts either `ephemeralKey` or the older
         // `inviterEphemeralPublicKey`.
-        let ephemeral = json_str_field(&decoded, "ephemeralKey")
-            .or_else(|| json_str_field(&decoded, "inviterEphemeralPublicKey"))
+        let ephemeral = Self::json_str_field(&decoded, "ephemeralKey")
+            .or_else(|| Self::json_str_field(&decoded, "inviterEphemeralPublicKey"))
             .ok_or_else(|| Nip104Error::InvalidInvite("missing ephemeralKey".into()))?;
-        let shared = json_str_field(&decoded, "sharedSecret")
+        let shared = Self::json_str_field(&decoded, "sharedSecret")
             .ok_or_else(|| Nip104Error::InvalidInvite("missing sharedSecret".into()))?;
         Ok(Self {
             inviter_ephemeral_pubkey: ephemeral,
@@ -214,12 +212,12 @@ impl Invite {
         if !event.verify() {
             return Err(Nip104Error::InvalidInvite("bad signature".into()));
         }
-        let ephemeral = first_tag(event, "ephemeralKey")
+        let ephemeral = Self::first_tag(event, "ephemeralKey")
             .ok_or_else(|| Nip104Error::InvalidInvite("missing ephemeralKey".into()))?;
-        let shared = first_tag(event, "sharedSecret")
+        let shared = Self::first_tag(event, "sharedSecret")
             .ok_or_else(|| Nip104Error::InvalidInvite("missing sharedSecret".into()))?;
         // device id is the third segment of `double-ratchet/invites/<id>`.
-        let device_id = first_tag(event, "d")
+        let device_id = Self::first_tag(event, "d")
             .and_then(|d| d.split('/').nth(2).map(str::to_owned))
             .filter(|id| id != "public");
         Ok(Self {
@@ -250,8 +248,8 @@ impl Invite {
         owner_pubkey: Option<&str>,
         created_at: i64,
     ) -> Result<(Session<K>, nostro2::NostrNote)> {
-        let shared_secret = decode_hex_32(&self.shared_secret)?;
-        let their_ephemeral = decode_hex_32(&self.inviter_ephemeral_pubkey)?;
+        let shared_secret = K::decode_hex_32(&self.shared_secret)?;
+        let their_ephemeral = K::decode_hex_32(&self.inviter_ephemeral_pubkey)?;
 
         // Fresh per-session keypair; its secret seeds the initiator ratchet.
         let session_kp = K::generate();
@@ -270,7 +268,7 @@ impl Invite {
         let dh_encrypted = invitee.nip_44_encrypt(&payload_json, &self.inviter)?.into_owned();
 
         // Layer 2 (shared secret): prove possession of the link.
-        let inner_content = encrypt_with_message_key::<K>(&shared_secret, dh_encrypted.as_bytes())?;
+        let inner_content = K::encrypt_with_message_key(&shared_secret, dh_encrypted.as_bytes())?;
         let inner_event = InnerEvent {
             pubkey: invitee.public_key(),
             content: inner_content,
@@ -329,8 +327,8 @@ impl Invite {
             .inviter_ephemeral_privkey
             .as_deref()
             .ok_or_else(|| Nip104Error::InvalidInvite("ephemeral secret unavailable".into()))?;
-        let ephemeral_kp = K::from_secret_bytes(&decode_hex_32(ephemeral_sk)?)?;
-        let shared_secret = decode_hex_32(&self.shared_secret)?;
+        let ephemeral_kp = K::from_secret_bytes(&K::decode_hex_32(ephemeral_sk)?)?;
+        let shared_secret = K::decode_hex_32(&self.shared_secret)?;
 
         // Peel layer 3: ephemeral × random-sender.
         let inner_json = ephemeral_kp.nip_44_decrypt(&event.content, &event.pubkey)?;
@@ -339,7 +337,7 @@ impl Invite {
 
         // Peel layer 2: the raw shared secret.
         let dh_encrypted_bytes =
-            decrypt_with_message_key::<K>(&shared_secret, &inner_event.content)?;
+            K::decrypt_with_message_key(&shared_secret, &inner_event.content)?;
         let dh_encrypted = String::from_utf8(dh_encrypted_bytes)
             .map_err(|e| Nip104Error::Json(format!("inner utf8: {e}")))?;
 
@@ -347,7 +345,7 @@ impl Invite {
         let payload_json = inviter_identity.nip_44_decrypt(&dh_encrypted, &invitee_identity)?;
         let payload: AcceptPayload = bourne::parse_str(&payload_json)?;
 
-        let their_session = decode_hex_32(&payload.session_key)?;
+        let their_session = K::decode_hex_32(&payload.session_key)?;
         let session =
             Session::<K>::new_responder(&their_session, &ephemeral_kp.secret_bytes(), &shared_secret)?;
 
@@ -364,64 +362,69 @@ impl Invite {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-fn first_tag(event: &nostro2::NostrNote, name: &str) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find(|row| row.first().is_some_and(|t| t == name))
-        .and_then(|row| row.get(1).cloned())
-}
+impl Invite {
+    /// First value of the first tag named `name`.
+    fn first_tag(event: &nostro2::NostrNote, name: &str) -> Option<String> {
+        event
+            .tags
+            .iter()
+            .find(|row| row.first().is_some_and(|t| t == name))
+            .and_then(|row| row.get(1).cloned())
+    }
 
-/// Extract a top-level string field from a flat JSON object by key. Adequate
-/// for the tiny, well-formed invite hash payloads (not a general parser).
-fn json_str_field(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let start = json.find(&needle)? + needle.len();
-    let rest = &json[start..];
-    let colon = rest.find(':')?;
-    let after = &rest[colon + 1..];
-    let q1 = after.find('"')? + 1;
-    let q2 = after[q1..].find('"')?;
-    Some(after[q1..q1 + q2].to_owned())
-}
+    /// Extract a top-level string field from a flat JSON object by key.
+    /// Adequate for the tiny, well-formed invite hash payloads (not a general
+    /// parser).
+    fn json_str_field(json: &str, key: &str) -> Option<String> {
+        let needle = format!("\"{key}\"");
+        let start = json.find(&needle)? + needle.len();
+        let rest = &json[start..];
+        let colon = rest.find(':')?;
+        let after = &rest[colon + 1..];
+        let q1 = after.find('"')? + 1;
+        let q2 = after[q1..].find('"')?;
+        Some(after[q1..q1 + q2].to_owned())
+    }
 
-/// Percent-encode the characters the invite hash JSON can contain that are
-/// unsafe in a URL fragment. Conservative but sufficient (and `urldecode`
-/// inverts it).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            other => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(other >> 4) as usize] as char);
-                out.push(HEX[(other & 0xf) as usize] as char);
+    /// Percent-encode the characters the invite hash JSON can contain that are
+    /// unsafe in a URL fragment. Conservative but sufficient (and
+    /// [`urldecode`](Self::urldecode) inverts it).
+    fn urlencode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                other => {
+                    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                    out.push('%');
+                    out.push(HEX[(other >> 4) as usize] as char);
+                    out.push(HEX[(other & 0xf) as usize] as char);
+                }
             }
         }
+        out
     }
-    out
-}
 
-fn urldecode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
-                continue;
+    /// Inverse of [`urlencode`](Self::urlencode).
+    fn urldecode(s: &str) -> String {
+        let bytes = s.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
             }
+            out.push(bytes[i]);
+            i += 1;
         }
-        out.push(bytes[i]);
-        i += 1;
+        String::from_utf8_lossy(&out).into_owned()
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

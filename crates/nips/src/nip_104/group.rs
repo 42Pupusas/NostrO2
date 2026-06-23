@@ -24,7 +24,7 @@ use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
 
-use super::{decode_hex_32, Nip104Error, SenderKeyState, MESSAGE_EVENT_KIND};
+use super::{Nip104Crypto, Nip104Error, SenderKeyState, MESSAGE_EVENT_KIND};
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
@@ -234,7 +234,7 @@ impl<K: NostrKeypair> GroupManager<K> {
     /// # Errors
     /// [`Nip104Error`] if the chain key is malformed hex.
     pub fn apply_distribution(&mut self, dist: &SenderKeyDistribution) -> Result<()> {
-        let chain_key = decode_hex_32(&dist.chain_key)?;
+        let chain_key = K::decode_hex_32(&dist.chain_key)?;
         let state = SenderKeyState::new(dist.key_id, &chain_key, dist.iteration);
         self.sender_to_group
             .insert(dist.sender_event_pubkey.clone(), dist.group_id.clone());
@@ -369,7 +369,7 @@ impl<K: NostrKeypair> GroupManager<K> {
             .ok_or(Nip104Error::SessionNotReady)?;
         let key_id = send.state.key_id();
         let (message_number, ciphertext_b64) = send.state.encrypt::<K>(plaintext)?;
-        let content = encode_outer_content(key_id, message_number, &ciphertext_b64)?;
+        let content = Self::encode_outer_content(key_id, message_number, &ciphertext_b64)?;
 
         let signer = K::from_secret_bytes(&send.sender_event_secret)
             .map_err(Nip104Error::Signer)?;
@@ -416,7 +416,7 @@ impl<K: NostrKeypair> GroupManager<K> {
         if !event.verify() {
             return Err(Nip104Error::InvalidHeader);
         }
-        let (key_id, message_number, ciphertext_b64) = decode_outer_content(&event.content)?;
+        let (key_id, message_number, ciphertext_b64) = Self::decode_outer_content(&event.content)?;
         let msg = GroupSenderKeyMessage {
             group_id,
             sender_event_pubkey: event.pubkey.clone(),
@@ -427,37 +427,42 @@ impl<K: NostrKeypair> GroupManager<K> {
         };
         Ok(Some(self.decrypt(&msg)?))
     }
-}
 
-/// Build the reference's compact outer payload:
-/// `base64(key_id_be32 || message_number_be32 || raw_nip44_bytes)`.
-///
-/// Our [`SenderKeyState`] ciphertext is the **base64** NIP-44 payload; we
-/// decode it back to the raw bytes the reference frames.
-fn encode_outer_content(key_id: u32, message_number: u32, ciphertext_b64: &str) -> Result<String> {
-    let nip44_bytes = general_purpose::STANDARD
-        .decode(ciphertext_b64)
-        .map_err(|_| Nip104Error::InvalidHeader)?;
-    let mut payload = Vec::with_capacity(8 + nip44_bytes.len());
-    payload.extend_from_slice(&key_id.to_be_bytes());
-    payload.extend_from_slice(&message_number.to_be_bytes());
-    payload.extend_from_slice(&nip44_bytes);
-    Ok(general_purpose::STANDARD.encode(&payload))
-}
-
-/// Inverse of [`encode_outer_content`], returning
-/// `(key_id, message_number, base64 nip44 ciphertext)` ready for the chain.
-fn decode_outer_content(content: &str) -> Result<(u32, u32, String)> {
-    let bytes = general_purpose::STANDARD
-        .decode(content)
-        .map_err(|_| Nip104Error::InvalidHeader)?;
-    if bytes.len() < 8 {
-        return Err(Nip104Error::InvalidHeader);
+    /// Build the reference's compact outer payload:
+    /// `base64(key_id_be32 || message_number_be32 || raw_nip44_bytes)`.
+    ///
+    /// Our [`SenderKeyState`] ciphertext is the **base64** NIP-44 payload; we
+    /// decode it back to the raw bytes the reference frames.
+    fn encode_outer_content(
+        key_id: u32,
+        message_number: u32,
+        ciphertext_b64: &str,
+    ) -> Result<String> {
+        let nip44_bytes = general_purpose::STANDARD
+            .decode(ciphertext_b64)
+            .map_err(|_| Nip104Error::InvalidHeader)?;
+        let mut payload = Vec::with_capacity(8 + nip44_bytes.len());
+        payload.extend_from_slice(&key_id.to_be_bytes());
+        payload.extend_from_slice(&message_number.to_be_bytes());
+        payload.extend_from_slice(&nip44_bytes);
+        Ok(general_purpose::STANDARD.encode(&payload))
     }
-    let key_id = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    let message_number = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let ciphertext_b64 = general_purpose::STANDARD.encode(&bytes[8..]);
-    Ok((key_id, message_number, ciphertext_b64))
+
+    /// Inverse of [`encode_outer_content`](Self::encode_outer_content),
+    /// returning `(key_id, message_number, base64 nip44 ciphertext)` ready for
+    /// the chain.
+    fn decode_outer_content(content: &str) -> Result<(u32, u32, String)> {
+        let bytes = general_purpose::STANDARD
+            .decode(content)
+            .map_err(|_| Nip104Error::InvalidHeader)?;
+        if bytes.len() < 8 {
+            return Err(Nip104Error::InvalidHeader);
+        }
+        let key_id = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let message_number = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let ciphertext_b64 = general_purpose::STANDARD.encode(&bytes[8..]);
+        Ok((key_id, message_number, ciphertext_b64))
+    }
 }
 
 #[cfg(test)]
@@ -663,7 +668,7 @@ mod tests {
     #[test]
     fn outer_content_frames_match_reference_layout() {
         // key_id and message_number are big-endian u32 prefixes.
-        let content = encode_outer_content(0x0102_0304, 0x0506_0708, &{
+        let content = GroupManager::<K>::encode_outer_content(0x0102_0304, 0x0506_0708, &{
             // a minimal valid base64 of some bytes
             general_purpose::STANDARD.encode([0xAA_u8; 40])
         })
@@ -673,7 +678,7 @@ mod tests {
         assert_eq!(&raw[4..8], &[0x05, 0x06, 0x07, 0x08]);
         assert_eq!(&raw[8..], &[0xAA_u8; 40]);
 
-        let (k, n, ct) = decode_outer_content(&content).unwrap();
+        let (k, n, ct) = GroupManager::<K>::decode_outer_content(&content).unwrap();
         assert_eq!(k, 0x0102_0304);
         assert_eq!(n, 0x0506_0708);
         assert_eq!(general_purpose::STANDARD.decode(ct).unwrap(), [0xAA_u8; 40]);

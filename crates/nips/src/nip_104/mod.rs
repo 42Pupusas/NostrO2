@@ -15,7 +15,7 @@
 //!
 //! | Reference (`nostr-double-ratchet`)            | Here                                        |
 //! |-----------------------------------------------|---------------------------------------------|
-//! | `kdf(ikm, salt, n)` (HKDF-SHA256, info=`[i]`) | [`kdf`]                                      |
+//! | `kdf(ikm, salt, n)` (HKDF-SHA256, info=`[i]`) | [`Nip104Crypto::kdf`]                        |
 //! | `ConversationKey::derive(sk, pk)`             | `conversation_key_v2(ecdh_x)`               |
 //! | `ConversationKey::new(message_key)`           | `message_key` used directly as conv-key     |
 //! | `encrypt_to_bytes` + base64                   | [`Nip44::encrypt_v2`] (identical layout)    |
@@ -125,27 +125,6 @@ impl From<base64::DecodeError> for Nip104Error {
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
-/// HKDF-SHA256 KDF used for all chain stepping.
-///
-/// Mirrors the reference `kdf(input1, input2, num_outputs)`: `input2` is the
-/// salt, `input1` the IKM, and each output `i` (1-based) is
-/// `HKDF-Expand(info = [i])` truncated to 32 bytes.
-///
-/// # Panics
-/// Never in practice: HKDF-Expand of 32 bytes is always a valid length.
-#[must_use]
-pub fn kdf(input1: &[u8], input2: &[u8], num_outputs: usize) -> Vec<[u8; 32]> {
-    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(input2), input1);
-    let mut outputs = Vec::with_capacity(num_outputs);
-    for i in 1..=num_outputs {
-        let mut okm = [0_u8; 32];
-        hk.expand(&[u8::try_from(i).unwrap_or(u8::MAX)], &mut okm)
-            .expect("32 bytes is a valid HKDF length");
-        outputs.push(okm);
-    }
-    outputs
-}
-
 /// A persisted ephemeral keypair: x-only public key plus its 32-byte secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPairBytes {
@@ -157,7 +136,10 @@ pub struct KeyPairBytes {
 
 impl KeyPairBytes {
     fn secret_bytes(&self) -> Result<[u8; 32]> {
-        decode_hex_32(&self.private_key)
+        let mut buf = [0_u8; 32];
+        nostro2_traits::hex::FromHex::decode_hex_to_slice(self.private_key.as_str(), &mut buf)
+            .map_err(|_| Nip104Error::Signer(SignerError::InvalidPublicKey))?;
+        Ok(buf)
     }
     fn from_secret<K: NostrKeypair>(secret: &[u8; 32]) -> Result<Self> {
         let kp = K::from_secret_bytes(secret)?;
@@ -236,7 +218,8 @@ pub struct MessageEnvelope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HeaderTarget {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) enum HeaderTarget {
     Current,
     Next,
     Previous,
@@ -302,8 +285,8 @@ impl<K: NostrKeypair> Session<K> {
             let our_next = KeyPairBytes::from_secret::<K>(&our_next_secret)?;
             // root/sending chains seeded from a DH between our *next* key and
             // the peer's ephemeral key, mixed into the shared secret.
-            let conv = derive_conv_key::<K>(&our_next_secret, their_ephemeral_pubkey)?;
-            let outs = kdf(shared_secret, &conv, 2);
+            let conv = K::derive_conv_key(&our_next_secret, their_ephemeral_pubkey)?;
+            let outs = K::kdf(shared_secret, &conv, 2);
             SessionState {
                 root_key: outs[0].to_hex(),
                 their_current_nostr_public_key: None,
@@ -364,7 +347,7 @@ impl<K: NostrKeypair> Session<K> {
             return Err(Nip104Error::CannotSendYet);
         }
         let mut next = self.state.clone();
-        let (header, ciphertext) = ratchet_encrypt::<K>(&mut next, payload)?;
+        let (header, ciphertext) = K::ratchet_encrypt(&mut next, payload)?;
 
         let our_current = self
             .state
@@ -407,7 +390,7 @@ impl<K: NostrKeypair> Session<K> {
             .clone()
             .or_else(|| next.their_next_nostr_public_key.clone());
 
-        let (header, target) = decrypt_header::<K>(&next, &envelope.encrypted_header, &envelope.sender)?;
+        let (header, target) = K::decrypt_header(&next, &envelope.encrypted_header, &envelope.sender)?;
         let should_ratchet = target == HeaderTarget::Next;
 
         if should_ratchet && next.their_next_nostr_public_key.as_ref() != Some(&header.next_public_key) {
@@ -418,12 +401,12 @@ impl<K: NostrKeypair> Session<K> {
         if should_ratchet {
             if next.receiving_chain_key.is_some() {
                 let skipped_sender = previous_chain_sender.ok_or(Nip104Error::SessionNotReady)?;
-                skip_message_keys(&mut next, header.previous_chain_length, &skipped_sender)?;
+                K::skip_message_keys(&mut next, header.previous_chain_length, &skipped_sender)?;
             }
-            ratchet_step::<K>(&mut next)?;
+            K::ratchet_step(&mut next)?;
         }
 
-        let payload = ratchet_decrypt::<K>(&mut next, &header, &envelope.ciphertext, &envelope.sender)?;
+        let payload = K::ratchet_decrypt(&mut next, &header, &envelope.ciphertext, &envelope.sender)?;
         Ok((next, payload))
     }
 
@@ -540,217 +523,250 @@ impl MessageEnvelope {
 
 // ── Ratchet internals (faithful port of session.rs) ───────────────────
 
-fn ratchet_encrypt<K: NostrKeypair>(
-    state: &mut SessionState,
-    plaintext: &[u8],
-) -> Result<(Header, String)> {
-    let sending_chain_key = decode_hex_32(
-        state
-            .sending_chain_key
-            .as_deref()
-            .ok_or(Nip104Error::SessionNotReady)?,
-    )?;
-    let outs = kdf(&sending_chain_key, &[1_u8], 2);
-    state.sending_chain_key = Some(outs[0].to_hex());
-    let message_key = outs[1];
-
-    let header = Header {
-        number: state.sending_chain_message_number,
-        next_public_key: state.our_next_nostr_key.public_key.clone(),
-        previous_chain_length: state.previous_sending_chain_message_count,
-    };
-    state.sending_chain_message_number += 1;
-
-    let ciphertext = encrypt_with_message_key::<K>(&message_key, plaintext)?;
-    Ok((header, ciphertext))
-}
-
-fn ratchet_decrypt<K: NostrKeypair>(
-    state: &mut SessionState,
-    header: &Header,
-    ciphertext: &str,
-    sender: &str,
-) -> Result<Vec<u8>> {
-    if let Some(pt) = try_skipped_message_keys::<K>(state, header, ciphertext, sender)? {
-        return Ok(pt);
+/// Crate-internal extension trait gathering the double-ratchet crypto glue
+/// that is generic over the in-process keypair `K`. Mirrors the structure of
+/// [`crate::Nip44`]: a blanket-implemented trait on `NostrKeypair`, so no
+/// free functions leak into the module. Every method is an associated function
+/// (no `self`); `K` is the implementing key type.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) trait Nip104Crypto: NostrKeypair + Sized {
+    /// HKDF-SHA256 KDF used for all chain stepping.
+    ///
+    /// Mirrors the reference `kdf(input1, input2, num_outputs)`: `input2` is the
+    /// salt, `input1` the IKM, and each output `i` (1-based) is
+    /// `HKDF-Expand(info = [i])` truncated to 32 bytes.
+    fn kdf(input1: &[u8], input2: &[u8], num_outputs: usize) -> Vec<[u8; 32]> {
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(input2), input1);
+        let mut outputs = Vec::with_capacity(num_outputs);
+        for i in 1..=num_outputs {
+            let mut okm = [0_u8; 32];
+            hk.expand(&[u8::try_from(i).unwrap_or(u8::MAX)], &mut okm)
+                .expect("32 bytes is a valid HKDF length");
+            outputs.push(okm);
+        }
+        outputs
     }
-    if state.receiving_chain_key.is_none() {
-        return Err(Nip104Error::SessionNotReady);
+
+    /// Decode a 64-char lowercase-hex string into 32 raw bytes.
+    fn decode_hex_32(s: &str) -> Result<[u8; 32]> {
+        let mut buf = [0_u8; 32];
+        nostro2_traits::hex::FromHex::decode_hex_to_slice(s, &mut buf)
+            .map_err(|_| Nip104Error::Signer(SignerError::InvalidPublicKey))?;
+        Ok(buf)
     }
-    skip_message_keys(state, header.number, sender)?;
 
-    let receiving_chain_key = decode_hex_32(
-        state
-            .receiving_chain_key
-            .as_deref()
-            .ok_or(Nip104Error::SessionNotReady)?,
-    )?;
-    let outs = kdf(&receiving_chain_key, &[1_u8], 2);
-    state.receiving_chain_key = Some(outs[0].to_hex());
-    let message_key = outs[1];
-    state.receiving_chain_message_number += 1;
-
-    decrypt_with_message_key::<K>(&message_key, ciphertext)
-}
-
-fn ratchet_step<K: NostrKeypair>(state: &mut SessionState) -> Result<()> {
-    state.previous_sending_chain_message_count = state.sending_chain_message_number;
-    state.sending_chain_message_number = 0;
-    state.receiving_chain_message_number = 0;
-
-    let their_next = state
-        .their_next_nostr_public_key
-        .as_deref()
-        .ok_or(Nip104Error::SessionNotReady)?;
-    let their_next_bytes = decode_hex_32(their_next)?;
-    let root_key = decode_hex_32(&state.root_key)?;
-
-    // First DH: our_next × their_next → new receiving chain.
-    let conv1 = derive_conv_key::<K>(&state.our_next_nostr_key.secret_bytes()?, &their_next_bytes)?;
-    let outs1 = kdf(&root_key, &conv1, 2);
-    state.receiving_chain_key = Some(outs1[1].to_hex());
-    state.our_previous_nostr_key = state.our_current_nostr_key.take();
-    state.our_current_nostr_key = Some(state.our_next_nostr_key.clone());
-
-    // Fresh DH key, second DH → new root + sending chain.
-    let our_next_secret = K::generate().secret_bytes();
-    state.our_next_nostr_key = KeyPairBytes::from_secret::<K>(&our_next_secret)?;
-    let conv2 = derive_conv_key::<K>(&our_next_secret, &their_next_bytes)?;
-    let outs2 = kdf(&outs1[0], &conv2, 2);
-    state.root_key = outs2[0].to_hex();
-    state.sending_chain_key = Some(outs2[1].to_hex());
-    Ok(())
-}
-
-fn skip_message_keys(state: &mut SessionState, until: u32, sender: &str) -> Result<()> {
-    if until <= state.receiving_chain_message_number {
-        return Ok(());
+    /// `ConversationKey::derive(sk, pk)` — ECDH x-coordinate fed through NIP-44
+    /// v2 conversation-key derivation (HKDF-extract, salt `"nip44-v2"`).
+    fn derive_conv_key(sk: &[u8; 32], pk: &[u8; 32]) -> Result<[u8; 32]> {
+        let kp = Self::from_secret_bytes(sk)?;
+        let shared = kp.ecdh_x(pk)?;
+        let conv = <Self as Nip44>::conversation_key_v2(zeroize::Zeroizing::new(shared))?;
+        Ok(*conv)
     }
-    if (until - state.receiving_chain_message_number) as usize > MAX_SKIP {
-        return Err(Nip104Error::TooManySkippedMessages);
+
+    /// Encrypt with a raw 32-byte message key as the NIP-44 v2 conversation
+    /// key, returning the standard base64 payload (`Ag…`). Equivalent to the
+    /// reference's `ConversationKey::new(mk)` + `encrypt_to_bytes` + base64.
+    fn encrypt_with_message_key(message_key: &[u8; 32], plaintext: &[u8]) -> Result<String> {
+        let nonce = Self::generate_nonce_32();
+        Ok(<Self as Nip44>::encrypt_v2(message_key, &nonce, plaintext)?)
     }
-    let entry = state.skipped_keys.entry(sender.to_owned()).or_default();
-    while state.receiving_chain_message_number < until {
-        let rck = decode_hex_32(
+
+    /// Inverse of [`encrypt_with_message_key`](Self::encrypt_with_message_key),
+    /// returning the raw plaintext bytes.
+    fn decrypt_with_message_key(message_key: &[u8; 32], ciphertext_b64: &str) -> Result<Vec<u8>> {
+        let decoded = general_purpose::STANDARD.decode(ciphertext_b64)?;
+        let s = <Self as Nip44>::decrypt_v2_bytes(message_key, &decoded)?;
+        Ok(s)
+    }
+
+    /// Drop a fresh message key off the sending chain, advancing it, and return
+    /// the header + ciphertext for `plaintext`.
+    fn ratchet_encrypt(state: &mut SessionState, plaintext: &[u8]) -> Result<(Header, String)> {
+        let sending_chain_key = Self::decode_hex_32(
+            state
+                .sending_chain_key
+                .as_deref()
+                .ok_or(Nip104Error::SessionNotReady)?,
+        )?;
+        let outs = Self::kdf(&sending_chain_key, &[1_u8], 2);
+        state.sending_chain_key = Some(outs[0].to_hex());
+        let message_key = outs[1];
+
+        let header = Header {
+            number: state.sending_chain_message_number,
+            next_public_key: state.our_next_nostr_key.public_key.clone(),
+            previous_chain_length: state.previous_sending_chain_message_count,
+        };
+        state.sending_chain_message_number += 1;
+
+        let ciphertext = Self::encrypt_with_message_key(&message_key, plaintext)?;
+        Ok((header, ciphertext))
+    }
+
+    /// Pull the matching message key off the receiving chain (or the skipped
+    /// store) and decrypt `ciphertext`.
+    fn ratchet_decrypt(
+        state: &mut SessionState,
+        header: &Header,
+        ciphertext: &str,
+        sender: &str,
+    ) -> Result<Vec<u8>> {
+        if let Some(pt) = Self::try_skipped_message_keys(state, header, ciphertext, sender)? {
+            return Ok(pt);
+        }
+        if state.receiving_chain_key.is_none() {
+            return Err(Nip104Error::SessionNotReady);
+        }
+        Self::skip_message_keys(state, header.number, sender)?;
+
+        let receiving_chain_key = Self::decode_hex_32(
             state
                 .receiving_chain_key
                 .as_deref()
                 .ok_or(Nip104Error::SessionNotReady)?,
         )?;
-        let outs = kdf(&rck, &[1_u8], 2);
+        let outs = Self::kdf(&receiving_chain_key, &[1_u8], 2);
         state.receiving_chain_key = Some(outs[0].to_hex());
-        entry
-            .message_keys
-            .insert(state.receiving_chain_message_number, outs[1].to_hex());
+        let message_key = outs[1];
         state.receiving_chain_message_number += 1;
-    }
-    prune_skipped(&mut entry.message_keys);
-    Ok(())
-}
 
-fn try_skipped_message_keys<K: NostrKeypair>(
-    state: &mut SessionState,
-    header: &Header,
-    ciphertext: &str,
-    sender: &str,
-) -> Result<Option<Vec<u8>>> {
-    let Some(entry) = state.skipped_keys.get_mut(sender) else {
-        return Ok(None);
-    };
-    let Some(mk_hex) = entry.message_keys.remove(&header.number) else {
-        return Ok(None);
-    };
-    let message_key = decode_hex_32(&mk_hex)?;
-    let pt = decrypt_with_message_key::<K>(&message_key, ciphertext)?;
-    if entry.message_keys.is_empty() {
-        state.skipped_keys.remove(sender);
+        Self::decrypt_with_message_key(&message_key, ciphertext)
     }
-    Ok(Some(pt))
-}
 
-fn decrypt_header<K: NostrKeypair>(
-    state: &SessionState,
-    encrypted_header: &str,
-    sender: &str,
-) -> Result<(Header, HeaderTarget)> {
-    if let Some(current) = &state.our_current_nostr_key {
-        if let Ok(h) = try_decrypt_header::<K>(&current.secret_bytes()?, sender, encrypted_header) {
-            return Ok((h, HeaderTarget::Current));
+    /// Perform the DH ratchet step: derive a new receiving chain from the
+    /// peer's next key, then a fresh sending chain + root from a new DH key.
+    fn ratchet_step(state: &mut SessionState) -> Result<()> {
+        state.previous_sending_chain_message_count = state.sending_chain_message_number;
+        state.sending_chain_message_number = 0;
+        state.receiving_chain_message_number = 0;
+
+        let their_next = state
+            .their_next_nostr_public_key
+            .as_deref()
+            .ok_or(Nip104Error::SessionNotReady)?;
+        let their_next_bytes = Self::decode_hex_32(their_next)?;
+        let root_key = Self::decode_hex_32(&state.root_key)?;
+
+        // First DH: our_next × their_next → new receiving chain.
+        let conv1 =
+            Self::derive_conv_key(&state.our_next_nostr_key.secret_bytes()?, &their_next_bytes)?;
+        let outs1 = Self::kdf(&root_key, &conv1, 2);
+        state.receiving_chain_key = Some(outs1[1].to_hex());
+        state.our_previous_nostr_key = state.our_current_nostr_key.take();
+        state.our_current_nostr_key = Some(state.our_next_nostr_key.clone());
+
+        // Fresh DH key, second DH → new root + sending chain.
+        let our_next_secret = Self::generate().secret_bytes();
+        state.our_next_nostr_key = KeyPairBytes::from_secret::<Self>(&our_next_secret)?;
+        let conv2 = Self::derive_conv_key(&our_next_secret, &their_next_bytes)?;
+        let outs2 = Self::kdf(&outs1[0], &conv2, 2);
+        state.root_key = outs2[0].to_hex();
+        state.sending_chain_key = Some(outs2[1].to_hex());
+        Ok(())
+    }
+
+    /// Advance the receiving chain to `until`, banking each skipped message key
+    /// under `sender` for out-of-order delivery.
+    fn skip_message_keys(state: &mut SessionState, until: u32, sender: &str) -> Result<()> {
+        if until <= state.receiving_chain_message_number {
+            return Ok(());
         }
-    }
-    if let Ok(h) =
-        try_decrypt_header::<K>(&state.our_next_nostr_key.secret_bytes()?, sender, encrypted_header)
-    {
-        return Ok((h, HeaderTarget::Next));
-    }
-    if let Some(previous) = &state.our_previous_nostr_key {
-        if let Ok(h) = try_decrypt_header::<K>(&previous.secret_bytes()?, sender, encrypted_header) {
-            return Ok((h, HeaderTarget::Previous));
+        if (until - state.receiving_chain_message_number) as usize > MAX_SKIP {
+            return Err(Nip104Error::TooManySkippedMessages);
         }
+        let entry = state.skipped_keys.entry(sender.to_owned()).or_default();
+        while state.receiving_chain_message_number < until {
+            let rck = Self::decode_hex_32(
+                state
+                    .receiving_chain_key
+                    .as_deref()
+                    .ok_or(Nip104Error::SessionNotReady)?,
+            )?;
+            let outs = Self::kdf(&rck, &[1_u8], 2);
+            state.receiving_chain_key = Some(outs[0].to_hex());
+            entry
+                .message_keys
+                .insert(state.receiving_chain_message_number, outs[1].to_hex());
+            state.receiving_chain_message_number += 1;
+        }
+        Self::prune_skipped(&mut entry.message_keys);
+        Ok(())
     }
-    Err(Nip104Error::InvalidHeader)
-}
 
-fn try_decrypt_header<K: NostrKeypair>(
-    our_secret: &[u8; 32],
-    sender: &str,
-    encrypted_header: &str,
-) -> Result<Header> {
-    let kp = K::from_secret_bytes(our_secret)?;
-    let json = kp.nip_44_decrypt(encrypted_header, sender)?;
-    Ok(bourne::parse_str(&json)?)
-}
-
-fn prune_skipped(map: &mut BTreeMap<u32, String>) {
-    while map.len() > MAX_SKIP {
-        let Some(first) = map.keys().next().copied() else {
-            break;
+    /// Try a banked skipped message key for `header.number`; on success consume
+    /// it and return the plaintext.
+    fn try_skipped_message_keys(
+        state: &mut SessionState,
+        header: &Header,
+        ciphertext: &str,
+        sender: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(entry) = state.skipped_keys.get_mut(sender) else {
+            return Ok(None);
         };
-        map.remove(&first);
+        let Some(mk_hex) = entry.message_keys.remove(&header.number) else {
+            return Ok(None);
+        };
+        let message_key = Self::decode_hex_32(&mk_hex)?;
+        let pt = Self::decrypt_with_message_key(&message_key, ciphertext)?;
+        if entry.message_keys.is_empty() {
+            state.skipped_keys.remove(sender);
+        }
+        Ok(Some(pt))
+    }
+
+    /// Decrypt the message header, trying our current/next/previous DH keys and
+    /// reporting which one matched (so the caller knows whether to ratchet).
+    fn decrypt_header(
+        state: &SessionState,
+        encrypted_header: &str,
+        sender: &str,
+    ) -> Result<(Header, HeaderTarget)> {
+        if let Some(current) = &state.our_current_nostr_key {
+            if let Ok(h) = Self::try_decrypt_header(&current.secret_bytes()?, sender, encrypted_header)
+            {
+                return Ok((h, HeaderTarget::Current));
+            }
+        }
+        if let Ok(h) =
+            Self::try_decrypt_header(&state.our_next_nostr_key.secret_bytes()?, sender, encrypted_header)
+        {
+            return Ok((h, HeaderTarget::Next));
+        }
+        if let Some(previous) = &state.our_previous_nostr_key {
+            if let Ok(h) =
+                Self::try_decrypt_header(&previous.secret_bytes()?, sender, encrypted_header)
+            {
+                return Ok((h, HeaderTarget::Previous));
+            }
+        }
+        Err(Nip104Error::InvalidHeader)
+    }
+
+    /// Decrypt a header with one specific DH secret.
+    fn try_decrypt_header(
+        our_secret: &[u8; 32],
+        sender: &str,
+        encrypted_header: &str,
+    ) -> Result<Header> {
+        let kp = Self::from_secret_bytes(our_secret)?;
+        let json = kp.nip_44_decrypt(encrypted_header, sender)?;
+        Ok(bourne::parse_str(&json)?)
+    }
+
+    /// Bound the skipped-key store to [`MAX_SKIP`], evicting the oldest.
+    fn prune_skipped(map: &mut BTreeMap<u32, String>) {
+        while map.len() > MAX_SKIP {
+            let Some(first) = map.keys().next().copied() else {
+                break;
+            };
+            map.remove(&first);
+        }
     }
 }
 
-// ── NIP-44 v2 glue ────────────────────────────────────────────────────
-
-/// `ConversationKey::derive(sk, pk)` — ECDH x-coordinate fed through NIP-44 v2
-/// conversation-key derivation (HKDF-extract, salt `"nip44-v2"`).
-fn derive_conv_key<K: NostrKeypair>(sk: &[u8; 32], pk: &[u8; 32]) -> Result<[u8; 32]> {
-    let kp = K::from_secret_bytes(sk)?;
-    let shared = kp.ecdh_x(pk)?;
-    let conv = <K as Nip44>::conversation_key_v2(zeroize::Zeroizing::new(shared))?;
-    Ok(*conv)
-}
-
-/// Encrypt with a raw 32-byte message key as the NIP-44 v2 conversation key,
-/// returning the standard base64 payload (`Ag…`). Equivalent to the reference's
-/// `ConversationKey::new(mk)` + `encrypt_to_bytes` + base64.
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn encrypt_with_message_key<K: NostrKeypair>(
-    message_key: &[u8; 32],
-    plaintext: &[u8],
-) -> Result<String> {
-    let nonce = K::generate_nonce_32();
-    Ok(<K as Nip44>::encrypt_v2(message_key, &nonce, plaintext)?)
-}
-
-/// Inverse of [`encrypt_with_message_key`], returning the raw plaintext bytes.
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn decrypt_with_message_key<K: NostrKeypair>(
-    message_key: &[u8; 32],
-    ciphertext_b64: &str,
-) -> Result<Vec<u8>> {
-    let decoded = general_purpose::STANDARD.decode(ciphertext_b64)?;
-    let s = <K as Nip44>::decrypt_v2_bytes(message_key, &decoded)?;
-    Ok(s)
-}
-
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn decode_hex_32(s: &str) -> Result<[u8; 32]> {
-    let mut buf = [0_u8; 32];
-    nostro2_traits::hex::FromHex::decode_hex_to_slice(s, &mut buf)
-        .map_err(|_| Nip104Error::Signer(SignerError::InvalidPublicKey))?;
-    Ok(buf)
-}
+impl<K: NostrKeypair> Nip104Crypto for K {}
 
 #[cfg(test)]
 mod tests {
@@ -767,8 +783,8 @@ mod tests {
     #[test]
     fn kdf_matches_reference_shape() {
         // Two outputs, salt and ikm distinct, deterministic.
-        let a = kdf(&[1_u8; 32], &[2_u8; 32], 2);
-        let b = kdf(&[1_u8; 32], &[2_u8; 32], 2);
+        let a = K::kdf(&[1_u8; 32], &[2_u8; 32], 2);
+        let b = K::kdf(&[1_u8; 32], &[2_u8; 32], 2);
         assert_eq!(a, b);
         assert_eq!(a.len(), 2);
         assert_ne!(a[0], a[1]);
@@ -906,9 +922,9 @@ mod tests {
             rest[q1..q1 + q2].to_string()
         };
 
-        let bob_sk = decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
-        let alice_pk = decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
-        let shared = decode_hex_32(&field("shared_secret")).unwrap();
+        let bob_sk = K::decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
+        let alice_pk = K::decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
+        let shared = K::decode_hex_32(&field("shared_secret")).unwrap();
         let plaintext = field("plaintext");
         let sender = field("pubkey");
         let header = field("header");
@@ -953,9 +969,9 @@ mod tests {
             rest[q1..q1 + q2].to_string()
         };
 
-        let bob_sk = decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
-        let alice_pk = decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
-        let shared = decode_hex_32(&field("shared_secret")).unwrap();
+        let bob_sk = K::decode_hex_32(&field("bob_ephemeral_sk")).unwrap();
+        let alice_pk = K::decode_hex_32(&field("alice_ephemeral_pk")).unwrap();
+        let shared = K::decode_hex_32(&field("shared_secret")).unwrap();
         let plaintext = field("plaintext");
 
         // Extract the embedded `msg1_event` JSON object and parse it as a note.

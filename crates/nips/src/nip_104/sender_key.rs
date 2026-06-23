@@ -37,9 +37,7 @@ use std::collections::BTreeMap;
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
 
-use super::{
-    decode_hex_32, decrypt_with_message_key, encrypt_with_message_key, kdf, Nip104Error,
-};
+use super::{Nip104Crypto, Nip104Error};
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
@@ -141,14 +139,15 @@ impl SenderKeyState {
     pub fn plan_encrypt<K: NostrKeypair>(&self, plaintext: &[u8]) -> Result<SenderKeyEncryptPlan> {
         let mut next_state = self.clone();
         let message_number = next_state.iteration;
-        let (next_chain_key, message_key) = derive_message_key(&decode_hex_32(&next_state.chain_key)?);
+        let (next_chain_key, message_key) =
+            Self::derive_message_key::<K>(&K::decode_hex_32(&next_state.chain_key)?);
         next_state.chain_key = next_chain_key.to_hex();
         next_state.iteration = next_state
             .iteration
             .checked_add(1)
             .ok_or(Nip104Error::SessionNotReady)?;
 
-        let ciphertext = encrypt_with_message_key::<K>(&message_key, plaintext)?;
+        let ciphertext = K::encrypt_with_message_key(&message_key, plaintext)?;
         Ok(SenderKeyEncryptPlan {
             next_state,
             key_id: self.key_id,
@@ -231,7 +230,7 @@ impl SenderKeyState {
                 .skipped_message_keys
                 .remove(&message_number)
                 .ok_or(Nip104Error::InvalidHeader)?;
-            return decrypt_with_message_key::<K>(&decode_hex_32(&key)?, ciphertext_b64);
+            return K::decrypt_with_message_key(&K::decode_hex_32(&key)?, ciphertext_b64);
         }
 
         // Future message: bounded skip.
@@ -242,7 +241,8 @@ impl SenderKeyState {
 
         // Step forward, banking skipped keys.
         while self.iteration < message_number {
-            let (next_chain_key, message_key) = derive_message_key(&decode_hex_32(&self.chain_key)?);
+            let (next_chain_key, message_key) =
+                Self::derive_message_key::<K>(&K::decode_hex_32(&self.chain_key)?);
             self.chain_key = next_chain_key.to_hex();
             self.skipped_message_keys
                 .insert(self.iteration, message_key.to_hex());
@@ -253,31 +253,32 @@ impl SenderKeyState {
         }
 
         // Now at message_number: derive its key and advance once more.
-        let (next_chain_key, message_key) = derive_message_key(&decode_hex_32(&self.chain_key)?);
+        let (next_chain_key, message_key) =
+            Self::derive_message_key::<K>(&K::decode_hex_32(&self.chain_key)?);
         self.chain_key = next_chain_key.to_hex();
         self.iteration = self
             .iteration
             .checked_add(1)
             .ok_or(Nip104Error::SessionNotReady)?;
-        prune_skipped(&mut self.skipped_message_keys);
+        Self::prune_skipped(&mut self.skipped_message_keys);
 
-        decrypt_with_message_key::<K>(&message_key, ciphertext_b64)
+        K::decrypt_with_message_key(&message_key, ciphertext_b64)
     }
-}
 
-/// `kdf(chain_key, "ndr-sender-key-v1", 2)` → `(next_chain_key, message_key)`.
-fn derive_message_key(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-    let outs = kdf(chain_key, SENDER_KEY_KDF_SALT, 2);
-    (outs[0], outs[1])
-}
+    /// `kdf(chain_key, "ndr-sender-key-v1", 2)` → `(next_chain_key, message_key)`.
+    fn derive_message_key<K: NostrKeypair>(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+        let outs = K::kdf(chain_key, SENDER_KEY_KDF_SALT, 2);
+        (outs[0], outs[1])
+    }
 
-/// Bound the stored skipped-key map, dropping the oldest indices first.
-fn prune_skipped(map: &mut BTreeMap<u32, String>) {
-    while map.len() > SENDER_KEY_MAX_STORED_SKIPPED_KEYS {
-        let Some(first) = map.keys().next().copied() else {
-            break;
-        };
-        map.remove(&first);
+    /// Bound the stored skipped-key map, dropping the oldest indices first.
+    fn prune_skipped(map: &mut BTreeMap<u32, String>) {
+        while map.len() > SENDER_KEY_MAX_STORED_SKIPPED_KEYS {
+            let Some(first) = map.keys().next().copied() else {
+                break;
+            };
+            map.remove(&first);
+        }
     }
 }
 
