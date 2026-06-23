@@ -24,6 +24,16 @@
 //! Because every primitive is byte-identical, sessions established here
 //! interoperate with Iris's ratchet.
 
+mod group;
+mod invite;
+mod manager;
+mod sender_key;
+
+pub use group::*;
+pub use invite::*;
+pub use manager::*;
+pub use sender_key::*;
+
 use crate::Nip44;
 use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
@@ -883,7 +893,7 @@ mod tests {
     /// a pure function of the published inputs.)
     #[test]
     fn rust_reference_vector_msg1_decrypts() {
-        let vec_json = include_str!("../test-vectors/nip104-rust-generated.json");
+        let vec_json = include_str!("../../test-vectors/nip104-rust-generated.json");
 
         // Minimal field extraction (avoids a serde dep; bourne can't do
         // arbitrary maps). The vector file is fixed, so this is safe.
@@ -932,7 +942,7 @@ mod tests {
     /// on top of the crypto.
     #[test]
     fn rust_reference_msg1_event_decrypts_via_codec() {
-        let vec_json = include_str!("../test-vectors/nip104-rust-generated.json");
+        let vec_json = include_str!("../../test-vectors/nip104-rust-generated.json");
 
         let field = |key: &str| -> String {
             let needle = format!("\"{key}\":");

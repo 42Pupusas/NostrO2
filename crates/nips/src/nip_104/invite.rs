@@ -39,7 +39,7 @@
 //! *and* the link, as long as the per-session keys stay secret.
 #![allow(clippy::similar_names)]
 
-use crate::nip_104::{
+use super::{
     decode_hex_32, decrypt_with_message_key, encrypt_with_message_key, Nip104Error, Session,
 };
 use crate::Nip44;

@@ -16,7 +16,7 @@
 //! it owns our sending chain per group, tracks received chains keyed by sender,
 //! and is side-effect free — methods return the wire objects to publish or the
 //! plaintext decrypted, leaving transport to the caller (exactly like
-//! [`crate::nip_104_manager::SessionManager`]).
+//! [`crate::nip_104::SessionManager`]).
 
 use std::collections::BTreeMap;
 
@@ -24,8 +24,7 @@ use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
 
-use crate::nip_104::{decode_hex_32, Nip104Error, MESSAGE_EVENT_KIND};
-use crate::nip_104_sender_key::SenderKeyState;
+use super::{decode_hex_32, Nip104Error, SenderKeyState, MESSAGE_EVENT_KIND};
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
@@ -114,7 +113,7 @@ pub struct GroupReceivedMessage {
 /// Pure, in-memory group transport state machine.
 ///
 /// Generic over the in-process keypair `K`, matching [`SenderKeyState`] and
-/// [`crate::nip_104_manager::SessionManager`].
+/// [`crate::nip_104::SessionManager`].
 #[derive(Debug, Clone)]
 pub struct GroupManager<K: NostrKeypair> {
     our_pubkey: String,

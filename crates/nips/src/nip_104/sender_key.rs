@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
 
-use crate::nip_104::{
+use super::{
     decode_hex_32, decrypt_with_message_key, encrypt_with_message_key, kdf, Nip104Error,
 };
 
@@ -120,7 +120,7 @@ impl SenderKeyState {
     }
 
     /// The current chain key as 64-char hex (used to re-derive a
-    /// [`crate::nip_104_group::SenderKeyDistribution`] for late joiners).
+    /// [`crate::nip_104::SenderKeyDistribution`] for late joiners).
     #[must_use]
     pub fn chain_key_hex(&self) -> String {
         self.chain_key.clone()

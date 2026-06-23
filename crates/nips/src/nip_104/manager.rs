@@ -1,6 +1,6 @@
 //! NIP-104 — Session manager (multi-device fan-out).
 //!
-//! [`crate::nip_104`] gives a single 1:1 [`Session`]; [`crate::nip_104_invite`]
+//! [`crate::nip_104`] gives a single 1:1 [`Session`]; [`crate::nip_104::Invite`]
 //! bootstraps one from a QR/URL/event. Real chat clients juggle *many*
 //! sessions at once: a peer may run several devices, and each device is a
 //! separate ratchet. This module is the routing layer that sits on top —
@@ -32,8 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::nip_104::{Nip104Error, Session, MESSAGE_EVENT_KIND};
-use crate::nip_104_invite::Invite;
+use super::{Invite, Nip104Error, Session, MESSAGE_EVENT_KIND};
 use nostro2_traits::NostrKeypair;
 
 type Result<T> = std::result::Result<T, Nip104Error>;

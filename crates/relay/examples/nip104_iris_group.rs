@@ -41,8 +41,10 @@ const RELAYS: &[&str] = &[
 const OUR_NSEC: &str = "nsec17qf72rfytl0rdvtu3sy2m365xmxqeynghnl5tflftwnwxyhnglvsauzfgp";
 
 // The person whose group we want to join (their owner npub).
+// Fresh experiment identity generated 2024 — nsec held by the user's Iris client:
+//   nsec1pgpxvej2ump67htvkv3gyzfwrsnwqca6sjzgm23lesemdxydnansqdpup7
 const TARGET_NPUB: &str =
-    "npub1k2flev40w4lx0c3txdymtw92ht2saxy9cyew4l64mrv4yqxz3mtsnn0tlm";
+    "npub1psxkkd7jypff8fzxykvfagdzha4jeufnrmlr3prp6z2f30zej9hq8vhu26";
 
 const INVITE_KIND: u32 = 30078;
 const MESSAGE_KIND: u32 = 1060;
@@ -288,6 +290,22 @@ async fn main() {
                                 rumor.kind,
                                 preview(&rumor.content),
                             );
+                            // A kind-40 group-create message carries the group
+                            // id + member list — enough to mint our own chain,
+                            // distribute it, and post. Reply once.
+                            if rumor.kind == 40 && !replied {
+                                if let Some(gid) = group_id_from_meta(&rumor.content) {
+                                    replied = true;
+                                    reply_to_group(
+                                        &gid,
+                                        &mut groups,
+                                        &mut manager,
+                                        &peer_keys,
+                                        &pool,
+                                        "hello group, from nostro2 🦀",
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -401,13 +419,37 @@ fn reply_to_group(
     }
 }
 
-/// A kind-14 group chat inner rumor: content + the group `l` tag, authored by
-/// our device identity — matching the reference `buildGroupInnerRumor`.
+/// A kind-14 group chat inner rumor: content + the group `l` tag and an `ms`
+/// tag, authored by our device identity — matching the reference
+/// `buildGroupInnerRumor`. Crucially the rumor's `id` MUST be set (event hash):
+/// Iris subscribes to replies via `#e:[inner.id]`, so an id-less rumor makes its
+/// client throw "Filter[0].#e[0] is undefined".
 fn group_chat_rumor(our_hex: &str, group_id: &str, text: &str) -> String {
-    format!(
-        r#"{{"pubkey":"{our_hex}","created_at":{},"kind":14,"tags":[["l","{group_id}"]],"content":"{text}"}}"#,
-        unix_now(),
-    )
+    let now = unix_now();
+    let mut tags = nostro2::NostrTags::new();
+    tags.add_custom_tag("l", group_id);
+    tags.add_custom_tag("ms", &(now * 1000).to_string());
+    let mut rumor = nostro2::NostrNote {
+        pubkey: our_hex.to_string(),
+        created_at: now,
+        kind: 14,
+        tags,
+        content: text.to_string(),
+        ..Default::default()
+    };
+    rumor.serialize_id().ok();
+    bourne::to_string(&rumor).unwrap_or_default()
+}
+
+/// Pull the group `id` out of a kind-40 metadata JSON payload, e.g.
+/// `{"id":"ebb3f055-…","name":"…","members":[…]}`.
+fn group_id_from_meta(content: &str) -> Option<String> {
+    let key = "\"id\":\"";
+    let start = content.find(key)? + key.len();
+    let rest = &content[start..];
+    let end = rest.find('"')?;
+    let id = &rest[..end];
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// 32 random bits for a fresh sender-key id (reference `randomU32`).
