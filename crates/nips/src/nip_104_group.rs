@@ -48,15 +48,21 @@ pub const GROUP_CHAT_MESSAGE_KIND: u32 = 14;
 
 bourne::json! {
     /// Seed for one sender-key chain, distributed to members over their 1:1
-    /// sessions. Field names match the reference `SenderKeyDistribution`
-    /// (snake_case); `chain_key` is 64-char hex.
+    /// sessions. JSON field names are **camelCase** to match the reference
+    /// `SenderKeyDistribution` byte-for-byte on the wire; `chain_key` is
+    /// 64-char hex.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SenderKeyDistribution {
+        #[bourne(rename = "groupId")]
         pub group_id: String,
+        #[bourne(rename = "keyId")]
         pub key_id: u32,
+        #[bourne(rename = "senderEventPubkey")]
         pub sender_event_pubkey: String,
+        #[bourne(rename = "chainKey")]
         pub chain_key: String,
         pub iteration: u32,
+        #[bourne(rename = "createdAt")]
         pub created_at: i64,
     }
 }
