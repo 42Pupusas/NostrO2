@@ -130,6 +130,36 @@ impl SenderKeyState {
         self.skipped_message_keys.len()
     }
 
+    /// The skipped message keys currently banked for out-of-order delivery,
+    /// as `message_index → message_key_hex`. Exposed for persistence: a
+    /// chain with banked skipped keys cannot be faithfully restored from
+    /// [`Self::new`] alone (which starts empty), so snapshots must carry these
+    /// and rebuild with [`Self::from_parts`].
+    #[must_use]
+    pub fn skipped_keys(&self) -> &BTreeMap<u32, String> {
+        &self.skipped_message_keys
+    }
+
+    /// Reconstruct a chain from a full persisted snapshot — the inverse of the
+    /// getters ([`Self::key_id`], [`Self::chain_key_hex`], [`Self::iteration`],
+    /// [`Self::skipped_keys`]). Unlike [`Self::new`], this preserves banked
+    /// skipped message keys, so an out-of-order-delivery chain round-trips
+    /// losslessly through storage.
+    #[must_use]
+    pub fn from_parts(
+        key_id: u32,
+        chain_key_hex: String,
+        iteration: u32,
+        skipped_message_keys: BTreeMap<u32, String>,
+    ) -> Self {
+        Self {
+            key_id,
+            chain_key: chain_key_hex,
+            iteration,
+            skipped_message_keys,
+        }
+    }
+
     /// Plan encryption of `plaintext` as the next message on the chain. Pure:
     /// the returned plan carries the advanced `next_state`; `self` is
     /// unchanged until [`apply_encrypt`](Self::apply_encrypt).

@@ -153,6 +153,23 @@ impl<K: NostrKeypair> SessionManager<K> {
             .insert(device_id.to_owned(), session);
     }
 
+    /// Enumerate every held session as `((peer, device_id), &SessionState)`,
+    /// in sorted `(peer, device)` order — the inverse of [`install_session`].
+    ///
+    /// Exposed for persistence: a caller can snapshot each session's
+    /// [`SessionState`] (all-public, [`Session::from_state`]-restorable) and
+    /// later replay them through [`install_session`] to revive the manager.
+    pub fn sessions(
+        &self,
+    ) -> impl Iterator<Item = ((&str, &str), &super::SessionState)> {
+        self.peers.iter().flat_map(|(peer, record)| {
+            record
+                .devices
+                .iter()
+                .map(move |(device, session)| ((peer.as_str(), device.as_str()), &session.state))
+        })
+    }
+
     /// Remove every `sender_index` row that currently points at `slot`.
     fn forget_in_index(&mut self, slot: &SessionKey) {
         self.sender_index.retain(|_, v| v != slot);
@@ -377,6 +394,40 @@ mod tests {
         assert_eq!(to_dev2.len(), 1);
         assert_eq!(to_dev1[0].plaintext, b"broadcast");
         assert_eq!(to_dev2[0].plaintext, b"broadcast");
+    }
+
+    /// Snapshot every session out of one manager, rebuild a fresh manager by
+    /// replaying them through `install_session`, and confirm the restored
+    /// manager decrypts and continues the conversation.
+    #[test]
+    fn sessions_snapshot_round_trip() {
+        let mut alice = SessionManager::new(ident(0x51));
+        let mut bob = SessionManager::new(ident(0x52));
+
+        let invite = Invite::create_new::<K>(alice.our_pubkey(), None).unwrap();
+        let response = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &response).unwrap();
+
+        // Bob (initiator) opens his chain; Alice receives.
+        let up = bob.send(alice.our_pubkey(), b"hello", NOW).unwrap();
+        assert_eq!(alice.process_event(&up[0]).unwrap().plaintext, b"hello");
+
+        // Snapshot Alice's sessions and rebuild a fresh manager from them.
+        let snaps: Vec<((String, String), super::super::SessionState)> = alice
+            .sessions()
+            .map(|((p, d), st)| ((p.to_owned(), d.to_owned()), st.clone()))
+            .collect();
+        assert_eq!(snaps.len(), 1);
+        let mut alice2 = SessionManager::new(ident(0x51));
+        for ((peer, device), state) in snaps {
+            alice2.install_session(&peer, &device, Session::from_state(state));
+        }
+
+        // The revived manager continues the conversation in both directions.
+        let up2 = bob.send(alice.our_pubkey(), b"again", NOW).unwrap();
+        assert_eq!(alice2.process_event(&up2[0]).unwrap().plaintext, b"again");
+        let reply = alice2.send(bob.our_pubkey(), b"hi back", NOW).unwrap();
+        assert_eq!(bob.process_event(&reply[0]).unwrap().plaintext, b"hi back");
     }
 
     #[test]

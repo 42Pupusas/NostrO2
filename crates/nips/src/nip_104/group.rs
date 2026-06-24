@@ -99,6 +99,35 @@ struct GroupRecord {
     receiving: BTreeMap<String, SenderKeyState>,
 }
 
+/// A persistence snapshot of our sending side for one group: the sender-event
+/// keypair (pubkey + raw secret) plus the chain [`SenderKeyState`]. Serialize
+/// the state via its getters ([`SenderKeyState::key_id`],
+/// [`SenderKeyState::chain_key_hex`], [`SenderKeyState::iteration`],
+/// [`SenderKeyState::skipped_keys`]) and revive it with
+/// [`SenderKeyState::from_parts`].
+#[derive(Debug, Clone)]
+pub struct SendingChainSnapshot {
+    /// The per-group sender-event pubkey our outer events are signed under.
+    pub sender_event_pubkey: String,
+    /// The raw 32-byte sender-event secret key.
+    pub sender_event_secret: [u8; 32],
+    /// The current sending chain state.
+    pub state: SenderKeyState,
+}
+
+/// A full persistence snapshot of one group's transport state: our sending
+/// chain (if minted) and every receiving chain keyed by its sender-event
+/// pubkey. The inverse of [`GroupManager::restore_group`].
+#[derive(Debug, Clone)]
+pub struct GroupSnapshot {
+    /// The group id.
+    pub group_id: String,
+    /// Our sending chain, if we have minted one.
+    pub sending: Option<SendingChainSnapshot>,
+    /// Receiving chains: `(sender_event_pubkey, state)`.
+    pub receiving: Vec<(String, SenderKeyState)>,
+}
+
 /// A group message decrypted by [`GroupManager::decrypt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupReceivedMessage {
@@ -428,6 +457,54 @@ impl<K: NostrKeypair> GroupManager<K> {
         Ok(Some(self.decrypt(&msg)?))
     }
 
+    /// Snapshot every group's transport state for persistence — the inverse of
+    /// [`Self::restore_group`]. Returns one [`GroupSnapshot`] per group in
+    /// sorted `group_id` order, each carrying our sending chain (if any) and
+    /// all receiving chains. Combined with `our_pubkey()`, this is everything
+    /// needed to revive the manager across a restart.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<GroupSnapshot> {
+        self.groups
+            .iter()
+            .map(|(group_id, record)| GroupSnapshot {
+                group_id: group_id.clone(),
+                sending: record.sending.as_ref().map(|s| SendingChainSnapshot {
+                    sender_event_pubkey: s.sender_event_pubkey.clone(),
+                    sender_event_secret: s.sender_event_secret,
+                    state: s.state.clone(),
+                }),
+                receiving: record
+                    .receiving
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Restore one group's transport state from a [`GroupSnapshot`], replacing
+    /// any existing record for that group and rebuilding the sender-routing
+    /// index for both the sending and receiving chains. The inverse of
+    /// [`Self::snapshot`].
+    pub fn restore_group(&mut self, snap: GroupSnapshot) {
+        let mut record = GroupRecord::default();
+        if let Some(s) = snap.sending {
+            self.sender_to_group
+                .insert(s.sender_event_pubkey.clone(), snap.group_id.clone());
+            record.sending = Some(SendingChain {
+                sender_event_pubkey: s.sender_event_pubkey,
+                sender_event_secret: s.sender_event_secret,
+                state: s.state,
+            });
+        }
+        for (sender_event_pubkey, state) in snap.receiving {
+            self.sender_to_group
+                .insert(sender_event_pubkey.clone(), snap.group_id.clone());
+            record.receiving.insert(sender_event_pubkey, state);
+        }
+        self.groups.insert(snap.group_id, record);
+    }
+
     /// Build the reference's compact outer payload:
     /// `base64(key_id_be32 || message_number_be32 || raw_nip44_bytes)`.
     ///
@@ -490,6 +567,71 @@ mod tests {
         let msg = alice.encrypt("g1", b"gm everyone", 1001).unwrap();
         assert_eq!(bob.decrypt(&msg).unwrap().plaintext, b"gm everyone");
         assert_eq!(carol.decrypt(&msg).unwrap().plaintext, b"gm everyone");
+    }
+
+    /// Snapshot a `GroupManager` mid-conversation, rebuild a fresh one purely
+    /// from the snapshot, and confirm both sending and receiving chains resume
+    /// exactly where they left off (no key reuse, no decrypt gaps).
+    #[test]
+    fn snapshot_round_trip_resumes_both_directions() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+
+        // Alice mints, Bob installs; exchange one message each way.
+        let dist = alice.rotate_sending_chain("g1", 1, 1000).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+        let m1 = alice.encrypt("g1", b"first", 1001).unwrap();
+        assert_eq!(bob.decrypt(&m1).unwrap().plaintext, b"first");
+
+        // Snapshot Alice's sending side and Bob's receiving side mid-stream.
+        let alice_snaps = alice.snapshot();
+        let bob_snaps = bob.snapshot();
+
+        // Revive both from scratch.
+        let mut alice2 = GroupManager::<K>::new(alice.our_pubkey().to_owned());
+        for s in alice_snaps {
+            alice2.restore_group(s);
+        }
+        let mut bob2 = GroupManager::<K>::new(bob.our_pubkey().to_owned());
+        for s in bob_snaps {
+            bob2.restore_group(s);
+        }
+
+        // The restored sender continues the chain (iteration advanced past m1);
+        // the restored receiver decrypts it with no gap.
+        let m2 = alice2.encrypt("g1", b"after restore", 1002).unwrap();
+        assert_eq!(bob2.decrypt(&m2).unwrap().plaintext, b"after restore");
+
+        // And routing-by-author survives: bob2 knows the sender chain.
+        assert!(bob2.known_senders("g1").contains(&dist.sender_event_pubkey));
+    }
+
+    /// A receiving chain with banked skipped keys (out-of-order delivery) must
+    /// survive a snapshot — the gap remains decryptable after restore.
+    #[test]
+    fn snapshot_preserves_skipped_keys() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let dist = alice.rotate_sending_chain("g1", 7, 2000).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+
+        // Alice produces three messages; Bob receives #2 first (banking the
+        // key for #0 and #1 as skipped).
+        let a0 = alice.encrypt("g1", b"msg0", 2001).unwrap();
+        let a1 = alice.encrypt("g1", b"msg1", 2002).unwrap();
+        let a2 = alice.encrypt("g1", b"msg2", 2003).unwrap();
+        assert_eq!(bob.decrypt(&a2).unwrap().plaintext, b"msg2");
+
+        // Snapshot Bob now, while #0 and #1 are banked skipped keys.
+        let bob_snaps = bob.snapshot();
+        let mut bob2 = GroupManager::<K>::new(bob.our_pubkey().to_owned());
+        for s in bob_snaps {
+            bob2.restore_group(s);
+        }
+
+        // The restored receiver still decrypts the earlier, out-of-order msgs.
+        assert_eq!(bob2.decrypt(&a0).unwrap().plaintext, b"msg0");
+        assert_eq!(bob2.decrypt(&a1).unwrap().plaintext, b"msg1");
     }
 
     #[test]
