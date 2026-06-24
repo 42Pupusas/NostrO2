@@ -62,15 +62,32 @@ impl<K: NostrKeypair> Default for PeerRecord<K> {
     }
 }
 
+/// Identifies one session: its peer (owner) key and device id.
+type SessionKey = (String, String);
+
 /// Routes double-ratchet sessions across many peers and devices.
 ///
 /// Generic over the in-process keypair `K` exactly like [`Session`], so it
 /// works with the production `K256Keypair` and any test signer alike.
+///
+/// ## Inbound routing index
+///
+/// A naive router trial-decrypts an inbound event against every held session
+/// — O(sessions) Schnorr verifies per event, which a stranger can weaponise.
+/// Instead we keep `sender_index`: a map from each peer DH key a session will
+/// accept (see [`Session::accepted_senders`]) to that session's
+/// `(peer, device)`. Because DH ephemeral keys are globally unique, the map is
+/// an *exact* index — a message's `sender` routes to at most one session in
+/// O(log n), and a foreign sender misses instantly. The index is refreshed
+/// from a session's accepted set whenever it is installed or advances on
+/// receive.
 #[derive(Debug, Clone)]
 pub struct SessionManager<K: NostrKeypair> {
     identity: K,
     our_pubkey: String,
     peers: BTreeMap<String, PeerRecord<K>>,
+    /// peer DH sender key (x-only hex) → the session that accepts it.
+    sender_index: BTreeMap<String, SessionKey>,
 }
 
 impl<K: NostrKeypair> SessionManager<K> {
@@ -83,6 +100,7 @@ impl<K: NostrKeypair> SessionManager<K> {
             identity,
             our_pubkey,
             peers: BTreeMap::new(),
+            sender_index: BTreeMap::new(),
         }
     }
 
@@ -121,11 +139,35 @@ impl<K: NostrKeypair> SessionManager<K> {
     /// Install (or replace) a session for `(peer, device_id)` directly — for
     /// restoring persisted state or wiring an externally-bootstrapped session.
     pub fn install_session(&mut self, peer: &str, device_id: &str, session: Session<K>) {
+        let slot = (peer.to_owned(), device_id.to_owned());
+        // Drop any stale index rows pointing at this slot before we overwrite
+        // it, then index the new session's accepted senders.
+        self.forget_in_index(&slot);
+        for sender in session.accepted_senders() {
+            self.sender_index.insert(sender, slot.clone());
+        }
         self.peers
             .entry(peer.to_owned())
             .or_default()
             .devices
             .insert(device_id.to_owned(), session);
+    }
+
+    /// Remove every `sender_index` row that currently points at `slot`.
+    fn forget_in_index(&mut self, slot: &SessionKey) {
+        self.sender_index.retain(|_, v| v != slot);
+    }
+
+    /// Re-index `slot` from its session's current accepted-sender set, dropping
+    /// any rows that previously pointed at it. Called after a receive advances
+    /// the ratchet (new current/next keys, banked skipped keys).
+    fn reindex(&mut self, slot: &SessionKey) {
+        self.forget_in_index(slot);
+        if let Some(session) = self.peers.get(&slot.0).and_then(|p| p.devices.get(&slot.1)) {
+            for sender in session.accepted_senders() {
+                self.sender_index.insert(sender, slot.clone());
+            }
+        }
     }
 
     /// **Invitee side.** Accept `invite`, install the resulting initiator
@@ -176,33 +218,33 @@ impl<K: NostrKeypair> SessionManager<K> {
         Ok(peer)
     }
 
-    /// Route an inbound kind-[`MESSAGE_EVENT_KIND`] event to whichever session
-    /// can decrypt it, commit that session's ratchet advance, and return the
-    /// decrypted message.
+    /// Route an inbound kind-[`MESSAGE_EVENT_KIND`] event to the session that
+    /// accepts its sender, commit that session's ratchet advance, and return
+    /// the decrypted message.
     ///
-    /// Returns `None` if the event is not a message event or no held session
-    /// accepts it (wrong peer, replay, or tampered — the underlying codec
-    /// verifies the signature).
+    /// Routing is O(log n) via the [`sender_index`](SessionManager): the
+    /// event's `pubkey` (the sender's current DH key) is looked up directly,
+    /// so a foreign or forged event misses without touching any ratchet.
+    /// Returns `None` if the event is not a message event, names a sender we
+    /// don't hold, or fails to decrypt (replay/tamper — the codec verifies the
+    /// signature).
     pub fn process_event(&mut self, event: &nostro2::NostrNote) -> Option<ReceivedMessage> {
         if event.kind != MESSAGE_EVENT_KIND {
             return None;
         }
-        // Trial-decrypt against every session, mutating in place on a hit. A
-        // session's own codec verifies the signature, so a wrong/forged event
-        // simply fails to decrypt and we move on.
-        for (peer, record) in &mut self.peers {
-            for (device_id, session) in &mut record.devices {
-                if let Ok((next, plaintext)) = session.plan_receive_event(event) {
-                    session.apply(next);
-                    return Some(ReceivedMessage {
-                        peer: peer.clone(),
-                        device_id: device_id.clone(),
-                        plaintext,
-                    });
-                }
-            }
-        }
-        None
+        // Exact O(log n) route: the sender DH key indexes at most one session.
+        let slot = self.sender_index.get(&event.pubkey)?.clone();
+        let session = self.peers.get_mut(&slot.0)?.devices.get_mut(&slot.1)?;
+        let (next, plaintext) = session.plan_receive_event(event).ok()?;
+        session.apply(next);
+        // The receive may have turned the ratchet or banked skipped keys, so the
+        // accepted-sender set changed: refresh this slot's index rows.
+        self.reindex(&slot);
+        Some(ReceivedMessage {
+            peer: slot.0,
+            device_id: slot.1,
+            plaintext,
+        })
     }
 
     /// Fan out: encrypt `payload` to **every** device session held for `peer`,
@@ -497,6 +539,92 @@ mod tests {
         assert_eq!(bob.process_event(&e1).unwrap().plaintext, b"m1");
         assert_eq!(bob.process_event(&e3).unwrap().plaintext, b"m3");
         assert_eq!(bob.process_event(&e2).unwrap().plaintext, b"m2");
+    }
+
+    /// The routing index must stay correct as the ratchet turns: across many
+    /// changes of speaker (each rotating the sender's DH key), every inbound
+    /// event still routes to the right session. Equivalent behaviour to the
+    /// old trial-decrypt loop, now O(log n).
+    #[test]
+    fn routing_index_tracks_ratchet_turns() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+        let bpk = bob.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &resp).unwrap();
+        let first = bob.send(&apk, b"open", NOW).unwrap();
+        alice.process_event(&first[0]).unwrap();
+
+        // Alternate speakers many times — each turn rotates a DH key, so the
+        // index must be refreshed on every receive.
+        for i in 0..40 {
+            let a = format!("a{i}");
+            let ea = alice.send(&bpk, a.as_bytes(), NOW).unwrap();
+            assert_eq!(bob.process_event(&ea[0]).unwrap().plaintext, a.as_bytes());
+            let b = format!("b{i}");
+            let eb = bob.send(&apk, b.as_bytes(), NOW).unwrap();
+            assert_eq!(alice.process_event(&eb[0]).unwrap().plaintext, b.as_bytes());
+        }
+    }
+
+    /// After a ratchet turn, a *late* message from the previous sending chain
+    /// (old DH key) must still route and decrypt — the index keeps the old
+    /// sender reachable via the banked skipped key.
+    #[test]
+    fn routing_index_keeps_old_chain_reachable() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+        let bpk = bob.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &resp).unwrap();
+        let first = bob.send(&apk, b"open", NOW).unwrap();
+        alice.process_event(&first[0]).unwrap();
+
+        // Alice sends two on her current chain; capture both events.
+        let e1 = alice.send(&bpk, b"old-1", NOW).unwrap().pop().unwrap();
+        let e2 = alice.send(&bpk, b"old-2", NOW).unwrap().pop().unwrap();
+
+        // Bob reads only the second → ratchet turns, e1's sender becomes a
+        // skipped key. Bob replies, turning his own ratchet too.
+        assert_eq!(bob.process_event(&e2).unwrap().plaintext, b"old-2");
+        let reply = bob.send(&apk, b"hi back", NOW).unwrap();
+        alice.process_event(&reply[0]).unwrap();
+
+        // The late e1 (old DH key) still routes and decrypts from the index.
+        assert_eq!(bob.process_event(&e1).unwrap().plaintext, b"old-1");
+    }
+
+    /// Replacing a session via `install_session` must purge the old session's
+    /// stale index rows, so an event for the *replaced* session no longer
+    /// routes to the wrong (or a dead) slot.
+    #[test]
+    fn reinstalling_session_clears_stale_index_rows() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        let peer = alice.receive_invite_response(&invite, &resp).unwrap();
+        let ev = bob.send(&apk, b"hello", NOW).unwrap();
+
+        // Overwrite Alice's session for that peer/device with a brand-new,
+        // unrelated session (different ephemeral keys).
+        let mut carol = SessionManager::new(ident(0x03));
+        let inv2 = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp2 = carol.accept_invite(&inv2, None, NOW).unwrap();
+        let (replacement, _rec) = inv2.receive::<K>(&resp2, &ident(0x01)).unwrap();
+        let device = alice.devices(&peer).pop().unwrap();
+        alice.install_session(&peer, &device, replacement);
+
+        // Bob's original event no longer routes anywhere (its sender was purged).
+        assert!(alice.process_event(&ev[0]).is_none());
     }
 
     #[test]

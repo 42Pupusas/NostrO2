@@ -334,6 +334,37 @@ impl<K: NostrKeypair> Session<K> {
             || self.state.skipped_keys.contains_key(sender)
     }
 
+    /// The peer DH public keys (x-only hex) this session will currently accept
+    /// as a message `sender` — exactly the set [`matches_sender`](Self::matches_sender)
+    /// tests: the peer's current and next ratchet keys plus every banked
+    /// skipped-chain key.
+    ///
+    /// This set changes **only when a message is received** (the DH ratchet
+    /// turns or a skipped key is banked); sending never alters it. A router can
+    /// therefore index sessions by these keys and refresh the index after each
+    /// [`plan_receive`](Self::plan_receive)/[`apply`](Self::apply), giving O(1)
+    /// inbound routing instead of trial-decrypting every session.
+    #[must_use]
+    pub fn accepted_senders(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(2 + self.state.skipped_keys.len());
+        if let Some(cur) = self.state.their_current_nostr_public_key.as_deref() {
+            out.push(cur.to_owned());
+        }
+        if let Some(next) = self.state.their_next_nostr_public_key.as_deref() {
+            if Some(next) != self.state.their_current_nostr_public_key.as_deref() {
+                out.push(next.to_owned());
+            }
+        }
+        for k in self.state.skipped_keys.keys() {
+            if Some(k.as_str()) != self.state.their_current_nostr_public_key.as_deref()
+                && Some(k.as_str()) != self.state.their_next_nostr_public_key.as_deref()
+            {
+                out.push(k.clone());
+            }
+        }
+        out
+    }
+
     /// Encrypt `payload`, returning the envelope and the post-send state.
     ///
     /// The session is **not** mutated; call [`Session::apply`] with the returned
