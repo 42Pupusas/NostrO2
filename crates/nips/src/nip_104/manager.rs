@@ -362,6 +362,143 @@ mod tests {
         assert!(alice.process_event(&response).is_none());
     }
 
+    // ── Adversarial / scale ───────────────────────────────────────
+
+    /// One owner running many devices: a single `send` fans out one event per
+    /// device, and each device's manager decrypts exactly its own copy and
+    /// none of the others'.
+    #[test]
+    fn fan_out_to_many_devices() {
+        const DEVICES: u8 = 24;
+        let mut alice = SessionManager::new(ident(0x01));
+        let owner = ident(0x02).public_key();
+
+        // Spin up DEVICES devices, all under one owner, all accepting one invite.
+        let invite = Invite::create_new::<K>(alice.our_pubkey(), None).unwrap();
+        let mut devices: Vec<SessionManager<K>> = Vec::new();
+        for d in 0..DEVICES {
+            let mut dev = SessionManager::new(ident(0x10 + d));
+            let resp = dev.accept_invite(&invite, Some(&owner), NOW).unwrap();
+            alice.receive_invite_response(&invite, &resp).unwrap();
+            // Initiator device must speak first to open its send chain.
+            let up = dev.send(alice.our_pubkey(), b"up", NOW).unwrap();
+            assert_eq!(alice.process_event(&up[0]).unwrap().plaintext, b"up");
+            devices.push(dev);
+        }
+        assert_eq!(alice.devices(&owner).len(), DEVICES as usize);
+
+        // One send → DEVICES distinct events.
+        let fanned = alice.send(&owner, b"broadcast", NOW).unwrap();
+        assert_eq!(fanned.len(), DEVICES as usize);
+
+        // Each device decrypts exactly one event across the whole batch.
+        for dev in &mut devices {
+            let hits: Vec<_> = fanned.iter().filter_map(|e| dev.process_event(e)).collect();
+            assert_eq!(hits.len(), 1, "each device takes exactly one copy");
+            assert_eq!(hits[0].plaintext, b"broadcast");
+        }
+    }
+
+    /// A long, turn-taking conversation through the managers: every change of
+    /// speaker turns the DH ratchet, and hundreds of messages stay in sync.
+    #[test]
+    fn sustained_bidirectional_conversation() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+        let bpk = bob.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &resp).unwrap();
+
+        // Bob (initiator) opens.
+        let first = bob.send(&apk, b"hi", NOW).unwrap();
+        assert_eq!(alice.process_event(&first[0]).unwrap().plaintext, b"hi");
+
+        // 100 alternating turns.
+        for i in 0..100 {
+            let a_body = format!("a{i}");
+            let ev = alice.send(&bpk, a_body.as_bytes(), NOW).unwrap();
+            assert_eq!(bob.process_event(&ev[0]).unwrap().plaintext, a_body.as_bytes());
+
+            let b_body = format!("b{i}");
+            let ev = bob.send(&apk, b_body.as_bytes(), NOW).unwrap();
+            assert_eq!(alice.process_event(&ev[0]).unwrap().plaintext, b_body.as_bytes());
+        }
+    }
+
+    /// Replaying a captured message event is ignored: the routed session has
+    /// already advanced past it (no stored skipped key for an in-order index).
+    #[test]
+    fn replayed_message_event_ignored() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &resp).unwrap();
+
+        let ev = bob.send(&apk, b"only once", NOW).unwrap();
+        assert_eq!(alice.process_event(&ev[0]).unwrap().plaintext, b"only once");
+        // Replay of the same wire event finds no session that still accepts it.
+        assert!(alice.process_event(&ev[0]).is_none());
+    }
+
+    /// A message addressed to one peer must not be decryptable by an unrelated
+    /// third party who holds a *different* session — trial-decrypt across
+    /// sessions must not cross conversations.
+    #[test]
+    fn message_does_not_decrypt_under_foreign_session() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let mut mallory = SessionManager::new(ident(0x03));
+        let apk = alice.our_pubkey().to_owned();
+        let mpk_owner = mallory.our_pubkey().to_owned();
+        let _ = mpk_owner;
+
+        // Alice ↔ Bob session.
+        let inv_b = Invite::create_new::<K>(&apk, None).unwrap();
+        let rb = bob.accept_invite(&inv_b, None, NOW).unwrap();
+        alice.receive_invite_response(&inv_b, &rb).unwrap();
+
+        // Alice ↔ Mallory session (so Mallory's manager holds *a* session).
+        let inv_m = Invite::create_new::<K>(&apk, None).unwrap();
+        let rm = mallory.accept_invite(&inv_m, None, NOW).unwrap();
+        alice.receive_invite_response(&inv_m, &rm).unwrap();
+
+        // Bob sends to Alice; Mallory (a real peer of Alice) must not decrypt it.
+        let ev = bob.send(&apk, b"for alice only", NOW).unwrap();
+        assert!(mallory.process_event(&ev[0]).is_none());
+        // Alice still decrypts it correctly.
+        assert_eq!(alice.process_event(&ev[0]).unwrap().plaintext, b"for alice only");
+    }
+
+    /// Out-of-order arrival across the manager: a later message decrypts first,
+    /// then the earlier one backfills from a skipped key.
+    #[test]
+    fn out_of_order_events_route_and_backfill() {
+        let mut alice = SessionManager::new(ident(0x01));
+        let mut bob = SessionManager::new(ident(0x02));
+        let apk = alice.our_pubkey().to_owned();
+        let bpk = bob.our_pubkey().to_owned();
+
+        let invite = Invite::create_new::<K>(&apk, None).unwrap();
+        let resp = bob.accept_invite(&invite, None, NOW).unwrap();
+        alice.receive_invite_response(&invite, &resp).unwrap();
+        let first = bob.send(&apk, b"open", NOW).unwrap();
+        alice.process_event(&first[0]).unwrap();
+
+        // Alice emits three on one chain; Bob receives 1, 3, then 2.
+        let e1 = alice.send(&bpk, b"m1", NOW).unwrap().pop().unwrap();
+        let e2 = alice.send(&bpk, b"m2", NOW).unwrap().pop().unwrap();
+        let e3 = alice.send(&bpk, b"m3", NOW).unwrap().pop().unwrap();
+        assert_eq!(bob.process_event(&e1).unwrap().plaintext, b"m1");
+        assert_eq!(bob.process_event(&e3).unwrap().plaintext, b"m3");
+        assert_eq!(bob.process_event(&e2).unwrap().plaintext, b"m2");
+    }
+
     #[test]
     fn install_and_introspection() {
         let mut alice = SessionManager::new(ident(0x50));

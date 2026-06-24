@@ -665,6 +665,194 @@ mod tests {
         assert!(bob.decrypt_event(&ev).unwrap().is_none());
     }
 
+    // ── Adversarial / scale ───────────────────────────────────────
+
+    /// One mint, fan out to a large membership: a single published event must
+    /// decrypt identically for every one of N members.
+    #[test]
+    fn large_group_fan_out() {
+        const MEMBERS: usize = 256;
+        let mut alice = mgr("alice");
+        let dist = alice.rotate_sending_chain("big", 1, 1000).unwrap();
+
+        let mut members: Vec<GroupManager<K>> = (0..MEMBERS)
+            .map(|i| {
+                let mut m = mgr(&format!("member-{i}"));
+                m.apply_distribution(&dist).unwrap();
+                m
+            })
+            .collect();
+
+        // Publish ONCE.
+        let ev = alice.encrypt_to_event("big", b"hello everyone", 1001).unwrap();
+        for (i, m) in members.iter_mut().enumerate() {
+            let got = m
+                .decrypt_event(&ev)
+                .unwrap()
+                .unwrap_or_else(|| panic!("member {i} failed to decrypt"));
+            assert_eq!(got.plaintext, b"hello everyone");
+        }
+    }
+
+    /// A busy group: many sequential messages, each decrypting for two members
+    /// who advance in lockstep with no skipped-key residue.
+    #[test]
+    fn high_message_volume_group() {
+        const N: i64 = 2_000;
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let mut carol = mgr("carol");
+        let dist = alice.rotate_sending_chain("busy", 1, 0).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+        carol.apply_distribution(&dist).unwrap();
+
+        for i in 0..N {
+            let body = format!("event #{i}");
+            let ev = alice.encrypt_to_event("busy", body.as_bytes(), i).unwrap();
+            assert_eq!(bob.decrypt_event(&ev).unwrap().unwrap().plaintext, body.as_bytes());
+            assert_eq!(carol.decrypt_event(&ev).unwrap().unwrap().plaintext, body.as_bytes());
+        }
+    }
+
+    /// A member who joins after thousands of messages, via `current_distribution`,
+    /// decrypts from that point forward — and cannot read the backlog (he never
+    /// had the earlier chain keys, and the message indices are in his past).
+    #[test]
+    fn late_joiner_after_heavy_traffic() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let dist0 = alice.rotate_sending_chain("g", 1, 0).unwrap();
+        bob.apply_distribution(&dist0).unwrap();
+
+        let mut backlog = Vec::new();
+        for i in 0..1_000 {
+            backlog.push(alice.encrypt_to_event("g", format!("old-{i}").as_bytes(), i).unwrap());
+        }
+
+        // Eve joins now at the current iteration.
+        let mut eve = mgr("eve");
+        let dist_now = alice.current_distribution("g", 2000).unwrap();
+        assert_eq!(dist_now.iteration, 1000);
+        eve.apply_distribution(&dist_now).unwrap();
+
+        // Forward secrecy for the future: a new message decrypts for Eve.
+        let fresh = alice.encrypt_to_event("g", b"after eve", 3000).unwrap();
+        assert_eq!(eve.decrypt_event(&fresh).unwrap().unwrap().plaintext, b"after eve");
+
+        // The backlog is in Eve's past with no stored keys → unrecoverable.
+        let old = backlog.last().unwrap();
+        assert!(eve.decrypt_event(old).is_err());
+    }
+
+    /// A tampered outer event (content mutated after signing) breaks the
+    /// Schnorr signature and is rejected — and the receiver chain is left
+    /// untouched so the genuine event still decrypts.
+    #[test]
+    fn tampered_outer_event_rejected_without_advancing() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let dist = alice.rotate_sending_chain("g", 1, 0).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+
+        let ev = alice.encrypt_to_event("g", b"genuine", 1).unwrap();
+        let mut forged = ev.clone();
+        forged.content.push('A'); // invalidates id + signature
+
+        assert!(matches!(bob.decrypt_event(&forged), Err(Nip104Error::InvalidHeader)));
+        // Untouched chain: the authentic event still decrypts.
+        assert_eq!(bob.decrypt_event(&ev).unwrap().unwrap().plaintext, b"genuine");
+    }
+
+    /// An event whose signature is valid but whose content is structurally
+    /// malformed (too short to hold the `key_id`/`message_number` prefix) is a
+    /// decode error, not a panic.
+    #[test]
+    fn malformed_outer_content_is_an_error() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let dist = alice.rotate_sending_chain("g", 1, 0).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+
+        // Re-sign a too-short payload under the real sender-event key so the
+        // signature passes and we reach the decoder.
+        let sender_pk = dist.sender_event_pubkey.clone();
+        // Build via the genuine path then swap content + re-sign is not exposed;
+        // instead exercise the pure decoder directly for the structural cases.
+        assert!(matches!(
+            GroupManager::<K>::decode_outer_content(""),
+            Err(Nip104Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            GroupManager::<K>::decode_outer_content("!!!not base64!!!"),
+            Err(Nip104Error::InvalidHeader)
+        ));
+        // 4 bytes base64 — present but shorter than the 8-byte header.
+        let short = general_purpose::STANDARD.encode([0_u8; 4]);
+        assert!(matches!(
+            GroupManager::<K>::decode_outer_content(&short),
+            Err(Nip104Error::InvalidHeader)
+        ));
+        let _ = sender_pk;
+    }
+
+    /// Replaying a group message a second time is rejected: the chain has moved
+    /// past that index and kept no skipped key for it.
+    #[test]
+    fn replayed_group_message_rejected() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let dist = alice.rotate_sending_chain("g", 1, 0).unwrap();
+        bob.apply_distribution(&dist).unwrap();
+
+        let ev = alice.encrypt_to_event("g", b"once", 1).unwrap();
+        assert_eq!(bob.decrypt_event(&ev).unwrap().unwrap().plaintext, b"once");
+        // Second delivery of the identical event: past index, no stored key.
+        assert!(bob.decrypt_event(&ev).is_err());
+    }
+
+    /// Two groups, one device: a message minted in group A must not be
+    /// decryptable as group B even though the same manager holds both chains —
+    /// routing is strictly by sender-event pubkey.
+    #[test]
+    fn cross_group_messages_do_not_leak() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let da = alice.rotate_sending_chain("groupA", 1, 0).unwrap();
+        let db = alice.rotate_sending_chain("groupB", 1, 0).unwrap();
+        assert_ne!(da.sender_event_pubkey, db.sender_event_pubkey);
+        bob.apply_distribution(&da).unwrap();
+        bob.apply_distribution(&db).unwrap();
+
+        let ev_a = alice.encrypt_to_event("groupA", b"secret A", 1).unwrap();
+        let got = bob.decrypt_event(&ev_a).unwrap().unwrap();
+        assert_eq!(got.group_id, "groupA");
+        assert_eq!(got.plaintext, b"secret A");
+        assert!(bob.known_senders("groupA").contains(&da.sender_event_pubkey));
+        assert!(!bob.known_senders("groupB").contains(&da.sender_event_pubkey));
+    }
+
+    /// After a key rotation, a message from the *retired* chain no longer
+    /// decrypts if the receiver has replaced it (rotation supersedes the old
+    /// sender-event pubkey only when reused; distinct pubkeys coexist). Here we
+    /// assert a stale message under the old `key_id` against the new chain fails.
+    #[test]
+    fn stale_key_id_after_rotation_rejected() {
+        let mut alice = mgr("alice");
+        let mut bob = mgr("bob");
+        let d1 = alice.rotate_sending_chain("g", 1, 0).unwrap();
+        bob.apply_distribution(&d1).unwrap();
+        let stale = alice.encrypt("g", b"old-key", 1).unwrap();
+
+        // Rotate to key_id 2 and install; the receiving chain for the old
+        // sender pubkey is still present, but a message carrying key_id 1 routed
+        // to a key_id-2 chain is an InvalidHeader.
+        let d2 = alice.rotate_sending_chain("g", 2, 2).unwrap();
+        bob.apply_distribution(&d2).unwrap();
+        let mut wrong = stale;
+        wrong.sender_event_pubkey = d2.sender_event_pubkey.clone();
+        assert!(matches!(bob.decrypt(&wrong), Err(Nip104Error::InvalidHeader)));
+    }
+
     #[test]
     fn outer_content_frames_match_reference_layout() {
         // key_id and message_number are big-endian u32 prefixes.

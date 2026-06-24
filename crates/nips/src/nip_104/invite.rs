@@ -536,4 +536,112 @@ mod tests {
         response.content.push('A'); // breaks the signature
         assert!(invite.receive::<K>(&response, &inviter_id).is_err());
     }
+
+    // ── Adversarial ───────────────────────────────────────────
+
+    /// An attacker who knows the inviter's ephemeral pubkey but **not** the
+    /// shared link secret cannot forge an acceptance: the inviter's copy holds
+    /// the true secret, so layer-2 decryption of a wrong-secret response fails.
+    #[test]
+    fn wrong_shared_secret_cannot_accept() {
+        let inviter_id = ident(0x12);
+        let invitee_id = ident(0x34);
+
+        let real = Invite::create_new::<K>(&inviter_id.public_key(), None).unwrap();
+        // Forge an invite with the same ephemeral pubkey but a different link.
+        let mut forged = real.clone();
+        forged.shared_secret = [0xEE_u8; 32].to_hex();
+
+        // Invitee accepts the *forged* link…
+        let (_s, response) = forged.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        // …but the inviter peels with the *real* secret → layer-2 mismatch.
+        assert!(real.receive::<K>(&response, &inviter_id).is_err());
+    }
+
+    /// `receive` on a non-response event kind is rejected before any crypto.
+    #[test]
+    fn receive_wrong_kind_rejected() {
+        let inviter_id = ident(0x56);
+        let invite = Invite::create_new::<K>(&inviter_id.public_key(), None).unwrap();
+        let mut note = nostro2::NostrNote {
+            kind: INVITE_RESPONSE_KIND + 1,
+            content: "x".into(),
+            ..Default::default()
+        };
+        note.sign_with(&inviter_id).unwrap();
+        assert!(matches!(
+            invite.receive::<K>(&note, &inviter_id),
+            Err(Nip104Error::InvalidInvite(_))
+        ));
+    }
+
+    /// A parsed-from-event invite (the public, ephemeral-secret-less copy)
+    /// cannot `receive` — only the inviter's minting copy holds the secret.
+    #[test]
+    fn receive_without_ephemeral_secret_rejected() {
+        let inviter_id = ident(0x78);
+        let invitee_id = ident(0x9A);
+        let invite = Invite::create_new::<K>(&inviter_id.public_key(), Some("dev")).unwrap();
+        let (_s, response) = invite.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+
+        // Round-trip through a published event strips the ephemeral secret.
+        let mut ev = invite.to_event(1_700_000_000).unwrap();
+        ev.sign_with(&inviter_id).unwrap();
+        let public_copy = Invite::from_event(&ev).unwrap();
+        assert!(public_copy.inviter_ephemeral_privkey.is_none());
+
+        assert!(matches!(
+            public_copy.receive::<K>(&response, &inviter_id),
+            Err(Nip104Error::InvalidInvite(_))
+        ));
+    }
+
+    /// Malformed invite URLs (no hash, empty hash, junk) are clean errors.
+    #[test]
+    fn malformed_urls_rejected() {
+        assert!(Invite::from_url("https://chat.iris.to").is_err());
+        assert!(Invite::from_url("https://chat.iris.to#").is_err());
+        assert!(Invite::from_url("not-a-url").is_err());
+        // Hash present but missing required fields.
+        assert!(Invite::from_url("https://x#%7B%22inviter%22%3A%22ab%22%7D").is_err());
+    }
+
+    /// `from_event` rejects an unsigned / wrong-kind / tagless invite event.
+    #[test]
+    fn from_event_validates() {
+        let inviter_id = ident(0xBC);
+        // Wrong kind.
+        let mut wrong = nostro2::NostrNote {
+            kind: INVITE_EVENT_KIND + 1,
+            pubkey: inviter_id.public_key(),
+            ..Default::default()
+        };
+        wrong.sign_with(&inviter_id).unwrap();
+        assert!(Invite::from_event(&wrong).is_err());
+
+        // Right kind, but unsigned (id/sig absent) → verify() fails.
+        let invite = Invite::create_new::<K>(&inviter_id.public_key(), Some("d")).unwrap();
+        let unsigned = invite.to_event(1_700_000_000).unwrap();
+        assert!(Invite::from_event(&unsigned).is_err());
+    }
+
+    /// Two invitees accepting the *same* public invite get independent
+    /// sessions; the inviter recovers each distinctly and neither response is
+    /// interchangeable.
+    #[test]
+    fn two_invitees_one_invite_are_independent() {
+        let inviter_id = ident(0xC1);
+        let alice = ident(0xC2);
+        let bob = ident(0xC3);
+        let invite = Invite::create_new::<K>(&inviter_id.public_key(), None).unwrap();
+
+        let (_sa, ra) = invite.accept::<K>(&alice, None, 1_700_000_000).unwrap();
+        let (_sb, rb) = invite.accept::<K>(&bob, None, 1_700_000_000).unwrap();
+
+        let (_s1, rec_a) = invite.receive::<K>(&ra, &inviter_id).unwrap();
+        let (_s2, rec_b) = invite.receive::<K>(&rb, &inviter_id).unwrap();
+        assert_eq!(rec_a.invitee_identity, alice.public_key());
+        assert_eq!(rec_b.invitee_identity, bob.public_key());
+        assert_ne!(rec_a.invitee_session_pubkey, rec_b.invitee_session_pubkey);
+    }
 }

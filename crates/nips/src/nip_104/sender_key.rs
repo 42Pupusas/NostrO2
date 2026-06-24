@@ -377,4 +377,154 @@ mod tests {
         let err = receiver.plan_decrypt::<K>(1, SENDER_KEY_MAX_SKIP + 1, "AA");
         assert!(matches!(err, Err(Nip104Error::TooManySkippedMessages)));
     }
+
+    // ── Adversarial / scale ──────────────────────────────────────
+
+    /// Skipping ahead past the stored-key cap evicts the *oldest* skipped keys
+    /// (bounded memory): the banked map never exceeds the cap, the recent tail
+    /// still backfills, but the evicted head is gone forever.
+    #[test]
+    #[allow(clippy::cast_possible_truncation)] // cap is 2000, fits u32
+    fn skip_ahead_prunes_oldest_skipped_keys() {
+        // Produce a long run; remember the first and a recent ciphertext.
+        const AHEAD: u32 = SENDER_KEY_MAX_STORED_SKIPPED_KEYS as u32 + 500;
+        let ck = [21_u8; 32];
+        let mut sender = SenderKeyState::new(1, &ck, 0);
+        let mut receiver = SenderKeyState::new(1, &ck, 0);
+        let mut first = None;
+        let mut recent = None;
+        for i in 0..=AHEAD {
+            let (n, c) = sender.encrypt::<K>(format!("m{i}").as_bytes()).unwrap();
+            if i == 0 {
+                first = Some((n, c.clone()));
+            }
+            if i == AHEAD - 1 {
+                recent = Some((n, c.clone()));
+            }
+            if i == AHEAD {
+                // Receive the very latest first → banks AHEAD skipped keys,
+                // then prunes down to the cap.
+                assert_eq!(receiver.decrypt::<K>(n, &c).unwrap(), format!("m{i}").as_bytes());
+            }
+        }
+        assert_eq!(
+            receiver.skipped_len(),
+            SENDER_KEY_MAX_STORED_SKIPPED_KEYS,
+            "stored skipped keys must be capped"
+        );
+
+        // A recent message (index AHEAD-1) still backfills from a stored key…
+        let (rn, rc) = recent.unwrap();
+        assert_eq!(receiver.decrypt::<K>(rn, &rc).unwrap(), format!("m{}", AHEAD - 1).as_bytes());
+
+        // …but the long-evicted message 0 is unrecoverable (its key was pruned).
+        let (fn0, fc0) = first.unwrap();
+        assert!(matches!(
+            receiver.plan_decrypt::<K>(1, fn0, &fc0),
+            Err(Nip104Error::InvalidHeader)
+        ));
+    }
+
+    /// A future message exactly `SENDER_KEY_MAX_SKIP` ahead is accepted; one
+    /// more is refused. Guards the off-by-one at the skip ceiling.
+    #[test]
+    fn skip_ceiling_is_inclusive() {
+        let ck = [23_u8; 32];
+        // Receiver at iteration 0; a message at exactly MAX_SKIP has delta ==
+        // MAX_SKIP, which is allowed. We don't have its ciphertext, but the
+        // bound is checked before any key derivation, so a cipher failure (not
+        // TooManySkippedMessages) proves we passed the gate.
+        let receiver = SenderKeyState::new(1, &ck, 0);
+        let at_ceiling = receiver.plan_decrypt::<K>(1, SENDER_KEY_MAX_SKIP, "not-base64!!");
+        assert!(
+            !matches!(at_ceiling, Err(Nip104Error::TooManySkippedMessages)),
+            "delta == MAX_SKIP must pass the skip gate"
+        );
+        let over = receiver.plan_decrypt::<K>(1, SENDER_KEY_MAX_SKIP + 1, "not-base64!!");
+        assert!(matches!(over, Err(Nip104Error::TooManySkippedMessages)));
+    }
+
+    /// Encrypting on a chain already at `u32::MAX` overflows the iteration
+    /// counter — the `checked_add` must surface an error, never wrap to 0
+    /// (which would silently reuse a message key).
+    #[test]
+    fn iteration_overflow_on_encrypt_is_rejected() {
+        let ck = [25_u8; 32];
+        let sender = SenderKeyState::new(1, &ck, u32::MAX);
+        assert!(matches!(
+            sender.plan_encrypt::<K>(b"boom"),
+            Err(Nip104Error::SessionNotReady)
+        ));
+    }
+
+    /// The chain inherits NIP-44 v2's plaintext bounds: a single byte and the
+    /// 65 535-byte maximum both round-trip, but empty and over-max are refused
+    /// (the cipher rejects them before the chain advances).
+    #[test]
+    fn payload_size_bounds_match_nip44() {
+        let ck = [27_u8; 32];
+        let mut sender = SenderKeyState::new(1, &ck, 0);
+        let mut receiver = SenderKeyState::new(1, &ck, 0);
+
+        // One byte: the smallest legal payload.
+        let (n0, c0) = sender.encrypt::<K>(b"x").unwrap();
+        assert_eq!(receiver.decrypt::<K>(n0, &c0).unwrap(), b"x");
+
+        // Exactly the NIP-44 v2 maximum (65 535 bytes).
+        let max = vec![0x5A_u8; 65_535];
+        let (n1, c1) = sender.encrypt::<K>(&max).unwrap();
+        assert_eq!(receiver.decrypt::<K>(n1, &c1).unwrap(), max);
+
+        // Empty plaintext and one-over-max are both rejected by the cipher,
+        // and a rejected encrypt must not advance the (pure) sender plan.
+        assert!(sender.plan_encrypt::<K>(b"").is_err());
+        let over = vec![0_u8; 65_536];
+        assert!(sender.plan_encrypt::<K>(&over).is_err());
+        // Sender still at iteration 2 after the two good messages.
+        assert_eq!(sender.iteration(), 2);
+    }
+
+    /// A tampered ciphertext (valid base64, broken MAC) fails to decrypt and —
+    /// crucially — leaves the receiver chain untouched, so the legitimate
+    /// message at that index still decrypts afterwards.
+    #[test]
+    fn tampered_ciphertext_fails_without_advancing() {
+        use base64::engine::{general_purpose, Engine as _};
+        let ck = [29_u8; 32];
+        let mut sender = SenderKeyState::new(1, &ck, 0);
+        let receiver = SenderKeyState::new(1, &ck, 0);
+        let (n, c) = sender.encrypt::<K>(b"authentic").unwrap();
+
+        // Flip a byte in the middle of the base64-decoded payload.
+        let mut raw = general_purpose::STANDARD.decode(&c).unwrap();
+        let mid = raw.len() / 2;
+        raw[mid] ^= 0xFF;
+        let tampered = general_purpose::STANDARD.encode(&raw);
+
+        let before = receiver.clone();
+        assert!(receiver.plan_decrypt::<K>(1, n, &tampered).is_err());
+        assert_eq!(receiver, before, "failed decrypt must not mutate state");
+
+        // The genuine ciphertext at the same index still works.
+        let mut receiver = receiver;
+        assert_eq!(receiver.decrypt::<K>(n, &c).unwrap(), b"authentic");
+    }
+
+    /// A sustained chain of many in-order messages keeps both ends in lockstep
+    /// with zero skipped-key residue.
+    #[test]
+    fn sustained_in_order_volume() {
+        const N: u32 = 5_000;
+        let ck = [31_u8; 32];
+        let mut sender = SenderKeyState::new(1, &ck, 0);
+        let mut receiver = SenderKeyState::new(1, &ck, 0);
+        for i in 0..N {
+            let (n, c) = sender.encrypt::<K>(format!("msg-{i}").as_bytes()).unwrap();
+            assert_eq!(n, i);
+            assert_eq!(receiver.decrypt::<K>(n, &c).unwrap(), format!("msg-{i}").as_bytes());
+        }
+        assert_eq!(sender.iteration(), N);
+        assert_eq!(receiver.iteration(), N);
+        assert_eq!(receiver.skipped_len(), 0);
+    }
 }

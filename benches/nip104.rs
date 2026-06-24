@@ -118,6 +118,42 @@ fn dm_round_trip(bencher: Bencher) {
         });
 }
 
+/// Inbound routing cost as a function of how many sessions the receiver holds.
+///
+/// `process_event` trial-decrypts against every held session until one accepts,
+/// so a *miss* (foreign event) is the worst case: O(sessions) Schnorr verifies.
+/// This sweep quantifies the scaling flagged in the original bench analysis.
+#[divan::bench(args = [1, 8, 64])]
+fn dm_route_miss(bencher: Bencher, sessions: usize) {
+    bencher
+        .with_inputs(|| {
+            // Alice holds `sessions` live conversations with distinct peers.
+            let mut alice = SessionManager::new(NostrKeypair::generate());
+            let apk = alice.our_pubkey().to_owned();
+            for _ in 0..sessions {
+                let mut peer = SessionManager::new(NostrKeypair::generate());
+                let invite = Invite::create_new::<NostrKeypair>(&apk, None).unwrap();
+                let resp = peer.accept_invite(&invite, None, NOW).unwrap();
+                alice.receive_invite_response(&invite, &resp).unwrap();
+                let up = peer.send(&apk, b"open", NOW).unwrap();
+                alice.process_event(&up[0]).unwrap();
+            }
+            // A stranger (no session with Alice) sends a well-formed event that
+            // Alice will trial-decrypt against every session and reject.
+            let mut stranger = SessionManager::new(NostrKeypair::generate());
+            let mut victim = SessionManager::new(NostrKeypair::generate());
+            let vpk = victim.our_pubkey().to_owned();
+            let invite = Invite::create_new::<NostrKeypair>(&vpk, None).unwrap();
+            let resp = stranger.accept_invite(&invite, None, NOW).unwrap();
+            victim.receive_invite_response(&invite, &resp).unwrap();
+            let foreign = stranger.send(&vpk, PAYLOAD, NOW).unwrap().pop().unwrap();
+            (alice, foreign)
+        })
+        .bench_values(|(mut alice, foreign)| {
+            black_box(alice.process_event(black_box(&foreign)))
+        });
+}
+
 // ── Group helpers ────────────────────────────────────────────────
 
 /// A `(sender, receiver)` group pair: the sender has minted a chain and the
@@ -151,7 +187,7 @@ fn group_apply_distribution(bencher: Bencher) {
             (receiver, dist)
         })
         .bench_values(|(mut receiver, dist)| {
-            black_box(receiver.apply_distribution(black_box(&dist)).unwrap());
+            receiver.apply_distribution(black_box(&dist)).unwrap();
             black_box(receiver)
         });
 }
