@@ -38,6 +38,7 @@ use crate::Nip44;
 use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
 use std::collections::BTreeMap;
+use zeroize::Zeroize;
 
 /// Maximum number of skipped message keys retained per chain. Matches the
 /// reference implementation's `MAX_SKIP`.
@@ -150,6 +151,13 @@ impl KeyPairBytes {
     }
 }
 
+/// Scrub the raw secret key on drop; `public_key` is not sensitive.
+impl Drop for KeyPairBytes {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+    }
+}
+
 bourne::json! {
     /// The plaintext ratchet header, transmitted NIP-44-encrypted in each
     /// message. Wire field names are camelCase to match the reference
@@ -169,6 +177,15 @@ bourne::json! {
 pub struct SkippedKeysEntry {
     /// message index → message key (hex).
     pub message_keys: BTreeMap<u32, String>,
+}
+
+/// Scrub every banked message key on drop.
+impl Drop for SkippedKeysEntry {
+    fn drop(&mut self) {
+        for key in self.message_keys.values_mut() {
+            key.zeroize();
+        }
+    }
 }
 
 /// The full double-ratchet session state for one 1:1 channel.
@@ -202,6 +219,21 @@ pub struct SessionState {
     pub previous_sending_chain_message_count: u32,
     /// Skipped message keys, keyed by sender DH pubkey (hex).
     pub skipped_keys: BTreeMap<String, SkippedKeysEntry>,
+}
+
+/// Scrub the chain/root secrets on drop. `our_*_nostr_key` (`KeyPairBytes`)
+/// and `skipped_keys` (`SkippedKeysEntry`) values scrub themselves via their
+/// own `Drop` impls when this struct's fields are subsequently dropped.
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        self.root_key.zeroize();
+        if let Some(k) = self.receiving_chain_key.as_mut() {
+            k.zeroize();
+        }
+        if let Some(k) = self.sending_chain_key.as_mut() {
+            k.zeroize();
+        }
+    }
 }
 
 /// A ready-to-publish encrypted message: the NIP-44-encrypted header and the

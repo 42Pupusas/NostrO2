@@ -473,10 +473,13 @@ pub trait Nip44: nostro2::NostrKeypair {
     }
 
     /// Decrypts a decoded legacy payload (`decoded[0] == 0x31`): 12-byte nonce,
-    /// conversation key used directly as the `ChaCha20` key, no MAC verification.
+    /// conversation key used directly as the `ChaCha20` key. The trailing
+    /// 32 bytes are an HMAC-SHA256(conversation_key, ciphertext) tag, verified
+    /// in constant time before decrypting (no AAD, unlike v2).
     ///
     /// # Errors
     /// - `InvalidLength`: payload too short.
+    /// - `MacMismatch`: authentication tag mismatch.
     /// - `InvalidPrefixLen`: length prefix exceeds available bytes.
     /// - `FromUtf8Error`: plaintext not valid UTF-8.
     fn decrypt_legacy(
@@ -488,6 +491,12 @@ pub trait Nip44: nostro2::NostrKeypair {
         }
         let nonce: [u8; 12] = decoded[1..13].try_into()?;
         let ciphertext = &decoded[13..decoded.len() - 32];
+        let tag = &decoded[decoded.len() - 32..];
+
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(conversation_key)
+            .map_err(|_| Nip44Error::HmacError)?;
+        mac.update(ciphertext);
+        mac.verify_slice(tag).map_err(|_| Nip44Error::MacMismatch)?;
 
         let mut buffer = zeroize::Zeroizing::new(ciphertext.to_vec());
         let mut cipher = chacha20::ChaCha20::new_from_slices(conversation_key, &nonce)?;
@@ -681,6 +690,42 @@ mod tests {
             .nip_44_decrypt(&legacy_payload, &sender_pk)
             .unwrap();
         assert_eq!(out, "legacy data at rest");
+    }
+
+    /// Legacy (`0x31`) payloads carry a trailing HMAC tag that must actually
+    /// be verified: a bit-flipped ciphertext must be rejected, not silently
+    /// decrypted into garbage plaintext.
+    #[test]
+    fn legacy_payload_tampering_is_rejected() {
+        let sender = Tester::generate();
+        let receiver = Tester::generate();
+        let receiver_pk = receiver.public_key();
+        let sender_pk = sender.public_key();
+        let shared = sender.shared_secret(&receiver_pk).unwrap();
+        let conv = Tester::derive_conversation_key_legacy(shared, b"nip44-v2").unwrap();
+
+        let plaintext = b"legacy data at rest";
+        let total = (plaintext.len() + 2).next_power_of_two().max(32);
+        let mut padded = vec![0_u8; total];
+        padded[..2].copy_from_slice(&u16::try_from(plaintext.len()).unwrap().to_be_bytes());
+        padded[2..2 + plaintext.len()].copy_from_slice(plaintext);
+
+        let mut nonce = [0_u8; 12];
+        getrandom::fill(&mut nonce).unwrap();
+        let mut cipher = chacha20::ChaCha20::new_from_slices(conv.as_slice(), &nonce).unwrap();
+        cipher.apply_keystream(&mut padded);
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(conv.as_slice()).unwrap();
+        mac.update(&padded);
+        let tag: [u8; 32] = mac.finalize().into_bytes().into();
+        let legacy_payload = Tester::base64_encode_params(b"1", &nonce, &padded, &tag);
+
+        let mut bytes = general_purpose::STANDARD.decode(&legacy_payload).unwrap();
+        let ct_start = 1 + 12;
+        bytes[ct_start] ^= 0x01;
+        let tampered = general_purpose::STANDARD.encode(&bytes);
+
+        let result = receiver.nip_44_decrypt(&tampered, &sender_pk);
+        assert!(matches!(result, Err(Nip44Error::MacMismatch)));
     }
 
     #[test]

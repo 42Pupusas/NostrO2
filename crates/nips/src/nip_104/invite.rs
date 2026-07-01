@@ -42,6 +42,7 @@
 use super::{Nip104Crypto, Nip104Error, Session};
 use crate::Nip44;
 use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
+use zeroize::Zeroize;
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
@@ -105,6 +106,17 @@ pub struct Invite {
     pub inviter_ephemeral_privkey: Option<String>,
     /// Optional device id (the `d`-tag suffix on a published invite).
     pub device_id: Option<String>,
+}
+
+/// Scrub the ephemeral secret (when present) on drop. `shared_secret` is not
+/// a long-term key but is sensitive too, so it is wiped alongside it.
+impl Drop for Invite {
+    fn drop(&mut self) {
+        if let Some(sk) = self.inviter_ephemeral_privkey.as_mut() {
+            sk.zeroize();
+        }
+        self.shared_secret.zeroize();
+    }
 }
 
 impl Invite {
@@ -414,8 +426,14 @@ impl Invite {
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(byte);
+                // `to_digit(16)` only ever yields 0..=15, so these casts never
+                // truncate; done on individual nibbles (not a `str` byte
+                // range) so a `%` next to a multi-byte UTF-8 char can never
+                // land mid-codepoint and panic.
+                let hi = (bytes[i + 1] as char).to_digit(16).and_then(|d| u8::try_from(d).ok());
+                let lo = (bytes[i + 2] as char).to_digit(16).and_then(|d| u8::try_from(d).ok());
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi << 4) | lo);
                     i += 3;
                     continue;
                 }
@@ -604,6 +622,18 @@ mod tests {
         assert!(Invite::from_url("not-a-url").is_err());
         // Hash present but missing required fields.
         assert!(Invite::from_url("https://x#%7B%22inviter%22%3A%22ab%22%7D").is_err());
+    }
+
+    // A '%' escape whose two "hex" bytes straddle a multi-byte UTF-8
+    // character must not panic (urldecode used to slice `str` byte ranges
+    // that could land mid-codepoint). Malformed input is simply a clean
+    // parse error, never a crash.
+    #[test]
+    fn urldecode_does_not_panic_on_non_ascii_after_percent() {
+        assert!(Invite::from_url("https://x#%a\u{e9}").is_err());
+        assert!(Invite::from_url("https://x#%\u{20ac}").is_err());
+        assert!(Invite::from_url("https://x#abc%").is_err());
+        assert!(Invite::from_url("https://x#abc%a").is_err());
     }
 
     /// `from_event` rejects an unsigned / wrong-kind / tagless invite event.

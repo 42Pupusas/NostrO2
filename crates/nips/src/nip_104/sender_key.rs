@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
+use zeroize::Zeroize;
 
 use super::{Nip104Crypto, Nip104Error};
 
@@ -68,6 +69,16 @@ pub struct SenderKeyState {
     iteration: u32,
     /// Skipped message keys (index → key hex) for out-of-order delivery.
     skipped_message_keys: BTreeMap<u32, String>,
+}
+
+/// Scrub the chain key and every banked skipped message key on drop.
+impl Drop for SenderKeyState {
+    fn drop(&mut self) {
+        self.chain_key.zeroize();
+        for key in self.skipped_message_keys.values_mut() {
+            key.zeroize();
+        }
+    }
 }
 
 /// Result of [`SenderKeyState::plan_encrypt`] — apply to commit.
@@ -136,7 +147,7 @@ impl SenderKeyState {
     /// [`Self::new`] alone (which starts empty), so snapshots must carry these
     /// and rebuild with [`Self::from_parts`].
     #[must_use]
-    pub fn skipped_keys(&self) -> &BTreeMap<u32, String> {
+    pub const fn skipped_keys(&self) -> &BTreeMap<u32, String> {
         &self.skipped_message_keys
     }
 
@@ -146,7 +157,7 @@ impl SenderKeyState {
     /// skipped message keys, so an out-of-order-delivery chain round-trips
     /// losslessly through storage.
     #[must_use]
-    pub fn from_parts(
+    pub const fn from_parts(
         key_id: u32,
         chain_key_hex: String,
         iteration: u32,

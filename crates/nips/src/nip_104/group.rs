@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use base64::engine::{general_purpose, Engine as _};
 use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
+use zeroize::Zeroize;
 
 use super::{Nip104Crypto, Nip104Error, SenderKeyState, MESSAGE_EVENT_KIND};
 
@@ -90,6 +91,14 @@ struct SendingChain {
     state: SenderKeyState,
 }
 
+/// Scrub the raw sender-event secret on drop. `state` (a [`SenderKeyState`])
+/// scrubs itself via its own `Drop` impl.
+impl Drop for SendingChain {
+    fn drop(&mut self) {
+        self.sender_event_secret.zeroize();
+    }
+}
+
 /// All state for a single group.
 #[derive(Debug, Clone, Default)]
 struct GroupRecord {
@@ -99,12 +108,13 @@ struct GroupRecord {
     receiving: BTreeMap<String, SenderKeyState>,
 }
 
-/// A persistence snapshot of our sending side for one group: the sender-event
-/// keypair (pubkey + raw secret) plus the chain [`SenderKeyState`]. Serialize
-/// the state via its getters ([`SenderKeyState::key_id`],
-/// [`SenderKeyState::chain_key_hex`], [`SenderKeyState::iteration`],
-/// [`SenderKeyState::skipped_keys`]) and revive it with
-/// [`SenderKeyState::from_parts`].
+/// A persistence snapshot of our sending side for one group.
+///
+/// Holds the sender-event keypair (pubkey + raw secret) plus the chain
+/// [`SenderKeyState`]. Serialize the state via its getters
+/// ([`SenderKeyState::key_id`], [`SenderKeyState::chain_key_hex`],
+/// [`SenderKeyState::iteration`], [`SenderKeyState::skipped_keys`]) and
+/// revive it with [`SenderKeyState::from_parts`].
 #[derive(Debug, Clone)]
 pub struct SendingChainSnapshot {
     /// The per-group sender-event pubkey our outer events are signed under.
@@ -113,6 +123,13 @@ pub struct SendingChainSnapshot {
     pub sender_event_secret: [u8; 32],
     /// The current sending chain state.
     pub state: SenderKeyState,
+}
+
+/// Scrub the raw sender-event secret on drop. `state` scrubs itself.
+impl Drop for SendingChainSnapshot {
+    fn drop(&mut self) {
+        self.sender_event_secret.zeroize();
+    }
 }
 
 /// A full persistence snapshot of one group's transport state: our sending
@@ -488,13 +505,15 @@ impl<K: NostrKeypair> GroupManager<K> {
     /// [`Self::snapshot`].
     pub fn restore_group(&mut self, snap: GroupSnapshot) {
         let mut record = GroupRecord::default();
-        if let Some(s) = snap.sending {
+        // Borrow rather than move: `SendingChainSnapshot` scrubs its secret on
+        // `Drop`, which forbids destructuring it by value.
+        if let Some(s) = snap.sending.as_ref() {
             self.sender_to_group
                 .insert(s.sender_event_pubkey.clone(), snap.group_id.clone());
             record.sending = Some(SendingChain {
-                sender_event_pubkey: s.sender_event_pubkey,
+                sender_event_pubkey: s.sender_event_pubkey.clone(),
                 sender_event_secret: s.sender_event_secret,
-                state: s.state,
+                state: s.state.clone(),
             });
         }
         for (sender_event_pubkey, state) in snap.receiving {
