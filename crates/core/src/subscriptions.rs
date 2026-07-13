@@ -182,12 +182,10 @@ impl NostrSubscription {
             let Some(id) = note.id.as_deref() else { return false; };
             if !ids.contains(id) { return false; }
         }
-        if let Some(authors) = &self.authors {
-            if !authors.contains(&note.pubkey) { return false; }
-        }
-        if let Some(kinds) = &self.kinds {
-            if !kinds.contains(&note.kind) { return false; }
-        }
+        if let Some(authors) = &self.authors
+            && !authors.contains(&note.pubkey) { return false; }
+        if let Some(kinds) = &self.kinds
+            && !kinds.contains(&note.kind) { return false; }
         if let Some(since) = self.since {
             let Ok(ts) = u64::try_from(note.created_at) else { return false; };
             if ts < since { return false; }

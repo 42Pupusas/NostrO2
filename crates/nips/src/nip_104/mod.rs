@@ -382,10 +382,10 @@ impl<K: NostrKeypair> Session<K> {
         if let Some(cur) = self.state.their_current_nostr_public_key.as_deref() {
             out.push(cur.to_owned());
         }
-        if let Some(next) = self.state.their_next_nostr_public_key.as_deref() {
-            if Some(next) != self.state.their_current_nostr_public_key.as_deref() {
-                out.push(next.to_owned());
-            }
+        if let Some(next) = self.state.their_next_nostr_public_key.as_deref()
+            && Some(next) != self.state.their_current_nostr_public_key.as_deref()
+        {
+            out.push(next.to_owned());
         }
         for k in self.state.skipped_keys.keys() {
             if Some(k.as_str()) != self.state.their_current_nostr_public_key.as_deref()
@@ -786,23 +786,21 @@ pub(crate) trait Nip104Crypto: NostrKeypair + Sized {
         encrypted_header: &str,
         sender: &str,
     ) -> Result<(Header, HeaderTarget)> {
-        if let Some(current) = &state.our_current_nostr_key {
-            if let Ok(h) = Self::try_decrypt_header(&current.secret_bytes()?, sender, encrypted_header)
-            {
-                return Ok((h, HeaderTarget::Current));
-            }
+        if let Some(current) = &state.our_current_nostr_key
+            && let Ok(h) = Self::try_decrypt_header(&current.secret_bytes()?, sender, encrypted_header)
+        {
+            return Ok((h, HeaderTarget::Current));
         }
         if let Ok(h) =
             Self::try_decrypt_header(&state.our_next_nostr_key.secret_bytes()?, sender, encrypted_header)
         {
             return Ok((h, HeaderTarget::Next));
         }
-        if let Some(previous) = &state.our_previous_nostr_key {
-            if let Ok(h) =
+        if let Some(previous) = &state.our_previous_nostr_key
+            && let Ok(h) =
                 Self::try_decrypt_header(&previous.secret_bytes()?, sender, encrypted_header)
-            {
-                return Ok((h, HeaderTarget::Previous));
-            }
+        {
+            return Ok((h, HeaderTarget::Previous));
         }
         Err(Nip104Error::InvalidHeader)
     }

@@ -67,12 +67,11 @@ impl NostrPool {
                                 if let nostro2::NostrRelayEvent::NewNote(.., ref note) =
                                     msg
                                 {
-                                    if let Some(ref id) = note.id {
-                                        if seen.insert(id.clone()) {
-                                            if let Err(e) = stream_send.send(msg.clone()) {
-                                                log::warn!("pool stream send failed: {e}");
-                                            }
-                                        }
+                                    if let Some(ref id) = note.id
+                                        && seen.insert(id.clone())
+                                        && let Err(e) = stream_send.send(msg.clone())
+                                    {
+                                        log::warn!("pool stream send failed: {e}");
                                     }
                                     continue;
                                 }

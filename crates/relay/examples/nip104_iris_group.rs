@@ -97,13 +97,12 @@ async fn main() {
             continue;
         }
         for row in note.tags.iter() {
-            if row.first().map(String::as_str) == Some("device") {
-                if let Some(dev) = row.get(1) {
-                    if !devices.contains(dev) {
-                        println!("  📱 device {}", short(dev));
-                        devices.push(dev.clone());
-                    }
-                }
+            if row.first().map(String::as_str) == Some("device")
+                && let Some(dev) = row.get(1)
+                && !devices.contains(dev)
+            {
+                println!("  📱 device {}", short(dev));
+                devices.push(dev.clone());
             }
         }
     }
@@ -250,9 +249,10 @@ async fn main() {
         let has_header = !note.tags.find_tags("header").is_empty();
         if has_header {
             // 1:1 ratchet event — route through the manager (rotation-aware).
-            if let Some(msg) = manager.process_event(&note) {
-                if let Some(rumor) = parse_rumor(&msg.plaintext) {
-                    match groups.apply_distribution_rumor(&rumor) {
+            if let Some(msg) = manager.process_event(&note)
+                && let Some(rumor) = parse_rumor(&msg.plaintext)
+            {
+                match groups.apply_distribution_rumor(&rumor) {
                         Ok(Some(dist)) => {
                             distributions += 1;
                             println!(
@@ -293,23 +293,23 @@ async fn main() {
                             // A kind-40 group-create message carries the group
                             // id + member list — enough to mint our own chain,
                             // distribute it, and post. Reply once.
-                            if rumor.kind == 40 && !replied {
-                                if let Some(gid) = group_id_from_meta(&rumor.content) {
-                                    replied = true;
-                                    reply_to_group(
-                                        &gid,
-                                        &mut groups,
-                                        &mut manager,
-                                        &peer_keys,
-                                        &pool,
-                                        "hello group, from nostro2 🦀",
-                                    );
-                                }
+                            if rumor.kind == 40
+                                && !replied
+                                && let Some(gid) = group_id_from_meta(&rumor.content)
+                            {
+                                replied = true;
+                                reply_to_group(
+                                    &gid,
+                                    &mut groups,
+                                    &mut manager,
+                                    &peer_keys,
+                                    &pool,
+                                    "hello group, from nostro2 🦀",
+                                );
                             }
                         }
                     }
                 }
-            }
         } else {
             // Empty-tag 1060 — a group outer event.
             match try_group(&note, &mut groups, &mut group_msgs) {

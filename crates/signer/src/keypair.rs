@@ -212,16 +212,14 @@ impl NostrKeypair {
     /// # Errors
     /// Returns `InvalidKey` if no encoding matches.
     pub fn from_any(value: &str) -> Result<Self, NostrKeypairError> {
-        if value.starts_with("nsec1") {
-            if let Ok(kp) = Self::from_nsec(value) {
+        if value.starts_with("nsec1")
+            && let Ok(kp) = Self::from_nsec(value) {
                 return Ok(kp);
             }
-        }
-        if value.len() == 64 {
-            if let Ok(kp) = Self::from_hex(value) {
+        if value.len() == 64
+            && let Ok(kp) = Self::from_hex(value) {
                 return Ok(kp);
             }
-        }
         for language in [xinachtli::Language::English, xinachtli::Language::Spanish] {
             if let Ok(kp) = Self::from_mnemonic(value, language) {
                 return Ok(kp);
