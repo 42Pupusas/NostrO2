@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use bourne::{
+use json_bourne::{
     Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson,
 };
 
@@ -138,16 +138,16 @@ impl ToJson for NostrSubscription {
 }
 
 impl TryFrom<&[u8]> for NostrSubscription {
-    type Error = bourne::Error;
+    type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        bourne::parse(value)
+        json_bourne::parse(value)
     }
 }
 
 impl std::str::FromStr for NostrSubscription {
-    type Err = bourne::Error;
+    type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        bourne::parse_str(value)
+        json_bourne::parse_str(value)
     }
 }
 
@@ -314,7 +314,7 @@ mod tests {
         };
         sub.add_tag("#p", "value1");
         sub.add_tag("#q", "value2");
-        let json = bourne::to_string(&sub).unwrap();
+        let json = json_bourne::to_string(&sub).unwrap();
         assert!(json.contains("\"kinds\":[4]"));
         assert!(json.contains("\"#p\":[\"value1\"]"));
         assert!(json.contains("\"#q\":[\"value2\"]"));
@@ -325,7 +325,7 @@ mod tests {
         filter.add_tag("#p", "value1");
         filter.add_tag("#q", "value2");
         filter.add_tag("#p", "value3");
-        let json = bourne::to_string(&filter).unwrap();
+        let json = json_bourne::to_string(&filter).unwrap();
         assert!(json.contains("\"#p\":[\"value1\",\"value3\"]"));
         assert!(json.contains("\"#q\":[\"value2\"]"));
     }
@@ -429,18 +429,18 @@ mod tests {
     }
     #[test]
     fn rejects_negative_limit() {
-        assert!(bourne::parse_str::<NostrSubscription>(r#"{"limit":-1}"#).is_err());
+        assert!(json_bourne::parse_str::<NostrSubscription>(r#"{"limit":-1}"#).is_err());
     }
     #[test]
     fn skips_unknown_fields_in_filter() {
         let sub: NostrSubscription =
-            bourne::parse_str(r#"{"kinds":[1],"unknown_field":true}"#).unwrap();
+            json_bourne::parse_str(r#"{"kinds":[1],"unknown_field":true}"#).unwrap();
         assert_eq!(sub.kinds, Some([1].into()));
     }
     #[test]
     fn parses_all_fields_from_json() {
         let json = r##"{"authors":["alice"],"ids":["deadbeef"],"kinds":[1,4],"since":100,"until":200,"limit":10,"#p":["bob"]}"##;
-        let sub: NostrSubscription = bourne::parse_str(json).unwrap();
+        let sub: NostrSubscription = json_bourne::parse_str(json).unwrap();
         assert_eq!(sub.authors, Some(["alice".to_string()].into()));
         assert_eq!(sub.ids, Some(["deadbeef".to_string()].into()));
         assert_eq!(sub.kinds, Some([1, 4].into()));
@@ -458,8 +458,8 @@ mod tests {
             .since(100)
             .until(200)
             .tag("#p", "bob");
-        let json = bourne::to_string(&filter).unwrap();
-        let back: NostrSubscription = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&filter).unwrap();
+        let back: NostrSubscription = json_bourne::parse_str(&json).unwrap();
         assert_eq!(filter, back);
     }
     #[test]
@@ -469,8 +469,8 @@ mod tests {
             .kind(4)
             .author("bob")
             .author("alice");
-        let json1 = bourne::to_string(&filter).unwrap();
-        let json2 = bourne::to_string(&filter).unwrap();
+        let json1 = json_bourne::to_string(&filter).unwrap();
+        let json2 = json_bourne::to_string(&filter).unwrap();
         assert_eq!(json1, json2);
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -508,8 +508,8 @@ mod tests {
         proptest! {
             #[test]
             fn round_trip(sub in arb_subscription()) {
-                let json = bourne::to_string(&sub).unwrap();
-                let back: NostrSubscription = bourne::parse_str(&json).unwrap();
+                let json = json_bourne::to_string(&sub).unwrap();
+                let back: NostrSubscription = json_bourne::parse_str(&json).unwrap();
                 prop_assert_eq!(&sub, &back);
             }
         }

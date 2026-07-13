@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, Lexer};
+use json_bourne::{Error as BourneError, ErrorKind as BourneErrorKind, FromJson, Lexer};
 
 use crate::RelayEventTag;
 use crate::event::NostrEvent;
@@ -190,7 +190,7 @@ impl NostrEvent for NostrNoteView<'_> {
     fn sig_hex(&self) -> Option<Cow<'_, str>> {
         self.sig.as_deref().map(Cow::Borrowed)
     }
-    fn write_tags<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         for (i, row) in self.tags.iter().enumerate() {
             if i > 0 {
@@ -256,10 +256,10 @@ impl<'a> NostrRelayEventView<'a> {
     ///
     /// # Errors
     ///
-    /// Returns a [`bourne::Error`] if the input is not valid JSON matching
+    /// Returns a [`json_bourne::Error`] if the input is not valid JSON matching
     /// the expected relay-event schema.
-    pub fn parse(s: &'a str) -> Result<Self, bourne::Error> {
-        bourne::parse_str(s)
+    pub fn parse(s: &'a str) -> Result<Self, json_bourne::Error> {
+        json_bourne::parse_str(s)
     }
 }
 
@@ -386,10 +386,10 @@ impl<'a> NostrClientEventView<'a> {
     ///
     /// # Errors
     ///
-    /// Returns a [`bourne::Error`] if the input is not valid JSON matching
+    /// Returns a [`json_bourne::Error`] if the input is not valid JSON matching
     /// the expected client-event schema.
-    pub fn parse(s: &'a str) -> Result<Self, bourne::Error> {
-        bourne::parse_str(s)
+    pub fn parse(s: &'a str) -> Result<Self, json_bourne::Error> {
+        json_bourne::parse_str(s)
     }
 }
 
@@ -412,13 +412,13 @@ mod tests {
         note.tags.add_custom_tag("t", "nostr");
         note.tags.add_pubkey_tag(&"d".repeat(64), None);
         note.tags.add_event_tag(&"e".repeat(64));
-        bourne::to_string(&note).unwrap()
+        json_bourne::to_string(&note).unwrap()
     }
 
     #[test]
     fn parses_all_fields() {
         let json = sample_note_json();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert_eq!(view.pubkey.as_ref(), "a".repeat(64));
         assert_eq!(view.created_at, 1_700_000_000);
         assert_eq!(view.kind, 1);
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn tag_rows_preserved() {
         let json = sample_note_json();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert_eq!(view.tags.row(0).unwrap(), ["t", "nostr"]);
         assert_eq!(view.tags.row(1).unwrap(), ["p", &"d".repeat(64)]);
     }
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn iter_yields_every_row() {
         let json = sample_note_json();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         let rows: Vec<_> = view.tags.iter().collect();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0][0], "t");
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn escape_free_fields_are_borrowed() {
         let json = sample_note_json();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert!(matches!(view.pubkey, Cow::Borrowed(_)));
         assert!(matches!(view.content, Cow::Borrowed(_)));
         assert!(matches!(view.id, Some(Cow::Borrowed(_))));
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn escaped_content_falls_back_to_owned() {
-        let view: NostrNoteView<'_> = bourne::parse_str(
+        let view: NostrNoteView<'_> = json_bourne::parse_str(
             r#"{"pubkey":"a","created_at":1,"kind":1,"tags":[],"content":"hi \"there\""}"#,
         )
         .unwrap();
@@ -477,8 +477,8 @@ mod tests {
         };
         note.tags.add_custom_tag("t", "nostr");
         note.serialize_id().unwrap();
-        let json = bourne::to_string(&note).unwrap();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert_eq!(
             nostro2_traits::hex::Hexable::to_hex(&view.compute_id_bytes()),
             note.id.unwrap()
@@ -488,25 +488,25 @@ mod tests {
     #[test]
     fn rejects_missing_required_fields() {
         assert!(
-            bourne::parse_str::<NostrNoteView<'_>>(
+            json_bourne::parse_str::<NostrNoteView<'_>>(
                 r#"{"created_at":1,"kind":1,"tags":[],"content":"hi"}"#
             )
             .is_err()
         );
         assert!(
-            bourne::parse_str::<NostrNoteView<'_>>(
+            json_bourne::parse_str::<NostrNoteView<'_>>(
                 r#"{"pubkey":"aa","kind":1,"tags":[],"content":"hi"}"#
             )
             .is_err()
         );
         assert!(
-            bourne::parse_str::<NostrNoteView<'_>>(
+            json_bourne::parse_str::<NostrNoteView<'_>>(
                 r#"{"pubkey":"aa","created_at":1,"tags":[],"content":"hi"}"#
             )
             .is_err()
         );
         assert!(
-            bourne::parse_str::<NostrNoteView<'_>>(
+            json_bourne::parse_str::<NostrNoteView<'_>>(
                 r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[]}"#
             )
             .is_err()
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn skips_unknown_fields() {
-        let view: NostrNoteView<'_> = bourne::parse_str(
+        let view: NostrNoteView<'_> = json_bourne::parse_str(
             r#"{"pubkey":"aa","created_at":1,"kind":1,"tags":[],"content":"hi","extra":true}"#,
         )
         .unwrap();
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn kind_rejects_negative() {
         assert!(
-            bourne::parse_str::<NostrNoteView<'_>>(
+            json_bourne::parse_str::<NostrNoteView<'_>>(
                 r#"{"pubkey":"aa","created_at":1,"kind":-1,"tags":[],"content":"hi"}"#
             )
             .is_err()
@@ -540,8 +540,8 @@ mod tests {
         let mut note = crate::NostrNoteBuilder::text_note("view verify test").build();
         note.tags.add_custom_tag("t", "nostr");
         note.sign_with(&kp).expect("sign");
-        let json = bourne::to_string(&note).unwrap();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert!(view.verify(), "view of signed note must verify");
     }
 
@@ -555,8 +555,8 @@ mod tests {
         let mut note = crate::NostrNoteBuilder::text_note("view verify test secp").build();
         note.tags.add_custom_tag("t", "nostr");
         note.sign_with(&kp).expect("sign");
-        let json = bourne::to_string(&note).unwrap();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&note).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         assert!(view.verify(), "view of signed note must verify");
     }
 
@@ -573,7 +573,7 @@ mod tests {
             ..Default::default()
         };
         note.tags.add_custom_tag("t", "nostr");
-        bourne::to_string(&note).unwrap()
+        json_bourne::to_string(&note).unwrap()
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn sub_view_empty_filter() {
-        let sv: NostrSubscriptionView<'_> = bourne::parse_str(r"{}").unwrap();
+        let sv: NostrSubscriptionView<'_> = json_bourne::parse_str(r"{}").unwrap();
         assert!(sv.authors.is_none());
         assert!(sv.ids.is_none());
         assert!(sv.kinds.is_none());
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn sub_view_full_filter() {
-        let sv: NostrSubscriptionView<'_> = bourne::parse_str(
+        let sv: NostrSubscriptionView<'_> = json_bourne::parse_str(
             r#"{"authors":["aa","bb"],"ids":["cc"],"kinds":[0,1],"since":1000,"until":2000,"limit":10}"#
         ).unwrap();
         assert_eq!(sv.authors.as_deref(), Some(&["aa".into(), "bb".into()][..]));
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn sub_view_tag_filters() {
         let json = "{\"#e\":[\"aa\",\"bb\"],\"#p\":[\"cc\"]}";
-        let sv: NostrSubscriptionView<'_> = bourne::parse_str(json).unwrap();
+        let sv: NostrSubscriptionView<'_> = json_bourne::parse_str(json).unwrap();
         let tags = sv.tags.unwrap();
         assert_eq!(
             tags.get("e").unwrap().as_slice(),
@@ -676,19 +676,19 @@ mod tests {
     #[test]
     fn sub_view_skips_unknown_keys() {
         let sv: NostrSubscriptionView<'_> =
-            bourne::parse_str(r#"{"extra":true,"kinds":[7],"nonsense":[1,2,3]}"#).unwrap();
+            json_bourne::parse_str(r#"{"extra":true,"kinds":[7],"nonsense":[1,2,3]}"#).unwrap();
         assert_eq!(sv.kinds, Some(vec![7]));
     }
 
     #[test]
     fn sub_view_rejects_array() {
-        assert!(bourne::parse_str::<NostrSubscriptionView<'_>>("[]").is_err());
+        assert!(json_bourne::parse_str::<NostrSubscriptionView<'_>>("[]").is_err());
     }
 
     // ── Client event view tests ─────────────────────────
 
     fn client_note_sample() -> String {
-        bourne::to_string(&crate::note::NostrNote {
+        json_bourne::to_string(&crate::note::NostrNote {
             pubkey: "a".repeat(64),
             created_at: 1,
             kind: 1,

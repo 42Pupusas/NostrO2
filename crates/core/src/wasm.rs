@@ -178,13 +178,13 @@ impl TryFrom<JsValue> for NostrNote {
 /// Extension trait for writing a JS `Array` tag row as JSON.
 #[cfg(target_arch = "wasm32")]
 pub trait TagRowJson {
-    fn write_json_row<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
+    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
 }
 
 #[cfg(target_arch = "wasm32")]
 impl TagRowJson for Array {
     #[allow(unknown_lints, crappy)]
-    fn write_json_row<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         for j in 0..self.length() {
             if j > 0 {
@@ -243,7 +243,7 @@ impl NostrEvent for JsValue {
             .map(Cow::Owned)
     }
     #[allow(unknown_lints, crappy)]
-    fn write_tags<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         if let Ok(tags) = Reflect::get(self, &JsValue::from_str("tags")) {
             let outer = Array::from(&tags);
@@ -305,8 +305,8 @@ mod tests {
     #[wasm_bindgen_test]
     fn view_to_js_round_trips_through_note() {
         let n = sample_note();
-        let json = bourne::to_string(&n).unwrap();
-        let view: NostrNoteView<'_> = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&n).unwrap();
+        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
         let back = NostrNote::try_from(JsValue::from(&view)).unwrap();
         assert_eq!(n.pubkey, back.pubkey);
         assert_eq!(n.created_at, back.created_at);

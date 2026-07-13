@@ -90,7 +90,7 @@ mod comparison {
     #[divan::bench]
     fn serialize_nostro2(bencher: divan::Bencher) {
         let (_, note) = nostro2_signed_note();
-        bencher.bench(|| bourne::to_string(black_box(&note)).unwrap());
+        bencher.bench(|| json_bourne::to_string(black_box(&note)).unwrap());
     }
 
     #[divan::bench]
@@ -104,8 +104,8 @@ mod comparison {
     #[divan::bench]
     fn deserialize_nostro2(bencher: divan::Bencher) {
         let (_, note) = nostro2_signed_note();
-        let json = bourne::to_string(&note).unwrap();
-        bencher.bench(|| bourne::parse_str::<nostro2::NostrNote>(black_box(&json)).unwrap());
+        let json = json_bourne::to_string(&note).unwrap();
+        bencher.bench(|| json_bourne::parse_str::<nostro2::NostrNote>(black_box(&json)).unwrap());
     }
 
     #[divan::bench]
@@ -120,18 +120,18 @@ mod comparison {
     #[divan::bench]
     fn view_parse_nostro2(bencher: divan::Bencher) {
         let (_, note) = nostro2_signed_note();
-        let json = bourne::to_string(&note).unwrap();
+        let json = json_bourne::to_string(&note).unwrap();
         bencher.bench(|| {
-            black_box(bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap());
+            black_box(json_bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap());
         });
     }
 
     #[divan::bench]
     fn view_parse_nostro2_owned(bencher: divan::Bencher) {
         let (_, note) = nostro2_signed_note();
-        let json = bourne::to_string(&note).unwrap();
+        let json = json_bourne::to_string(&note).unwrap();
         bencher.bench(|| {
-            black_box(bourne::parse_str::<nostro2::NostrNote>(black_box(&json)).unwrap());
+            black_box(json_bourne::parse_str::<nostro2::NostrNote>(black_box(&json)).unwrap());
         });
     }
 
@@ -324,7 +324,7 @@ mod comparison {
         let kp = NostrKeypair::generate();
         let mut note = NostrNoteBuilder::text_note("x".repeat(size)).build();
         note.sign_with(&kp).unwrap();
-        bencher.bench(|| bourne::to_string(black_box(&note)).unwrap());
+        bencher.bench(|| json_bourne::to_string(black_box(&note)).unwrap());
     }
 
     #[divan::bench(args = SIZES)]
@@ -344,8 +344,8 @@ mod comparison {
         bencher.bench(|| {
             let mut note = NostrNoteBuilder::text_note("Roundtrip").build();
             note.sign_with(&kp).unwrap();
-            let json = bourne::to_string(&note).unwrap();
-            let parsed: nostro2::NostrNote = bourne::parse_str(&json).unwrap();
+            let json = json_bourne::to_string(&note).unwrap();
+            let parsed: nostro2::NostrNote = json_bourne::parse_str(&json).unwrap();
             assert!(parsed.verify());
         });
     }

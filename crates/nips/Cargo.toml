@@ -34,7 +34,7 @@ hmac.workspace = true
 nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
 getrandom.workspace = true
-bourne.workspace = true
+json-bourne.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 

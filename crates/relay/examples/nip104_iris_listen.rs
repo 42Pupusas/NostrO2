@@ -132,7 +132,7 @@ async fn main() {
 
                 // The ratchet payload IS a NIP-17 rumor (a NostrNote). Parse it.
                 // Only reply to real DMs (kind 14), not typing (kind 25), once.
-                let Ok(rumor): Result<nostro2::NostrNote, _> = bourne::parse_str(&text) else {
+                let Ok(rumor): Result<nostro2::NostrNote, _> = json_bourne::parse_str(&text) else {
                     continue;
                 };
                 let their_id = rumor.pubkey.clone();

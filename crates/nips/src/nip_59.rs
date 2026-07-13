@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub enum Nip59Error {
     Nip44Error(crate::nip_44::Nip44Error),
-    SerializationError(bourne::Error),
+    SerializationError(json_bourne::Error),
     ParseError(String),
     SigningError,
 }
@@ -108,7 +108,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         }
         rumor.sig.take();
         let mut seal = nostro2::NostrNote {
-            content: bourne::to_string(rumor).map_err(Nip59Error::SerializationError)?,
+            content: json_bourne::to_string(rumor).map_err(Nip59Error::SerializationError)?,
             kind: 13,
             created_at: Self::jittered_timestamp(),
             ..Default::default()
@@ -139,7 +139,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         let tk = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut gw = nostro2::NostrNote {
-            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: json_bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 1059,
             pubkey: tk.public_key(),
             created_at: Self::jittered_timestamp(),
@@ -166,7 +166,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut gw = nostro2::NostrNote {
-            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: json_bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 10059,
             pubkey: self.public_key(),
             created_at: Self::jittered_timestamp(),
@@ -196,7 +196,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
         let tk = Self::generate();
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut gw = nostro2::NostrNote {
-            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: json_bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 20059,
             pubkey: tk.public_key(),
             created_at: Self::jittered_timestamp(),
@@ -224,7 +224,7 @@ pub trait Nip59: crate::nip_44::Nip44 + nostro2::NostrSigner {
     ) -> Result<nostro2::NostrNote, Nip59Error> {
         let sealed = self.seal(rumor, peer_pubkey)?;
         let mut gw = nostro2::NostrNote {
-            content: bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
+            content: json_bourne::to_string(&sealed).map_err(Nip59Error::SerializationError)?,
             kind: 30059,
             pubkey: self.public_key(),
             created_at: Self::jittered_timestamp(),
@@ -323,7 +323,7 @@ mod tests {
     fn error_display_covers_all_variants() {
         for err in &[
             Nip59Error::Nip44Error(crate::Nip44Error::SharedSecretError),
-            Nip59Error::SerializationError(bourne::parse_str::<i32>("!!!").unwrap_err()),
+            Nip59Error::SerializationError(json_bourne::parse_str::<i32>("!!!").unwrap_err()),
             Nip59Error::ParseError("bad input".into()),
             Nip59Error::SigningError,
         ] {
@@ -341,7 +341,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            Nip59Error::SerializationError(bourne::parse_str::<i32>("!!!").unwrap_err())
+            Nip59Error::SerializationError(json_bourne::parse_str::<i32>("!!!").unwrap_err())
                 .source()
                 .is_some()
         );

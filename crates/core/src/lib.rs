@@ -211,8 +211,8 @@ mod tests {
         note.tags.add_event_tag(PUB);
         note.tags.add_custom_tag("x", "y");
 
-        let json = bourne::to_string(&note).expect("serialize");
-        let round_trip: NostrNote = bourne::parse_str(&json).expect("parse back");
+        let json = json_bourne::to_string(&note).expect("serialize");
+        let round_trip: NostrNote = json_bourne::parse_str(&json).expect("parse back");
         assert_eq!(note, round_trip);
     }
 
@@ -370,8 +370,8 @@ mod tests {
         proptest! {
             #[test]
             fn json_round_trip(note in arb_note()) {
-                let json = bourne::to_string(&note).unwrap();
-                let back: NostrNote = bourne::parse_str(&json).unwrap();
+                let json = json_bourne::to_string(&note).unwrap();
+                let back: NostrNote = json_bourne::parse_str(&json).unwrap();
                 prop_assert_eq!(&note, &back);
             }
 
@@ -388,9 +388,9 @@ mod tests {
             fn view_id_matches_owned_id(note in arb_note()) {
                 let mut owned = note;
                 owned.serialize_id().unwrap();
-                let json = bourne::to_string(&owned).unwrap();
+                let json = json_bourne::to_string(&owned).unwrap();
                 let view: crate::view::NostrNoteView<'_> =
-                    bourne::parse_str(&json).unwrap();
+                    json_bourne::parse_str(&json).unwrap();
                 let view_id = view.compute_id_bytes();
                 let owned_id = owned.id_bytes().unwrap();
                 prop_assert_eq!(owned_id, view_id);

@@ -36,7 +36,7 @@
 //! assert_eq!(tags.len(), 3);
 //! ```
 
-use bourne::{Error, FromJson, JsonWrite, Lexer, ToJson};
+use json_bourne::{Error, FromJson, JsonWrite, Lexer, ToJson};
 
 /// Collection of tags attached to a Nostr note.
 ///
@@ -217,10 +217,10 @@ impl NostrTags {
     /// # Errors
     ///
     /// Returns an error if the JSON is malformed or a cell count overflows `u32`.
-    pub fn parse_rows<'input, C: bourne::FromJson<'input>>(
-        lex: &mut bourne::Lexer<'input>,
-    ) -> Result<(Vec<C>, Vec<u32>), bourne::Error> {
-        use bourne::{Error, ErrorKind};
+    pub fn parse_rows<'input, C: json_bourne::FromJson<'input>>(
+        lex: &mut json_bourne::Lexer<'input>,
+    ) -> Result<(Vec<C>, Vec<u32>), json_bourne::Error> {
+        use json_bourne::{Error, ErrorKind};
         let mut cells = Vec::new();
         let mut offsets: Vec<u32> = vec![0];
 
@@ -336,20 +336,20 @@ mod tests {
         tags.add_pubkey_tag(&"a".repeat(64), None);
         tags.add_event_tag(&"b".repeat(64));
 
-        let from_tags = bourne::to_string(&tags).unwrap();
+        let from_tags = json_bourne::to_string(&tags).unwrap();
         let raw: Vec<Vec<String>> = vec![
             vec!["t".to_string(), "nostr".to_string()],
             vec!["p".to_string(), "a".repeat(64)],
             vec!["e".to_string(), "b".repeat(64)],
         ];
-        let from_vec = bourne::to_string(&raw).unwrap();
+        let from_vec = json_bourne::to_string(&raw).unwrap();
         assert_eq!(from_tags, from_vec);
     }
 
     #[test]
     fn deserialize_from_legacy_shape() {
         let json = r#"[["t","nostr"],["p","abc","wss://relay"],["e","ev"]]"#;
-        let tags: NostrTags = bourne::parse_str(json).unwrap();
+        let tags: NostrTags = json_bourne::parse_str(json).unwrap();
         assert_eq!(tags.len(), 3);
         assert_eq!(tags.row(1).unwrap().len(), 3);
         assert_eq!(tags.first_tagged_pubkey_ref(), Some("abc"));
@@ -385,8 +385,8 @@ mod tests {
         tags.add_pubkey_tag("abc", Some("wss://relay"));
         tags.add_event_tag("ev123");
 
-        let json = bourne::to_string(&tags).unwrap();
-        let back: NostrTags = bourne::parse_str(&json).unwrap();
+        let json = json_bourne::to_string(&tags).unwrap();
+        let back: NostrTags = json_bourne::parse_str(&json).unwrap();
         assert_eq!(tags, back);
     }
 
@@ -406,8 +406,8 @@ mod tests {
                 for row in &rows {
                     tags.add_row(row.iter().cloned());
                 }
-                let json = bourne::to_string(&tags).unwrap();
-                let back: NostrTags = bourne::parse_str(&json).unwrap();
+                let json = json_bourne::to_string(&tags).unwrap();
+                let back: NostrTags = json_bourne::parse_str(&json).unwrap();
                 prop_assert_eq!(&tags, &back);
             }
 

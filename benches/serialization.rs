@@ -58,18 +58,18 @@ fn sample_subscription() -> NostrSubscription {
 #[divan::bench]
 fn client_ser_send_note() -> String {
     let event: NostrClientEvent = black_box(sample_note()).into();
-    bourne::to_string(&event).unwrap()
+    json_bourne::to_string(&event).unwrap()
 }
 
 #[divan::bench]
 fn client_ser_subscribe() -> String {
     let event: NostrClientEvent = black_box(sample_subscription()).into();
-    bourne::to_string(&event).unwrap()
+    json_bourne::to_string(&event).unwrap()
 }
 
 #[divan::bench]
 fn client_ser_close() -> String {
-    bourne::to_string(&NostrClientEvent::close_subscription(black_box("sub_id"))).unwrap()
+    json_bourne::to_string(&NostrClientEvent::close_subscription(black_box("sub_id"))).unwrap()
 }
 
 // ── Relay event serialization ─────────────────────────────────────
@@ -81,7 +81,7 @@ fn relay_ser_new_note() -> String {
         "sub_id".to_string(),
         black_box(sample_note()),
     );
-    bourne::to_string(&event).unwrap()
+    json_bourne::to_string(&event).unwrap()
 }
 
 #[divan::bench]
@@ -92,13 +92,13 @@ fn relay_ser_sent_ok() -> String {
         true,
         "OK".to_string(),
     );
-    bourne::to_string(black_box(&event)).unwrap()
+    json_bourne::to_string(black_box(&event)).unwrap()
 }
 
 #[divan::bench]
 fn relay_ser_eose() -> String {
     let event = NostrRelayEvent::EndOfSubscription(RelayEventTag::Eose, "sub_id".to_string());
-    bourne::to_string(black_box(&event)).unwrap()
+    json_bourne::to_string(black_box(&event)).unwrap()
 }
 
 #[divan::bench]
@@ -107,72 +107,72 @@ fn relay_ser_notice() -> String {
         RelayEventTag::Notice,
         "This is a notice message".to_string(),
     );
-    bourne::to_string(black_box(&event)).unwrap()
+    json_bourne::to_string(black_box(&event)).unwrap()
 }
 
 // ── Client event deserialization ──────────────────────────────────
 
 #[divan::bench]
 fn client_deser_send_note(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrClientEvent::from(sample_note())).unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
+    let json = json_bourne::to_string(&NostrClientEvent::from(sample_note())).unwrap();
+    bencher.bench(|| json_bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
 }
 
 #[divan::bench]
 fn client_deser_subscribe(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrClientEvent::from(sample_subscription())).unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
+    let json = json_bourne::to_string(&NostrClientEvent::from(sample_subscription())).unwrap();
+    bencher.bench(|| json_bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
 }
 
 #[divan::bench]
 fn client_deser_close(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrClientEvent::close_subscription("sub_id")).unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
+    let json = json_bourne::to_string(&NostrClientEvent::close_subscription("sub_id")).unwrap();
+    bencher.bench(|| json_bourne::parse_str::<NostrClientEvent>(black_box(&json)).unwrap());
 }
 
 // ── Relay event deserialization ───────────────────────────────────
 
 #[divan::bench]
 fn relay_deser_new_note(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrRelayEvent::NewNote(
+    let json = json_bourne::to_string(&NostrRelayEvent::NewNote(
         RelayEventTag::Event,
         "sub_id".to_string(),
         sample_note(),
     ))
     .unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
+    bencher.bench(|| json_bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
 }
 
 #[divan::bench]
 fn relay_deser_sent_ok(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrRelayEvent::SentOk(
+    let json = json_bourne::to_string(&NostrRelayEvent::SentOk(
         RelayEventTag::Ok,
         "event_id".to_string(),
         true,
         "OK".to_string(),
     ))
     .unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
+    bencher.bench(|| json_bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
 }
 
 #[divan::bench]
 fn relay_deser_eose(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrRelayEvent::EndOfSubscription(
+    let json = json_bourne::to_string(&NostrRelayEvent::EndOfSubscription(
         RelayEventTag::Eose,
         "sub_id".to_string(),
     ))
     .unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
+    bencher.bench(|| json_bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
 }
 
 #[divan::bench]
 fn relay_deser_notice(bencher: divan::Bencher) {
-    let json = bourne::to_string(&NostrRelayEvent::Notice(
+    let json = json_bourne::to_string(&NostrRelayEvent::Notice(
         RelayEventTag::Notice,
         "This is a notice message".to_string(),
     ))
     .unwrap();
-    bencher.bench(|| bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
+    bencher.bench(|| json_bourne::parse_str::<NostrRelayEvent>(black_box(&json)).unwrap());
 }
 
 // ── Roundtrip ─────────────────────────────────────────────────────
@@ -180,15 +180,15 @@ fn relay_deser_notice(bencher: divan::Bencher) {
 #[divan::bench]
 fn roundtrip_client_send_note() -> NostrClientEvent {
     let event: NostrClientEvent = black_box(sample_note()).into();
-    let json = bourne::to_string(&event).unwrap();
-    bourne::parse_str::<NostrClientEvent>(&json).unwrap()
+    let json = json_bourne::to_string(&event).unwrap();
+    json_bourne::parse_str::<NostrClientEvent>(&json).unwrap()
 }
 
 #[divan::bench]
 fn roundtrip_client_subscribe() -> NostrClientEvent {
     let event: NostrClientEvent = black_box(sample_subscription()).into();
-    let json = bourne::to_string(&event).unwrap();
-    bourne::parse_str::<NostrClientEvent>(&json).unwrap()
+    let json = json_bourne::to_string(&event).unwrap();
+    json_bourne::parse_str::<NostrClientEvent>(&json).unwrap()
 }
 
 #[divan::bench]
@@ -198,8 +198,8 @@ fn roundtrip_relay_new_note() -> NostrRelayEvent {
         "sub_id".to_string(),
         black_box(sample_note()),
     );
-    let json = bourne::to_string(&event).unwrap();
-    bourne::parse_str::<NostrRelayEvent>(&json).unwrap()
+    let json = json_bourne::to_string(&event).unwrap();
+    json_bourne::parse_str::<NostrRelayEvent>(&json).unwrap()
 }
 
 // ── Varying note sizes ────────────────────────────────────────────
@@ -219,6 +219,6 @@ fn note_size_ser(bencher: divan::Bencher, size: usize) {
     };
     bencher.bench(|| {
         let event: NostrClientEvent = black_box(note.clone()).into();
-        bourne::to_string(&event).unwrap()
+        json_bourne::to_string(&event).unwrap()
     });
 }

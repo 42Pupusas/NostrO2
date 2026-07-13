@@ -2,7 +2,7 @@
 
 #[derive(Debug)]
 pub enum NostrErrors {
-    JsonError(bourne::Error),
+    JsonError(json_bourne::Error),
     MissingId,
     MissingSignature,
     MissingPubkey,
@@ -41,8 +41,8 @@ impl std::error::Error for NostrErrors {
     }
 }
 
-impl From<bourne::Error> for NostrErrors {
-    fn from(e: bourne::Error) -> Self {
+impl From<json_bourne::Error> for NostrErrors {
+    fn from(e: json_bourne::Error) -> Self {
         Self::JsonError(e)
     }
 }
@@ -71,10 +71,10 @@ impl From<secp256k1::Error> for NostrErrors {
 mod tests {
     use super::*;
 
-    fn dummy_bourne_err() -> bourne::Error {
-        bourne::Error::new(
-            bourne::ErrorKind::UnexpectedEof,
-            bourne::Position { offset: 0 },
+    fn dummy_bourne_err() -> json_bourne::Error {
+        json_bourne::Error::new(
+            json_bourne::ErrorKind::UnexpectedEof,
+            json_bourne::Position { offset: 0 },
         )
     }
 

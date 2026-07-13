@@ -54,30 +54,26 @@ pub const INVITE_EVENT_KIND: u32 = 30078;
 /// matching the reference `INVITE_RESPONSE_KIND`.
 pub const INVITE_RESPONSE_KIND: u32 = 1059;
 
-bourne::json! {
-    /// Inner authenticated payload: the invitee's session pubkey plus, for
-    /// multi-device users, their owner/identity pubkey. camelCase to match
-    /// the reference JSON byte-for-byte.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct AcceptPayload {
-        #[bourne(rename = "sessionKey")]
-        session_key: String,
-        #[bourne(rename = "ownerPublicKey")]
-        #[bourne(skip_if_none)]
-        owner_public_key: Option<String>,
-    }
+/// Inner authenticated payload: the invitee's session pubkey plus, for
+/// multi-device users, their owner/identity pubkey. camelCase to match
+/// the reference JSON byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+struct AcceptPayload {
+    #[bourne(rename = "sessionKey")]
+    session_key: String,
+    #[bourne(rename = "ownerPublicKey")]
+    #[bourne(skip_if_none)]
+    owner_public_key: Option<String>,
 }
 
-bourne::json! {
-    /// The unsigned inner event carried inside the envelope. Mirrors the
-    /// reference's `{ pubkey, content, created_at }` shape — `pubkey` is the
-    /// invitee's identity key (which doubles as their device id).
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct InnerEvent {
-        pubkey: String,
-        content: String,
-        created_at: i64,
-    }
+/// The unsigned inner event carried inside the envelope. Mirrors the
+/// reference's `{ pubkey, content, created_at }` shape — `pubkey` is the
+/// invitee's identity key (which doubles as their device id).
+#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+struct InnerEvent {
+    pubkey: String,
+    content: String,
+    created_at: i64,
 }
 
 /// What [`Invite::receive`] recovers from an accepted invite.
@@ -276,7 +272,7 @@ impl Invite {
             session_key: session_kp.public_key(),
             owner_public_key: owner_pubkey.map(str::to_owned),
         };
-        let payload_json = bourne::to_string(&payload)?;
+        let payload_json = json_bourne::to_string(&payload)?;
         let dh_encrypted = invitee
             .nip_44_encrypt(&payload_json, &self.inviter)?
             .into_owned();
@@ -288,7 +284,7 @@ impl Invite {
             content: inner_content,
             created_at,
         };
-        let inner_json = bourne::to_string(&inner_event)?;
+        let inner_json = json_bourne::to_string(&inner_event)?;
 
         // Layer 3 (envelope): hide the invitee behind a random sender.
         let random_sender = K::generate();
@@ -346,7 +342,7 @@ impl Invite {
 
         // Peel layer 3: ephemeral × random-sender.
         let inner_json = ephemeral_kp.nip_44_decrypt(&event.content, &event.pubkey)?;
-        let inner_event: InnerEvent = bourne::parse_str(&inner_json)?;
+        let inner_event: InnerEvent = json_bourne::parse_str(&inner_json)?;
         let invitee_identity = inner_event.pubkey;
 
         // Peel layer 2: the raw shared secret.
@@ -356,7 +352,7 @@ impl Invite {
 
         // Peel layer 1: inviter-id × invitee-id DH.
         let payload_json = inviter_identity.nip_44_decrypt(&dh_encrypted, &invitee_identity)?;
-        let payload: AcceptPayload = bourne::parse_str(&payload_json)?;
+        let payload: AcceptPayload = json_bourne::parse_str(&payload_json)?;
 
         let their_session = K::decode_hex_32(&payload.session_key)?;
         let session = Session::<K>::new_responder(

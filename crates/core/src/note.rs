@@ -1,22 +1,20 @@
 use crate::event::NostrEvent;
 use crate::tags::NostrTags;
-use bourne::ToJson;
+use json_bourne::ToJson;
 use nostro2_traits::hex::Hexable;
 
-bourne::json! {
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct NostrNote {
-        pub pubkey: String,
-        pub created_at: i64,
-        pub kind: u32,
-        #[bourne(default)]
-        pub tags: NostrTags,
-        pub content: String,
-        #[bourne(skip_if_none)]
-        pub id: Option<String>,
-        #[bourne(skip_if_none)]
-        pub sig: Option<String>,
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, json_bourne::FromJson, json_bourne::ToJson)]
+pub struct NostrNote {
+    pub pubkey: String,
+    pub created_at: i64,
+    pub kind: u32,
+    #[bourne(default)]
+    pub tags: NostrTags,
+    pub content: String,
+    #[bourne(skip_if_none)]
+    pub id: Option<String>,
+    #[bourne(skip_if_none)]
+    pub sig: Option<String>,
 }
 
 impl NostrNote {
@@ -53,7 +51,7 @@ impl NostrNote {
     ///
     /// Returns [`crate::errors::NostrErrors::JsonError`] if serialization fails.
     pub fn serialize(&self) -> Result<String, crate::errors::NostrErrors> {
-        Ok(bourne::to_string(self)?)
+        Ok(json_bourne::to_string(self)?)
     }
 }
 
@@ -76,7 +74,7 @@ impl NostrEvent for NostrNote {
     fn sig_hex(&self) -> Option<std::borrow::Cow<'_, str>> {
         self.sig.as_deref().map(std::borrow::Cow::Borrowed)
     }
-    fn write_tags<W: bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
         self.tags.write_json(sink)
     }
 }
@@ -84,7 +82,7 @@ impl NostrEvent for NostrNote {
 impl core::str::FromStr for NostrNote {
     type Err = crate::errors::NostrErrors;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(bourne::parse_str(s)?)
+        Ok(json_bourne::parse_str(s)?)
     }
 }
 

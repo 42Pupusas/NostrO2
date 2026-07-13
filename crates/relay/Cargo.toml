@@ -30,7 +30,7 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = ["c
 
 nostro2.workspace = true
 nostro2-cache.workspace = true
-bourne.workspace = true
+json-bourne.workspace = true
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
 
 [dev-dependencies]

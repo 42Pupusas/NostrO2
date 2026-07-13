@@ -5,7 +5,7 @@
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) struct Sha256Sink<'a>(pub(crate) &'a mut sha2::Sha256);
 
-impl bourne::JsonWrite for Sha256Sink<'_> {
+impl json_bourne::JsonWrite for Sha256Sink<'_> {
     type Error = core::convert::Infallible;
 
     #[inline]

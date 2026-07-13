@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use bourne::JsonWrite;
+use json_bourne::JsonWrite;
 use nostro2_traits::hex::FromHex as _;
 
 #[cfg(any(feature = "k256", feature = "secp256k1"))]

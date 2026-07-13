@@ -1,4 +1,4 @@
-use bourne::{
+use json_bourne::{
     Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson,
 };
 
@@ -249,16 +249,16 @@ impl ToJson for NostrRelayEvent {
 }
 
 impl std::str::FromStr for NostrRelayEvent {
-    type Err = bourne::Error;
+    type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        bourne::parse_str(value)
+        json_bourne::parse_str(value)
     }
 }
 
 impl TryFrom<&[u8]> for NostrRelayEvent {
-    type Error = bourne::Error;
+    type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        bourne::parse(value)
+        json_bourne::parse(value)
     }
 }
 
@@ -401,16 +401,16 @@ impl ToJson for NostrClientEvent {
 }
 
 impl std::str::FromStr for NostrClientEvent {
-    type Err = bourne::Error;
+    type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        bourne::parse_str(value)
+        json_bourne::parse_str(value)
     }
 }
 
 impl TryFrom<&[u8]> for NostrClientEvent {
-    type Error = bourne::Error;
+    type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        bourne::parse(value)
+        json_bourne::parse(value)
     }
 }
 
@@ -433,12 +433,12 @@ mod tests {
     }
 
     fn round_trip<
-        T: bourne::ToJson + for<'a> bourne::FromJson<'a> + std::fmt::Debug + PartialEq,
+        T: json_bourne::ToJson + for<'a> json_bourne::FromJson<'a> + std::fmt::Debug + PartialEq,
     >(
         val: &T,
     ) {
-        let json = bourne::to_string(val).expect("serialize");
-        let back: T = bourne::parse_str(&json).expect("parse back");
+        let json = json_bourne::to_string(val).expect("serialize");
+        let back: T = json_bourne::parse_str(&json).expect("parse back");
         assert_eq!(val, &back);
     }
 
@@ -534,7 +534,7 @@ mod tests {
     fn relay_event_from_str_round_trip() {
         let note = sample_note();
         let event = NostrRelayEvent::NewNote(RelayEventTag::Event, "sub1".into(), note);
-        let json = bourne::to_string(&event).unwrap();
+        let json = json_bourne::to_string(&event).unwrap();
         let parsed: NostrRelayEvent = json.parse().unwrap();
         assert_eq!(event, parsed);
     }
@@ -543,7 +543,7 @@ mod tests {
     fn client_event_from_str_round_trip() {
         let note = sample_note();
         let event = NostrClientEvent::SendNoteEvent(RelayEventTag::Event, note);
-        let json = bourne::to_string(&event).unwrap();
+        let json = json_bourne::to_string(&event).unwrap();
         let parsed: NostrClientEvent = json.parse().unwrap();
         assert_eq!(event, parsed);
     }
@@ -571,159 +571,159 @@ mod tests {
 
     #[test]
     fn relay_event_rejects_empty_array() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str("[]");
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str("[]");
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_unknown_tag() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["BOGUS","sub"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["BOGUS","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_tag_only() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EVENT"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EVENT"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_truncated_ok() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid"]"#);
         assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid",true]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid",true]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_trailing_data() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EOSE","sub","extra"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_not_array() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"{"tag":"EVENT"}"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"{"tag":"EVENT"}"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_event_missing_note() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["EVENT","sub"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EVENT","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_event_trailing_data() {
         let note = sample_note();
-        let note_json = bourne::to_string(&note).unwrap();
+        let note_json = json_bourne::to_string(&note).unwrap();
         let json = format!(r#"["EVENT","sub",{note_json},"extra"]"#);
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(&json);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_trailing_data() {
         let result: Result<NostrRelayEvent, _> =
-            bourne::parse_str(r#"["OK","eid",true,"msg","extra"]"#);
+            json_bourne::parse_str(r#"["OK","eid",true,"msg","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_missing_bool() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_missing_message() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["OK","eid",true]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid",true]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn relay_event_rejects_client_only_tags() {
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["REQ","sub",{}]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["REQ","sub",{}]"#);
         assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> = bourne::parse_str(r#"["CLOSE","sub"]"#);
+        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["CLOSE","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_empty_array() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str("[]");
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str("[]");
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_unknown_tag() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["BOGUS","sub"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["BOGUS","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_server_only_tags() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["EOSE","sub"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["EOSE","sub"]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["OK","eid",true,""]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["OK","eid",true,""]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["NOTICE","msg"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["NOTICE","msg"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_event() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["EVENT"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["EVENT"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_req() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ"]"#);
         assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ","sub"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ","sub"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_close() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["CLOSE"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["CLOSE"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_auth() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["AUTH"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["AUTH"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_event_trailing_data() {
         let note = sample_note();
-        let note_json = bourne::to_string(&note).unwrap();
+        let note_json = json_bourne::to_string(&note).unwrap();
         let json = format!(r#"["EVENT",{note_json},"extra"]"#);
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_auth_trailing_data() {
         let note = sample_note();
-        let note_json = bourne::to_string(&note).unwrap();
+        let note_json = json_bourne::to_string(&note).unwrap();
         let json = format!(r#"["AUTH",{note_json},"extra"]"#);
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(&json);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_close_trailing_data() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_req_trailing_data() {
-        let result: Result<NostrClientEvent, _> = bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
+        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
         assert!(result.is_err());
     }
 

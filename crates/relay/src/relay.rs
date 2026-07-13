@@ -320,7 +320,7 @@ impl NostrRelay {
     {
         let msg: nostro2::NostrClientEvent = msg.into();
         // Pre-serialize JSON before sending to writer task
-        let msg_str = bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+        let msg_str = json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
         self.sender
             .send(msg_str.into())
             .map_err(|_| crate::errors::NostrRelayError::SendError)?;
@@ -343,7 +343,7 @@ impl NostrRelay {
     {
         while let Some(msg) = stream.next().await {
             let msg: nostro2::NostrClientEvent = msg.into();
-            let msg_str = bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+            let msg_str = json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
             self.sender
                 .send(msg_str.into())
                 .map_err(|_| crate::errors::NostrRelayError::SendError)?;
@@ -402,9 +402,9 @@ mod tests {
         assert_eq!(e.to_string(), "mpsc send error");
         assert!(e.source().is_none());
 
-        let inner = bourne::Error::new(
-            bourne::ErrorKind::ExpectedArray,
-            bourne::Position { offset: 0 },
+        let inner = json_bourne::Error::new(
+            json_bourne::ErrorKind::ExpectedArray,
+            json_bourne::Position { offset: 0 },
         );
         let e = crate::errors::NostrRelayError::Serde(inner);
         assert!(e.to_string().contains("serialization error"));

@@ -349,7 +349,7 @@ fn try_group(
         Ok(Some(msg)) => {
             *group_msgs += 1;
             let text = String::from_utf8_lossy(&msg.plaintext);
-            let shown = bourne::parse_str::<nostro2::NostrNote>(&text)
+            let shown = json_bourne::parse_str::<nostro2::NostrNote>(&text)
                 .map(|r| r.content)
                 .unwrap_or_else(|_| text.into_owned());
             println!(
@@ -393,7 +393,7 @@ fn reply_to_group(
                 return;
             }
         };
-        let payload = bourne::to_string(&rumor).unwrap_or_default();
+        let payload = json_bourne::to_string(&rumor).unwrap_or_default();
         let mut pushed = 0_u32;
         for peer in peer_keys {
             if let Ok(events) = manager.send(peer, payload.as_bytes(), now) {
@@ -440,7 +440,7 @@ fn group_chat_rumor(our_hex: &str, group_id: &str, text: &str) -> String {
         ..Default::default()
     };
     rumor.serialize_id().ok();
-    bourne::to_string(&rumor).unwrap_or_default()
+    json_bourne::to_string(&rumor).unwrap_or_default()
 }
 
 /// Pull the group `id` out of a kind-40 metadata JSON payload, e.g.
@@ -471,7 +471,7 @@ fn hello_rumor(our_hex: &str, target_hex: &str) -> String {
 
 fn parse_rumor(plaintext: &[u8]) -> Option<nostro2::NostrNote> {
     let text = String::from_utf8_lossy(plaintext);
-    bourne::parse_str(&text).ok()
+    json_bourne::parse_str(&text).ok()
 }
 
 fn npub_to_hex(npub: &str) -> Option<String> {

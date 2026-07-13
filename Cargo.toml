@@ -18,7 +18,7 @@ version = "0.3.0"
 
 [workspace.dependencies]
 # JSON
-bourne = { package = "json-bourne", version = "0.1" }
+json-bourne = { version = "0.2", features = ["derive"] }
 
 nostro2 = { path = "crates/core", version = "0.7.0", default-features = false }
 nostro2-nips = { path = "crates/nips", version = "0.4.0", default-features = false }

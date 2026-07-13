@@ -1,22 +1,18 @@
-bourne::json! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Nip46Method {
-        #[bourne(rename = "connect")] Connect,
-        #[bourne(rename = "sign_event")] SignEvent,
-        #[bourne(rename = "ping")] Ping,
-        #[bourne(rename = "get_public_key")] GetPublicKey,
-        #[bourne(rename = "nip44_encrypt")] Nip44Encrypt,
-        #[bourne(rename = "nip44_decrypt")] Nip44Decrypt,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+pub enum Nip46Method {
+    #[bourne(rename = "connect")] Connect,
+    #[bourne(rename = "sign_event")] SignEvent,
+    #[bourne(rename = "ping")] Ping,
+    #[bourne(rename = "get_public_key")] GetPublicKey,
+    #[bourne(rename = "nip44_encrypt")] Nip44Encrypt,
+    #[bourne(rename = "nip44_decrypt")] Nip44Decrypt,
 }
 
-bourne::json! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Nip46Request { id: String, method: Nip46Method, params: Vec<String> }
-}
+#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+pub struct Nip46Request { id: String, method: Nip46Method, params: Vec<String> }
 impl std::fmt::Display for Nip46Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", bourne::to_string(self).unwrap_or_default())
+        write!(f, "{}", json_bourne::to_string(self).unwrap_or_default())
     }
 }
 impl Nip46Request {
@@ -27,30 +23,28 @@ impl Nip46Request {
     }
 }
 impl std::str::FromStr for Nip46Request {
-    type Err = bourne::Error;
+    type Err = json_bourne::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        bourne::parse_str(s)
+        json_bourne::parse_str(s)
     }
 }
 
-bourne::json! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Nip46Response {
-        id: String,
-        result: String,
-        #[bourne(skip_if_none)]
-        error: Option<String>,
-    }
+#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+pub struct Nip46Response {
+    id: String,
+    result: String,
+    #[bourne(skip_if_none)]
+    error: Option<String>,
 }
 impl std::fmt::Display for Nip46Response {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", bourne::to_string(self).unwrap_or_default())
+        write!(f, "{}", json_bourne::to_string(self).unwrap_or_default())
     }
 }
 impl std::str::FromStr for Nip46Response {
-    type Err = bourne::Error;
+    type Err = json_bourne::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        bourne::parse_str(s)
+        json_bourne::parse_str(s)
     }
 }
 
