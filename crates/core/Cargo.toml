@@ -40,7 +40,12 @@ js-sys = "0.3"
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
-nostro2-signer = { workspace = true, features = ["k256"] }
+# Path-only (no version): `nostro2-signer` depends back on `nostro2`, so a
+# versioned dev-dep would be an unsatisfiable cycle at publish time (signer
+# 0.5.0 can't exist on crates.io until core is published, and core won't
+# publish while it requires it). `cargo publish` drops path-only dev-deps
+# from the uploaded manifest, breaking the cycle; local builds still resolve.
+nostro2-signer = { path = "../signer", features = ["k256"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 divan.workspace = true
