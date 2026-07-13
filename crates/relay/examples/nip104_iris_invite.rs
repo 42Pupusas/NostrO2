@@ -84,8 +84,7 @@ async fn main() {
     let mut accepted = false;
 
     while start.elapsed() < Duration::from_secs(20) {
-        let Ok(Some(ev)) =
-            tokio::time::timeout(Duration::from_millis(200), pool.recv()).await
+        let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(200), pool.recv()).await
         else {
             continue;
         };

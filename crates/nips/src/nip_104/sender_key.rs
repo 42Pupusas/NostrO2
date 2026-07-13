@@ -34,8 +34,8 @@
 
 use std::collections::BTreeMap;
 
-use nostro2_traits::hex::Hexable;
 use nostro2_traits::NostrKeypair;
+use nostro2_traits::hex::Hexable;
 use zeroize::Zeroize;
 
 use super::{Nip104Crypto, Nip104Error};
@@ -445,7 +445,10 @@ mod tests {
             if i == AHEAD {
                 // Receive the very latest first → banks AHEAD skipped keys,
                 // then prunes down to the cap.
-                assert_eq!(receiver.decrypt::<K>(n, &c).unwrap(), format!("m{i}").as_bytes());
+                assert_eq!(
+                    receiver.decrypt::<K>(n, &c).unwrap(),
+                    format!("m{i}").as_bytes()
+                );
             }
         }
         assert_eq!(
@@ -456,7 +459,10 @@ mod tests {
 
         // A recent message (index AHEAD-1) still backfills from a stored key…
         let (rn, rc) = recent.unwrap();
-        assert_eq!(receiver.decrypt::<K>(rn, &rc).unwrap(), format!("m{}", AHEAD - 1).as_bytes());
+        assert_eq!(
+            receiver.decrypt::<K>(rn, &rc).unwrap(),
+            format!("m{}", AHEAD - 1).as_bytes()
+        );
 
         // …but the long-evicted message 0 is unrecoverable (its key was pruned).
         let (fn0, fc0) = first.unwrap();
@@ -530,7 +536,7 @@ mod tests {
     /// message at that index still decrypts afterwards.
     #[test]
     fn tampered_ciphertext_fails_without_advancing() {
-        use base64::engine::{general_purpose, Engine as _};
+        use base64::engine::{Engine as _, general_purpose};
         let ck = [29_u8; 32];
         let mut sender = SenderKeyState::new(1, &ck, 0);
         let receiver = SenderKeyState::new(1, &ck, 0);
@@ -562,7 +568,10 @@ mod tests {
         for i in 0..N {
             let (n, c) = sender.encrypt::<K>(format!("msg-{i}").as_bytes()).unwrap();
             assert_eq!(n, i);
-            assert_eq!(receiver.decrypt::<K>(n, &c).unwrap(), format!("msg-{i}").as_bytes());
+            assert_eq!(
+                receiver.decrypt::<K>(n, &c).unwrap(),
+                format!("msg-{i}").as_bytes()
+            );
         }
         assert_eq!(sender.iteration(), N);
         assert_eq!(receiver.iteration(), N);

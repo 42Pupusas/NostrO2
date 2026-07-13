@@ -111,7 +111,11 @@ impl NostrPool {
     /// ```
     #[must_use]
     pub fn with_cache_size(relays: &[&str], cache_size: usize) -> Self {
-        Self::with_config(relays, cache_size, &crate::relay::ReconnectConfig::default())
+        Self::with_config(
+            relays,
+            cache_size,
+            &crate::relay::ReconnectConfig::default(),
+        )
     }
     /// Sends a message to all relays in the pool.
     ///

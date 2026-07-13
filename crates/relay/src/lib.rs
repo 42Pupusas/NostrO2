@@ -5,6 +5,16 @@
     clippy::pedantic,
     clippy::nursery
 )]
+// A TLS backend is mandatory: `connect_async_with_config` and
+// `MaybeTlsStream` are gated behind tokio-tungstenite's `connect`/`stream`
+// features, which only the `rustls-*` features forward. Without one, the
+// crate references items configured out of existence and fails to build
+// with a wall of "cannot find" errors. Turn that into a single clear line.
+#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!(
+    "nostro2-relay needs a TLS backend; enable exactly one of `rustls-ring` (default) or `rustls-aws-lc`"
+);
+
 pub mod errors;
 mod pool;
 mod relay;

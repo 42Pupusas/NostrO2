@@ -18,7 +18,10 @@ impl Bech32Crypto {
     fn charset_rev(c: u8) -> Option<u8> {
         // CHARSET has 32 entries; position is always < 32.
         #[allow(clippy::cast_possible_truncation)]
-        Self::CHARSET.iter().position(|&ch| ch == c).map(|i| i as u8)
+        Self::CHARSET
+            .iter()
+            .position(|&ch| ch == c)
+            .map(|i| i as u8)
     }
 
     fn polymod(values: &[u8]) -> u32 {
@@ -220,7 +223,10 @@ mod tests {
     fn rejects_mixed_case() {
         let encoded = Bech32Crypto::encode("nsec", &[0; 32]).unwrap();
         let mixed = encoded[..5].to_uppercase() + &encoded[5..];
-        assert!(matches!(Bech32Crypto::decode(&mixed), Err(Bech32Error::MixedCase)));
+        assert!(matches!(
+            Bech32Crypto::decode(&mixed),
+            Err(Bech32Error::MixedCase)
+        ));
     }
 
     #[test]
@@ -245,7 +251,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_hrp() {
-        assert!(matches!(Bech32Crypto::encode("", &[0; 32]), Err(Bech32Error::InvalidHrp)));
+        assert!(matches!(
+            Bech32Crypto::encode("", &[0; 32]),
+            Err(Bech32Error::InvalidHrp)
+        ));
     }
 
     #[test]

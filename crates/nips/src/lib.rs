@@ -12,11 +12,11 @@ mod nip_44;
 mod nip_46;
 mod nip_59;
 
-pub use nip_104::*;
 pub use nip_17::*;
 pub use nip_44::*;
 pub use nip_46::*;
 pub use nip_59::*;
+pub use nip_104::*;
 #[cfg(test)]
 mod tests {
     use nostro2_traits::{NostrKeypair, NostrSigner, SignerError};

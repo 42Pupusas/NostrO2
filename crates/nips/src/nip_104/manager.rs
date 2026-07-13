@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Invite, Nip104Error, Session, MESSAGE_EVENT_KIND};
+use super::{Invite, MESSAGE_EVENT_KIND, Nip104Error, Session};
 use nostro2_traits::NostrKeypair;
 
 type Result<T> = std::result::Result<T, Nip104Error>;
@@ -159,9 +159,7 @@ impl<K: NostrKeypair> SessionManager<K> {
     /// Exposed for persistence: a caller can snapshot each session's
     /// [`SessionState`] (all-public, [`Session::from_state`]-restorable) and
     /// later replay them through [`install_session`] to revive the manager.
-    pub fn sessions(
-        &self,
-    ) -> impl Iterator<Item = ((&str, &str), &super::SessionState)> {
+    pub fn sessions(&self) -> impl Iterator<Item = ((&str, &str), &super::SessionState)> {
         self.peers.iter().flat_map(|(peer, record)| {
             record
                 .devices
@@ -361,8 +359,12 @@ mod tests {
 
         // One public invite; both devices accept it, each claiming the owner.
         let invite = Invite::create_new::<K>(alice.our_pubkey(), None).unwrap();
-        let r1 = bob_dev1.accept_invite(&invite, Some(&bob_owner), NOW).unwrap();
-        let r2 = bob_dev2.accept_invite(&invite, Some(&bob_owner), NOW).unwrap();
+        let r1 = bob_dev1
+            .accept_invite(&invite, Some(&bob_owner), NOW)
+            .unwrap();
+        let r2 = bob_dev2
+            .accept_invite(&invite, Some(&bob_owner), NOW)
+            .unwrap();
 
         // Alice receives both → one peer (the owner) with two device sessions.
         let p1 = alice.receive_invite_response(&invite, &r1).unwrap();
@@ -513,11 +515,17 @@ mod tests {
         for i in 0..100 {
             let a_body = format!("a{i}");
             let ev = alice.send(&bpk, a_body.as_bytes(), NOW).unwrap();
-            assert_eq!(bob.process_event(&ev[0]).unwrap().plaintext, a_body.as_bytes());
+            assert_eq!(
+                bob.process_event(&ev[0]).unwrap().plaintext,
+                a_body.as_bytes()
+            );
 
             let b_body = format!("b{i}");
             let ev = bob.send(&apk, b_body.as_bytes(), NOW).unwrap();
-            assert_eq!(alice.process_event(&ev[0]).unwrap().plaintext, b_body.as_bytes());
+            assert_eq!(
+                alice.process_event(&ev[0]).unwrap().plaintext,
+                b_body.as_bytes()
+            );
         }
     }
 
@@ -565,7 +573,10 @@ mod tests {
         let ev = bob.send(&apk, b"for alice only", NOW).unwrap();
         assert!(mallory.process_event(&ev[0]).is_none());
         // Alice still decrypts it correctly.
-        assert_eq!(alice.process_event(&ev[0]).unwrap().plaintext, b"for alice only");
+        assert_eq!(
+            alice.process_event(&ev[0]).unwrap().plaintext,
+            b"for alice only"
+        );
     }
 
     /// Out-of-order arrival across the manager: a later message decrypts first,

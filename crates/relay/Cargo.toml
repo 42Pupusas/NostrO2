@@ -2,24 +2,31 @@
 name = "nostro2-relay"
 version = "0.4.0"
 edition = "2024"
+rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
+keywords = ["nostr", "relay", "websocket", "client"]
 license = "MIT"
 description = "WebSocket relay client and connection pool for the Nostr protocol"
-repository = "https://github.com/42Pupusas/NostrO2.git"
+repository = "https://github.com/42Pupusas/NostrO2"
 readme = "README.md"
-homepage = "https://github.com/42Pupusas/NostrO2.git"
-documentation = "https://docs.rs/nostro2/latest/nostro2/"
+homepage = "https://github.com/42Pupusas/NostrO2"
+documentation = "https://docs.rs/nostro2-relay"
 
 [features]
 default = ["rustls-ring"]
-rustls-ring = ["rustls/ring", "tokio-tungstenite/rustls-tls-native-roots", "tokio-tungstenite/connect"]
-rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots", "tokio-tungstenite/connect"]
+rustls-ring = ["rustls/ring", "tokio-tungstenite/rustls-tls-native-roots"]
+rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots"]
 
 [dependencies]
 futures-util.workspace = true
 log = "0.4"
-tokio = { workspace = true, features = ["full", "test-util"] }
-tokio-tungstenite = { version = "0.26", default-features = false }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }
+# `connect` (which pulls in `stream`) provides `connect_async_with_config`
+# and `MaybeTlsStream`, both used unconditionally in `relay.rs`. Keep them in
+# the base set so the crate always type-checks; the `rustls-*` features add
+# the actual TLS provider + native roots, and `lib.rs` rejects a build that
+# selects no backend with a single clear `compile_error!`.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
 nostro2.workspace = true
 nostro2-cache.workspace = true

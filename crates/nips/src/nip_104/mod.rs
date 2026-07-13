@@ -35,8 +35,8 @@ pub use manager::*;
 pub use sender_key::*;
 
 use crate::Nip44;
-use base64::engine::{general_purpose, Engine as _};
-use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
+use base64::engine::{Engine as _, general_purpose};
+use nostro2_traits::{NostrKeypair, SignerError, hex::Hexable as _};
 use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
@@ -425,7 +425,9 @@ impl<K: NostrKeypair> Session<K> {
 
         let our_kp = K::from_secret_bytes(&our_current.secret_bytes()?)?;
         let header_json = bourne::to_string(&header)?;
-        let encrypted_header = our_kp.nip_44_encrypt(&header_json, their_next)?.into_owned();
+        let encrypted_header = our_kp
+            .nip_44_encrypt(&header_json, their_next)?
+            .into_owned();
 
         Ok((
             next,
@@ -453,10 +455,13 @@ impl<K: NostrKeypair> Session<K> {
             .clone()
             .or_else(|| next.their_next_nostr_public_key.clone());
 
-        let (header, target) = K::decrypt_header(&next, &envelope.encrypted_header, &envelope.sender)?;
+        let (header, target) =
+            K::decrypt_header(&next, &envelope.encrypted_header, &envelope.sender)?;
         let should_ratchet = target == HeaderTarget::Next;
 
-        if should_ratchet && next.their_next_nostr_public_key.as_ref() != Some(&header.next_public_key) {
+        if should_ratchet
+            && next.their_next_nostr_public_key.as_ref() != Some(&header.next_public_key)
+        {
             next.their_current_nostr_public_key = next.their_next_nostr_public_key.take();
             next.their_next_nostr_public_key = Some(header.next_public_key.clone());
         }
@@ -469,7 +474,8 @@ impl<K: NostrKeypair> Session<K> {
             K::ratchet_step(&mut next)?;
         }
 
-        let payload = K::ratchet_decrypt(&mut next, &header, &envelope.ciphertext, &envelope.sender)?;
+        let payload =
+            K::ratchet_decrypt(&mut next, &header, &envelope.ciphertext, &envelope.sender)?;
         Ok((next, payload))
     }
 
@@ -787,13 +793,16 @@ pub(crate) trait Nip104Crypto: NostrKeypair + Sized {
         sender: &str,
     ) -> Result<(Header, HeaderTarget)> {
         if let Some(current) = &state.our_current_nostr_key
-            && let Ok(h) = Self::try_decrypt_header(&current.secret_bytes()?, sender, encrypted_header)
+            && let Ok(h) =
+                Self::try_decrypt_header(&current.secret_bytes()?, sender, encrypted_header)
         {
             return Ok((h, HeaderTarget::Current));
         }
-        if let Ok(h) =
-            Self::try_decrypt_header(&state.our_next_nostr_key.secret_bytes()?, sender, encrypted_header)
-        {
+        if let Ok(h) = Self::try_decrypt_header(
+            &state.our_next_nostr_key.secret_bytes()?,
+            sender,
+            encrypted_header,
+        ) {
             return Ok((h, HeaderTarget::Next));
         }
         if let Some(previous) = &state.our_previous_nostr_key
@@ -874,8 +883,7 @@ mod tests {
         let alice_pub = K::from_secret_bytes(&alice_secret).unwrap().pubkey_bytes();
         let bob_pub = K::from_secret_bytes(&bob_secret).unwrap().pubkey_bytes();
 
-        let alice =
-            Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
+        let alice = Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
         let mut bob =
             Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
 
@@ -1036,8 +1044,7 @@ mod tests {
         let plaintext = field("plaintext");
 
         // Extract the embedded `msg1_event` JSON object and parse it as a note.
-        let ev_start = vec_json.find("\"msg1_event\":").unwrap()
-            + "\"msg1_event\":".len();
+        let ev_start = vec_json.find("\"msg1_event\":").unwrap() + "\"msg1_event\":".len();
         let obj_start = vec_json[ev_start..].find('{').unwrap() + ev_start;
         let obj_end = vec_json[obj_start..].find('}').unwrap() + obj_start + 1;
         let event: nostro2::NostrNote = vec_json[obj_start..obj_end].parse().unwrap();
@@ -1070,7 +1077,9 @@ mod tests {
         let mut bob =
             Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
 
-        let (anext, event) = alice.plan_send_event(b"over the wire", 1_700_000_000).unwrap();
+        let (anext, event) = alice
+            .plan_send_event(b"over the wire", 1_700_000_000)
+            .unwrap();
         alice.apply(anext);
 
         // The rendered event must look like a real NIP-104 message.
@@ -1096,10 +1105,8 @@ mod tests {
         let alice_pub = K::from_secret_bytes(&alice_secret).unwrap().pubkey_bytes();
         let bob_pub = K::from_secret_bytes(&bob_secret).unwrap().pubkey_bytes();
 
-        let alice =
-            Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
-        let bob =
-            Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
+        let alice = Session::<K>::new_initiator(&bob_pub, &alice_secret, &shared_secret()).unwrap();
+        let bob = Session::<K>::new_responder(&alice_pub, &bob_secret, &shared_secret()).unwrap();
 
         let (_anext, mut event) = alice.plan_send_event(b"tamper me", 1_700_000_000).unwrap();
         event.content.push('A'); // breaks the id/signature

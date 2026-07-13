@@ -120,7 +120,9 @@ pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
 pub use tags::NostrTags;
-pub use view::{NostrClientEventView, NostrNoteView, NostrRelayEventView, NostrSubscriptionView, TagsView};
+pub use view::{
+    NostrClientEventView, NostrNoteView, NostrRelayEventView, NostrSubscriptionView, TagsView,
+};
 
 /// Re-export of the signer traits. Defined in `nostro2-traits` so protocol
 /// crates (`nostro2-nips`) and signer impls (`nostro2-signer`) can share the
@@ -268,13 +270,18 @@ mod tests {
 
     #[test]
     fn test_with_timestamp() {
-        let note = NostrNoteBuilder::text_note("Hello").timestamp(1_234_567_890).build();
+        let note = NostrNoteBuilder::text_note("Hello")
+            .timestamp(1_234_567_890)
+            .build();
         assert_eq!(note.created_at, 1_234_567_890);
     }
 
     #[test]
     fn test_with_content() {
-        let note = NostrNoteBuilder::new().kind(1).content("New content").build();
+        let note = NostrNoteBuilder::new()
+            .kind(1)
+            .content("New content")
+            .build();
         assert_eq!(note.content, "New content");
     }
 
@@ -334,8 +341,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod proptests {
         use super::*;
-        use proptest::prelude::*;
         use crate::event::NostrEvent;
+        use proptest::prelude::*;
 
         fn arb_note() -> impl Strategy<Value = NostrNote> {
             (

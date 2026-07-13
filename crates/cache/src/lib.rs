@@ -2,13 +2,15 @@ use std::sync::{Arc, Mutex};
 
 /// Event ID deduplication cache using std::sync::Mutex with LRU eviction
 ///
-/// This is the winning strategy from benchmarks - fastest under realistic
-/// multi-threaded relay pool scenarios (10-20 concurrent connections).
+/// A `std::sync::Mutex` guarding an [`lru::LruCache`]. Not lock-free — the
+/// mutex is held for the duration of each operation — but it was the fastest
+/// strategy in benchmarks under realistic multi-threaded relay pool scenarios
+/// (10-20 concurrent connections), beating sharded and lock-free alternatives.
 ///
-/// Pros:
+/// Properties:
 /// - Automatic LRU eviction, bounded memory
 /// - Excellent performance under realistic concurrency
-/// - Zero external dependencies beyond lru crate
+/// - Zero external dependencies beyond the `lru` crate
 /// - Simple, predictable behavior
 pub struct Cache {
     cache: Arc<Mutex<lru::LruCache<String, ()>>>,
@@ -20,12 +22,16 @@ impl Cache {
     /// # Arguments
     /// * `capacity` - Maximum number of event IDs to cache
     ///
+    /// # Panics
+    /// Panics if `capacity` is `0`; an LRU cache must hold at least one entry.
+    ///
     /// # Example
     /// ```
     /// use nostro2_cache::Cache;
     ///
     /// let cache = Cache::new(10_000);
     /// ```
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             cache: Arc::new(Mutex::new(lru::LruCache::new(

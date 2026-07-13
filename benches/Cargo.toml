@@ -29,9 +29,8 @@ bourne.workspace = true
 serde_json = "1"
 nostr = { version = "0.44", features = ["nip44"] }
 # Direct access to the raw curve primitives so `verify_sig_only` can call
-# Schnorr verify without the JSON/SHA-256 wrapping in `note.verify()`. These
-# resolve through the workspace `[patch.crates-io]`, so they pick up the local
-# k256 fork. Each is only referenced under its matching `#[cfg(feature)]`.
+# Schnorr verify without the JSON/SHA-256 wrapping in `note.verify()`. Each is
+# only referenced under its matching `#[cfg(feature)]`.
 k256 = { workspace = true }
 secp256k1 = { workspace = true }
 

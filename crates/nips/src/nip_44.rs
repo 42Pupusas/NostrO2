@@ -1,4 +1,4 @@
-use base64::engine::{general_purpose, Engine as _};
+use base64::engine::{Engine as _, general_purpose};
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use hmac::{KeyInit, Mac};
 use zeroize::Zeroize;
@@ -225,7 +225,8 @@ pub trait Nip44: nostro2::NostrKeypair {
     fn conversation_key_v2(
         mut shared_x: zeroize::Zeroizing<[u8; 32]>,
     ) -> Result<zeroize::Zeroizing<[u8; 32]>, Nip44Error> {
-        let (prk, _hk) = hkdf::Hkdf::<sha2::Sha256>::extract(Some(b"nip44-v2"), shared_x.as_slice());
+        let (prk, _hk) =
+            hkdf::Hkdf::<sha2::Sha256>::extract(Some(b"nip44-v2"), shared_x.as_slice());
         shared_x.zeroize();
         let mut key = zeroize::Zeroizing::new([0_u8; 32]);
         key.copy_from_slice(&prk);
@@ -274,8 +275,10 @@ pub trait Nip44: nostro2::NostrKeypair {
         let keys = Self::get_message_keys(conversation_key, nonce)?;
         let mut padded = Self::pad_v2(plaintext)?;
 
-        let mut cipher =
-            chacha20::ChaCha20::new_from_slices(keys.chacha_key.as_slice(), keys.chacha_nonce.as_slice())?;
+        let mut cipher = chacha20::ChaCha20::new_from_slices(
+            keys.chacha_key.as_slice(),
+            keys.chacha_nonce.as_slice(),
+        )?;
         cipher.apply_keystream(padded.as_mut_slice());
         // `padded` is now the ciphertext.
 
@@ -293,10 +296,7 @@ pub trait Nip44: nostro2::NostrKeypair {
     /// - `MacMismatch`: authentication tag mismatch.
     /// - `InvalidPrefixLen`: padding/length-prefix inconsistency.
     /// - `FromUtf8Error`: plaintext not valid UTF-8.
-    fn decrypt_v2(
-        conversation_key: &[u8; 32],
-        decoded: &[u8],
-    ) -> Result<String, Nip44Error> {
+    fn decrypt_v2(conversation_key: &[u8; 32], decoded: &[u8]) -> Result<String, Nip44Error> {
         let dlen = decoded.len();
         // version(1) + nonce(32) + ciphertext(>=34) + mac(32)
         if !(99..=65603).contains(&dlen) {
@@ -310,8 +310,10 @@ pub trait Nip44: nostro2::NostrKeypair {
         Self::verify_hmac_with_aad(keys.hmac_key.as_slice(), ciphertext, &nonce, mac)?;
 
         let mut buffer = zeroize::Zeroizing::new(ciphertext.to_vec());
-        let mut cipher =
-            chacha20::ChaCha20::new_from_slices(keys.chacha_key.as_slice(), keys.chacha_nonce.as_slice())?;
+        let mut cipher = chacha20::ChaCha20::new_from_slices(
+            keys.chacha_key.as_slice(),
+            keys.chacha_nonce.as_slice(),
+        )?;
         cipher.apply_keystream(buffer.as_mut_slice());
 
         let plaintext = Self::unpad_v2(&buffer)?.to_string();
@@ -374,7 +376,11 @@ pub trait Nip44: nostro2::NostrKeypair {
             return 32;
         }
         let next_power = 1_usize << ((unpadded_len - 1).ilog2() + 1);
-        let chunk = if next_power <= 256 { 32 } else { next_power / 8 };
+        let chunk = if next_power <= 256 {
+            32
+        } else {
+            next_power / 8
+        };
         chunk * ((unpadded_len - 1) / chunk + 1)
     }
 
@@ -442,7 +448,8 @@ pub trait Nip44: nostro2::NostrKeypair {
             hmac::Hmac::<sha2::Sha256>::new_from_slice(key).map_err(|_| Nip44Error::HmacError)?;
         mac.update(aad);
         mac.update(message);
-        mac.verify_slice(expected).map_err(|_| Nip44Error::MacMismatch)
+        mac.verify_slice(expected)
+            .map_err(|_| Nip44Error::MacMismatch)
     }
 
     #[must_use]
@@ -482,10 +489,7 @@ pub trait Nip44: nostro2::NostrKeypair {
     /// - `MacMismatch`: authentication tag mismatch.
     /// - `InvalidPrefixLen`: length prefix exceeds available bytes.
     /// - `FromUtf8Error`: plaintext not valid UTF-8.
-    fn decrypt_legacy(
-        conversation_key: &[u8; 32],
-        decoded: &[u8],
-    ) -> Result<String, Nip44Error> {
+    fn decrypt_legacy(conversation_key: &[u8; 32], decoded: &[u8]) -> Result<String, Nip44Error> {
         if decoded.len() < 1 + 12 + 32 {
             return Err(Nip44Error::InvalidLength);
         }
@@ -546,7 +550,9 @@ mod tests {
         let sender_pk = sender.public_key();
         let ciphertext = sender.nip_44_encrypt(plaintext, &receiver_pk).unwrap();
         // New ciphertext must be spec v2 (version byte 0x02).
-        let raw = general_purpose::STANDARD.decode(ciphertext.as_ref()).unwrap();
+        let raw = general_purpose::STANDARD
+            .decode(ciphertext.as_ref())
+            .unwrap();
         assert_eq!(raw[0], VERSION_V2, "expected v2 (0x02) payload");
         let decrypted = receiver.nip_44_decrypt(&ciphertext, &sender_pk).unwrap();
         assert_eq!(decrypted, plaintext);
@@ -831,13 +837,15 @@ mod tests {
                 .source()
                 .is_some()
         );
-        assert!(Nip44Error::Base64DecodingError(
-            base64::engine::general_purpose::STANDARD
-                .decode("!!!")
-                .unwrap_err()
-        )
-        .source()
-        .is_some());
+        assert!(
+            Nip44Error::Base64DecodingError(
+                base64::engine::general_purpose::STANDARD
+                    .decode("!!!")
+                    .unwrap_err()
+            )
+            .source()
+            .is_some()
+        );
         assert!(Nip44Error::FromUtf8Error(utf8_err()).source().is_some());
         assert!(Nip44Error::FromArrayError(slice_err()).source().is_some());
         assert!(Nip44Error::FromIntError(int_err()).source().is_some());

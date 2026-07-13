@@ -113,12 +113,10 @@ pub trait NostrEvent {
     /// [`NostrErrors::InvalidPublicKey`], or a key/signature conversion error.
     #[cfg(feature = "k256")]
     fn verify_signature(&self) -> Result<bool, NostrErrors> {
-        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        use k256::schnorr::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
         let id = self.id_bytes().ok_or(NostrErrors::MissingId)?;
         let sig = self.sig_bytes().ok_or(NostrErrors::MissingSignature)?;
-        let pubkey = self
-            .pubkey_bytes()
-            .ok_or(NostrErrors::InvalidPublicKey)?;
+        let pubkey = self.pubkey_bytes().ok_or(NostrErrors::InvalidPublicKey)?;
         let verifying_key = VerifyingKey::from_bytes((&pubkey).into())?;
         let signature = Signature::try_from(sig.as_slice())?;
         Ok(verifying_key.verify_prehash(&id, &signature).is_ok())
@@ -133,12 +131,10 @@ pub trait NostrEvent {
     #[cfg(feature = "secp256k1")]
     #[allow(unknown_lints, crappy)]
     fn verify_signature(&self) -> Result<bool, NostrErrors> {
-        use secp256k1::{schnorr::Signature, XOnlyPublicKey, SECP256K1};
+        use secp256k1::{SECP256K1, XOnlyPublicKey, schnorr::Signature};
         let id = self.id_bytes().ok_or(NostrErrors::MissingId)?;
         let sig_bytes = self.sig_bytes().ok_or(NostrErrors::MissingSignature)?;
-        let pubkey = self
-            .pubkey_bytes()
-            .ok_or(NostrErrors::InvalidPublicKey)?;
+        let pubkey = self.pubkey_bytes().ok_or(NostrErrors::InvalidPublicKey)?;
         let xonly = XOnlyPublicKey::from_byte_array(pubkey)?;
         let sig = Signature::from_byte_array(sig_bytes);
         Ok(SECP256K1.verify_schnorr(&sig, &id, &xonly).is_ok())

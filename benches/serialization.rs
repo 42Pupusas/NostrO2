@@ -35,7 +35,10 @@ fn sample_note() -> NostrNote {
 
 fn sample_subscription() -> NostrSubscription {
     NostrSubscription {
-        authors: Some(HashSet::from(["author1".to_string(), "author2".to_string()])),
+        authors: Some(HashSet::from([
+            "author1".to_string(),
+            "author2".to_string(),
+        ])),
         ids: Some(HashSet::from(["id1".to_string(), "id2".to_string()])),
         kinds: Some(HashSet::from([1, 2, 3])),
         since: Some(1_234_567_890),

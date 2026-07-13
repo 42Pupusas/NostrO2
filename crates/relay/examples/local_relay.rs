@@ -3,10 +3,10 @@
 //! Prereq: `cargo run --release --example relay -p ring-relay-nostr` in another terminal.
 //! Run:    `cargo run -p nostro2-relay --example local_relay`
 
+use nostro2::NostrKeypair as _;
 use nostro2::{NostrRelayEvent, NostrSubscription};
 use nostro2_relay::NostrRelay;
 use nostro2_signer::NostrKeypair;
-use nostro2::NostrKeypair as _;
 use std::time::Duration;
 
 #[tokio::main]

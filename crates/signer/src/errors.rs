@@ -132,11 +132,11 @@ mod tests {
         assert!(NostrKeypairError::SharedSecretError.source().is_none());
         assert!(NostrKeypairError::NotExtractable.source().is_none());
 
-        assert!(NostrKeypairError::Bech32Error(
-            nostro2_traits::bech32::Bech32Error::InvalidChecksum
-        )
-        .source()
-        .is_some());
+        assert!(
+            NostrKeypairError::Bech32Error(nostro2_traits::bech32::Bech32Error::InvalidChecksum)
+                .source()
+                .is_some()
+        );
         assert!(
             NostrKeypairError::HexDecodeError(nostro2_traits::hex::HexError::OddLength)
                 .source()

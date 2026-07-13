@@ -22,7 +22,7 @@ impl Default for ReconnectConfig {
         Self {
             max_retries: 0, // Infinite retries by default
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_mins(1),
+            max_delay: Duration::from_secs(60),
             backoff_multiplier: 2.0,
         }
     }
@@ -343,8 +343,7 @@ impl NostrRelay {
     {
         while let Some(msg) = stream.next().await {
             let msg: nostro2::NostrClientEvent = msg.into();
-            let msg_str =
-                bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+            let msg_str = bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
             self.sender
                 .send(msg_str.into())
                 .map_err(|_| crate::errors::NostrRelayError::SendError)?;
@@ -403,7 +402,10 @@ mod tests {
         assert_eq!(e.to_string(), "mpsc send error");
         assert!(e.source().is_none());
 
-        let inner = bourne::Error::new(bourne::ErrorKind::ExpectedArray, bourne::Position { offset: 0 });
+        let inner = bourne::Error::new(
+            bourne::ErrorKind::ExpectedArray,
+            bourne::Position { offset: 0 },
+        );
         let e = crate::errors::NostrRelayError::Serde(inner);
         assert!(e.to_string().contains("serialization error"));
         assert!(e.source().is_some());

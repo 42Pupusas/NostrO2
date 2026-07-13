@@ -45,8 +45,7 @@ const OUR_NSEC: &str = "nsec17qf72rfytl0rdvtu3sy2m365xmxqeynghnl5tflftwnwxyhnglv
 // Stable ephemeral key for the invite (deterministic invite across runs).
 const EPHEMERAL_NSEC: &str = "nsec13qeeps3q7xgzpwpdz8786k0h7gxw67j3jmdku8hnhw42frpvzewse6w7ql";
 // Fixed 32-byte shared secret (hex).
-const SHARED_SECRET: &str =
-    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+const SHARED_SECRET: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 const MESSAGE_KIND: u32 = 1060;
 
@@ -127,7 +126,8 @@ async fn main() {
                 let text = String::from_utf8_lossy(&plaintext);
                 println!(
                     "\n\u{1f4e9} DECRYPTED from {} (t={}) : \"{text}\"\n",
-                    short(&sender), note.created_at
+                    short(&sender),
+                    note.created_at
                 );
 
                 // The ratchet payload IS a NIP-17 rumor (a NostrNote). Parse it.
@@ -169,7 +169,11 @@ async fn main() {
                 }
             }
             Err(e) => {
-                println!("  · 1060 from {} (t={}) — no decrypt ({e})", short(&sender), note.created_at);
+                println!(
+                    "  · 1060 from {} (t={}) — no decrypt ({e})",
+                    short(&sender),
+                    note.created_at
+                );
             }
         }
     }

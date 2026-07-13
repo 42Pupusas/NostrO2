@@ -41,7 +41,7 @@
 
 use super::{Nip104Crypto, Nip104Error, Session};
 use crate::Nip44;
-use nostro2_traits::{hex::Hexable as _, NostrKeypair, SignerError};
+use nostro2_traits::{NostrKeypair, SignerError, hex::Hexable as _};
 use zeroize::Zeroize;
 
 type Result<T> = std::result::Result<T, Nip104Error>;
@@ -277,7 +277,9 @@ impl Invite {
             owner_public_key: owner_pubkey.map(str::to_owned),
         };
         let payload_json = bourne::to_string(&payload)?;
-        let dh_encrypted = invitee.nip_44_encrypt(&payload_json, &self.inviter)?.into_owned();
+        let dh_encrypted = invitee
+            .nip_44_encrypt(&payload_json, &self.inviter)?
+            .into_owned();
 
         // Layer 2 (shared secret): prove possession of the link.
         let inner_content = K::encrypt_with_message_key(&shared_secret, dh_encrypted.as_bytes())?;
@@ -348,8 +350,7 @@ impl Invite {
         let invitee_identity = inner_event.pubkey;
 
         // Peel layer 2: the raw shared secret.
-        let dh_encrypted_bytes =
-            K::decrypt_with_message_key(&shared_secret, &inner_event.content)?;
+        let dh_encrypted_bytes = K::decrypt_with_message_key(&shared_secret, &inner_event.content)?;
         let dh_encrypted = String::from_utf8(dh_encrypted_bytes)
             .map_err(|e| Nip104Error::Json(format!("inner utf8: {e}")))?;
 
@@ -358,8 +359,11 @@ impl Invite {
         let payload: AcceptPayload = bourne::parse_str(&payload_json)?;
 
         let their_session = K::decode_hex_32(&payload.session_key)?;
-        let session =
-            Session::<K>::new_responder(&their_session, &ephemeral_kp.secret_bytes(), &shared_secret)?;
+        let session = Session::<K>::new_responder(
+            &their_session,
+            &ephemeral_kp.secret_bytes(),
+            &shared_secret,
+        )?;
 
         Ok((
             session,
@@ -430,8 +434,12 @@ impl Invite {
                 // truncate; done on individual nibbles (not a `str` byte
                 // range) so a `%` next to a multi-byte UTF-8 char can never
                 // land mid-codepoint and panic.
-                let hi = (bytes[i + 1] as char).to_digit(16).and_then(|d| u8::try_from(d).ok());
-                let lo = (bytes[i + 2] as char).to_digit(16).and_then(|d| u8::try_from(d).ok());
+                let hi = (bytes[i + 1] as char)
+                    .to_digit(16)
+                    .and_then(|d| u8::try_from(d).ok());
+                let lo = (bytes[i + 2] as char)
+                    .to_digit(16)
+                    .and_then(|d| u8::try_from(d).ok());
                 if let (Some(hi), Some(lo)) = (hi, lo) {
                     out.push((hi << 4) | lo);
                     i += 3;
@@ -468,13 +476,13 @@ mod tests {
         assert!(invite.inviter_ephemeral_privkey.is_some());
 
         // Invitee accepts -> initiator session + response event.
-        let (mut invitee_session, response) =
-            invite.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        let (mut invitee_session, response) = invite
+            .accept::<K>(&invitee_id, None, 1_700_000_000)
+            .unwrap();
         assert_eq!(response.kind, INVITE_RESPONSE_KIND);
 
         // Inviter receives -> responder session + invitee identity.
-        let (mut inviter_session, recovered) =
-            invite.receive::<K>(&response, &inviter_id).unwrap();
+        let (mut inviter_session, recovered) = invite.receive::<K>(&response, &inviter_id).unwrap();
         assert_eq!(recovered.invitee_identity, invitee_id.public_key());
 
         // The two sessions must now actually talk. Invitee (initiator) sends first.
@@ -513,7 +521,9 @@ mod tests {
         let impostor = ident(0x66);
 
         let invite = Invite::create_new::<K>(&inviter_id.public_key(), None).unwrap();
-        let (_s, response) = invite.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        let (_s, response) = invite
+            .accept::<K>(&invitee_id, None, 1_700_000_000)
+            .unwrap();
 
         // Same ephemeral secret (so the envelope opens), but the wrong identity
         // key fails the inner DH layer.
@@ -528,7 +538,10 @@ mod tests {
         event.sign_with(&inviter_id).unwrap();
 
         let parsed = Invite::from_event(&event).unwrap();
-        assert_eq!(parsed.inviter_ephemeral_pubkey, invite.inviter_ephemeral_pubkey);
+        assert_eq!(
+            parsed.inviter_ephemeral_pubkey,
+            invite.inviter_ephemeral_pubkey
+        );
         assert_eq!(parsed.shared_secret, invite.shared_secret);
         assert_eq!(parsed.inviter, inviter_id.public_key());
         assert_eq!(parsed.device_id.as_deref(), Some("dev9"));
@@ -541,7 +554,10 @@ mod tests {
         let url = invite.to_url("https://chat.iris.to");
         let parsed = Invite::from_url(&url).unwrap();
         assert_eq!(parsed.inviter, invite.inviter);
-        assert_eq!(parsed.inviter_ephemeral_pubkey, invite.inviter_ephemeral_pubkey);
+        assert_eq!(
+            parsed.inviter_ephemeral_pubkey,
+            invite.inviter_ephemeral_pubkey
+        );
         assert_eq!(parsed.shared_secret, invite.shared_secret);
     }
 
@@ -550,7 +566,9 @@ mod tests {
         let inviter_id = ident(0x99);
         let invitee_id = ident(0xAA);
         let invite = Invite::create_new::<K>(&inviter_id.public_key(), None).unwrap();
-        let (_s, mut response) = invite.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        let (_s, mut response) = invite
+            .accept::<K>(&invitee_id, None, 1_700_000_000)
+            .unwrap();
         response.content.push('A'); // breaks the signature
         assert!(invite.receive::<K>(&response, &inviter_id).is_err());
     }
@@ -571,7 +589,9 @@ mod tests {
         forged.shared_secret = [0xEE_u8; 32].to_hex();
 
         // Invitee accepts the *forged* link…
-        let (_s, response) = forged.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        let (_s, response) = forged
+            .accept::<K>(&invitee_id, None, 1_700_000_000)
+            .unwrap();
         // …but the inviter peels with the *real* secret → layer-2 mismatch.
         assert!(real.receive::<K>(&response, &inviter_id).is_err());
     }
@@ -600,7 +620,9 @@ mod tests {
         let inviter_id = ident(0x78);
         let invitee_id = ident(0x9A);
         let invite = Invite::create_new::<K>(&inviter_id.public_key(), Some("dev")).unwrap();
-        let (_s, response) = invite.accept::<K>(&invitee_id, None, 1_700_000_000).unwrap();
+        let (_s, response) = invite
+            .accept::<K>(&invitee_id, None, 1_700_000_000)
+            .unwrap();
 
         // Round-trip through a published event strips the ephemeral secret.
         let mut ev = invite.to_event(1_700_000_000).unwrap();

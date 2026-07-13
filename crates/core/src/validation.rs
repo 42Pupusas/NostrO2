@@ -34,16 +34,18 @@ mod tests {
 
     #[test]
     fn test_valid_pubkey() {
-        assert!("4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d"
-            .is_valid_pubkey());
+        assert!(
+            "4f6ddf3e79731d1b7039e28feb394e41e9117c93e383d31e8b88719095c6b17d".is_valid_pubkey()
+        );
         assert!(!"invalid".is_valid_pubkey());
         assert!(!"4f6d".is_valid_pubkey()); // too short
     }
 
     #[test]
     fn test_valid_event_id() {
-        assert!("a123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            .is_valid_event_id());
+        assert!(
+            "a123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".is_valid_event_id()
+        );
         assert!(!"not_hex".is_valid_event_id());
     }
 

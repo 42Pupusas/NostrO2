@@ -122,9 +122,7 @@ mod comparison {
         let (_, note) = nostro2_signed_note();
         let json = bourne::to_string(&note).unwrap();
         bencher.bench(|| {
-            black_box(
-                bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap(),
-            );
+            black_box(bourne::parse_str::<nostro2::NostrNoteView<'_>>(black_box(&json)).unwrap());
         });
     }
 

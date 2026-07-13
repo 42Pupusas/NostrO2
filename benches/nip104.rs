@@ -16,10 +16,10 @@
 //! cargo bench -p nostro2-benchmarks --bench nip104 --no-default-features --features secp256k1
 //! ```
 
-use divan::{black_box, Bencher};
+use divan::{Bencher, black_box};
 use nostro2_nips::{GroupManager, Invite, SessionManager};
-use nostro2_signer::nostro2_traits::{NostrKeypair as _, NostrSigner as _};
 use nostro2_signer::NostrKeypair;
+use nostro2_signer::nostro2_traits::{NostrKeypair as _, NostrSigner as _};
 
 fn main() {
     divan::main();
@@ -113,7 +113,11 @@ fn dm_round_trip(bencher: Bencher) {
     bencher
         .with_inputs(ready_pair)
         .bench_values(|(mut alice, mut bob, apk, _bpk)| {
-            let event = bob.send(black_box(&apk), PAYLOAD, NOW).unwrap().pop().unwrap();
+            let event = bob
+                .send(black_box(&apk), PAYLOAD, NOW)
+                .unwrap()
+                .pop()
+                .unwrap();
             black_box(alice.process_event(&event).unwrap())
         });
 }
@@ -149,9 +153,7 @@ fn dm_route_miss(bencher: Bencher, sessions: usize) {
             let foreign = stranger.send(&vpk, PAYLOAD, NOW).unwrap().pop().unwrap();
             (alice, foreign)
         })
-        .bench_values(|(mut alice, foreign)| {
-            black_box(alice.process_event(black_box(&foreign)))
-        });
+        .bench_values(|(mut alice, foreign)| black_box(alice.process_event(black_box(&foreign))));
 }
 
 // ── Group helpers ────────────────────────────────────────────────
@@ -182,8 +184,7 @@ fn group_apply_distribution(bencher: Bencher) {
             let mut sender =
                 GroupManager::<NostrKeypair>::new(NostrKeypair::generate().public_key());
             let dist = sender.rotate_sending_chain(GROUP, 1, NOW).unwrap();
-            let receiver =
-                GroupManager::<NostrKeypair>::new(NostrKeypair::generate().public_key());
+            let receiver = GroupManager::<NostrKeypair>::new(NostrKeypair::generate().public_key());
             (receiver, dist)
         })
         .bench_values(|(mut receiver, dist)| {
@@ -198,9 +199,7 @@ fn group_apply_distribution(bencher: Bencher) {
 fn group_encrypt(bencher: Bencher) {
     bencher
         .with_inputs(|| ready_group().0)
-        .bench_values(|mut sender| {
-            black_box(sender.encrypt(GROUP, PAYLOAD, NOW).unwrap())
-        });
+        .bench_values(|mut sender| black_box(sender.encrypt(GROUP, PAYLOAD, NOW).unwrap()));
 }
 
 /// One chain step + NIP-44 decrypt on the receiving side.
@@ -212,9 +211,7 @@ fn group_decrypt(bencher: Bencher) {
             let msg = sender.encrypt(GROUP, PAYLOAD, NOW).unwrap();
             (receiver, msg)
         })
-        .bench_values(|(mut receiver, msg)| {
-            black_box(receiver.decrypt(black_box(&msg)).unwrap())
-        });
+        .bench_values(|(mut receiver, msg)| black_box(receiver.decrypt(black_box(&msg)).unwrap()));
 }
 
 /// Encrypt **and** build+sign the publishable outer kind-1060 event.

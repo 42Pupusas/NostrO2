@@ -2,12 +2,15 @@
 name = "nostro2-nips"
 version = "0.4.0"
 edition = "2024"
+rust-version = "1.87"
+categories = ["authentication", "cryptography", "web-programming"]
+keywords = ["nostr", "nips", "nip44", "nip04", "encryption"]
 license = "MIT"
-description = "Nostro2 is a simple toolset for interacting with the Nostr protocol."
-repository = "https://github.com/42Pupusas/NostrO2.git"
+description = "NIP implementations (NIP-04, NIP-44, NIP-104, …) for the nostro2 Nostr toolset."
+repository = "https://github.com/42Pupusas/NostrO2"
 readme = "../../README.md"
-homepage = "https://github.com/42Pupusas/NostrO2.git"
-documentation = "https://docs.rs/nostro2/latest/nostro2/"
+homepage = "https://github.com/42Pupusas/NostrO2"
+documentation = "https://docs.rs/nostro2-nips"
 
 [features]
 # `nostro2-nips` calls `NostrNote::verify()` (curve-gated in `nostro2`),

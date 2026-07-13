@@ -43,8 +43,7 @@ const OUR_NSEC: &str = "nsec17qf72rfytl0rdvtu3sy2m365xmxqeynghnl5tflftwnwxyhnglv
 // The person whose group we want to join (their owner npub).
 // Fresh experiment identity generated 2024 — nsec held by the user's Iris client:
 //   nsec1pgpxvej2ump67htvkv3gyzfwrsnwqca6sjzgm23lesemdxydnansqdpup7
-const TARGET_NPUB: &str =
-    "npub1psxkkd7jypff8fzxykvfagdzha4jeufnrmlr3prp6z2f30zej9hq8vhu26";
+const TARGET_NPUB: &str = "npub1psxkkd7jypff8fzxykvfagdzha4jeufnrmlr3prp6z2f30zej9hq8vhu26";
 
 const INVITE_KIND: u32 = 30078;
 const MESSAGE_KIND: u32 = 1060;
@@ -55,7 +54,9 @@ async fn main() {
     let our_hex = me.public_key();
 
     // Resolve target npub (CLI arg overrides the default) → x-only hex.
-    let target_npub = std::env::args().nth(1).unwrap_or_else(|| TARGET_NPUB.to_owned());
+    let target_npub = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| TARGET_NPUB.to_owned());
     let target_hex = npub_to_hex(&target_npub).expect("bad target npub");
 
     println!("== NIP-104 GROUP join via active invite-accept ==");
@@ -253,63 +254,63 @@ async fn main() {
                 && let Some(rumor) = parse_rumor(&msg.plaintext)
             {
                 match groups.apply_distribution_rumor(&rumor) {
-                        Ok(Some(dist)) => {
-                            distributions += 1;
-                            println!(
-                                "🔑 DISTRIBUTION from {} — group {}, sender-event {}",
-                                short(&msg.peer),
-                                short(&dist.group_id),
-                                short(&dist.sender_event_pubkey),
-                            );
-                            // May unlock buffered group outer events.
-                            let retry = std::mem::take(&mut pending);
-                            for g in retry {
-                                if try_group(&g, &mut groups, &mut group_msgs).is_none() {
-                                    pending.push(g);
-                                }
-                            }
-                            // A distribution alone gives us the group id AND a
-                            // live session — enough to post. Reply once.
-                            if !replied {
-                                replied = true;
-                                reply_to_group(
-                                    &dist.group_id,
-                                    &mut groups,
-                                    &mut manager,
-                                    &peer_keys,
-                                    &pool,
-                                    "hello group, from nostro2 🦀",
-                                );
+                    Ok(Some(dist)) => {
+                        distributions += 1;
+                        println!(
+                            "🔑 DISTRIBUTION from {} — group {}, sender-event {}",
+                            short(&msg.peer),
+                            short(&dist.group_id),
+                            short(&dist.sender_event_pubkey),
+                        );
+                        // May unlock buffered group outer events.
+                        let retry = std::mem::take(&mut pending);
+                        for g in retry {
+                            if try_group(&g, &mut groups, &mut group_msgs).is_none() {
+                                pending.push(g);
                             }
                         }
-                        _ => {
-                            dms += 1;
-                            println!(
-                                "🔓 1:1 from {} — inner kind {} : {}",
-                                short(&msg.peer),
-                                rumor.kind,
-                                preview(&rumor.content),
+                        // A distribution alone gives us the group id AND a
+                        // live session — enough to post. Reply once.
+                        if !replied {
+                            replied = true;
+                            reply_to_group(
+                                &dist.group_id,
+                                &mut groups,
+                                &mut manager,
+                                &peer_keys,
+                                &pool,
+                                "hello group, from nostro2 🦀",
                             );
-                            // A kind-40 group-create message carries the group
-                            // id + member list — enough to mint our own chain,
-                            // distribute it, and post. Reply once.
-                            if rumor.kind == 40
-                                && !replied
-                                && let Some(gid) = group_id_from_meta(&rumor.content)
-                            {
-                                replied = true;
-                                reply_to_group(
-                                    &gid,
-                                    &mut groups,
-                                    &mut manager,
-                                    &peer_keys,
-                                    &pool,
-                                    "hello group, from nostro2 🦀",
-                                );
-                            }
+                        }
+                    }
+                    _ => {
+                        dms += 1;
+                        println!(
+                            "🔓 1:1 from {} — inner kind {} : {}",
+                            short(&msg.peer),
+                            rumor.kind,
+                            preview(&rumor.content),
+                        );
+                        // A kind-40 group-create message carries the group
+                        // id + member list — enough to mint our own chain,
+                        // distribute it, and post. Reply once.
+                        if rumor.kind == 40
+                            && !replied
+                            && let Some(gid) = group_id_from_meta(&rumor.content)
+                        {
+                            replied = true;
+                            reply_to_group(
+                                &gid,
+                                &mut groups,
+                                &mut manager,
+                                &peer_keys,
+                                &pool,
+                                "hello group, from nostro2 🦀",
+                            );
                         }
                     }
                 }
+            }
         } else {
             // Empty-tag 1060 — a group outer event.
             match try_group(&note, &mut groups, &mut group_msgs) {
@@ -402,9 +403,7 @@ fn reply_to_group(
                 pushed += 1;
             }
         }
-        println!(
-            "📤 reply: minted sending chain, distributed sender key to {pushed} session(s)",
-        );
+        println!("📤 reply: minted sending chain, distributed sender key to {pushed} session(s)",);
     }
 
     // 2. Build the inner kind-14 group chat rumor and publish one outer event.
@@ -413,7 +412,10 @@ fn reply_to_group(
         Ok(outer) => {
             let id = outer.id.clone().unwrap_or_default();
             pool.send(&outer).ok();
-            println!("📨 reply: published group message {} : \"{text}\"\n", short(&id));
+            println!(
+                "📨 reply: published group message {} : \"{text}\"\n",
+                short(&id)
+            );
         }
         Err(e) => println!("  · reply: encrypt group message failed: {e}"),
     }

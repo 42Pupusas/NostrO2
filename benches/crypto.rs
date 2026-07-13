@@ -60,7 +60,7 @@ fn verify_sig_only(bencher: divan::Bencher) {
 
     #[cfg(feature = "k256")]
     bencher.bench(|| {
-        use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        use k256::schnorr::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
         let vk = VerifyingKey::from_bytes((&pubkey).into()).unwrap();
         let s = Signature::try_from(sig.as_slice()).unwrap();
         black_box(vk.verify_prehash(black_box(&prehash), &s).is_ok())
@@ -68,7 +68,7 @@ fn verify_sig_only(bencher: divan::Bencher) {
 
     #[cfg(feature = "secp256k1")]
     bencher.bench(|| {
-        use secp256k1::{schnorr::Signature, XOnlyPublicKey, SECP256K1};
+        use secp256k1::{SECP256K1, XOnlyPublicKey, schnorr::Signature};
         let xonly = XOnlyPublicKey::from_byte_array(pubkey).unwrap();
         let s = Signature::from_byte_array(sig);
         black_box(

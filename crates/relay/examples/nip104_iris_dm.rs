@@ -144,7 +144,10 @@ async fn main() {
         if let Ok(Some(NostrRelayEvent::SentOk(_, id, ok, msg))) =
             tokio::time::timeout(Duration::from_millis(200), pool.recv()).await
         {
-            println!("OK id={}… accepted={ok} msg=\"{msg}\"", &id[..8.min(id.len())]);
+            println!(
+                "OK id={}… accepted={ok} msg=\"{msg}\"",
+                &id[..8.min(id.len())]
+            );
         }
     }
     println!("\nDone — check your Iris private chats.");
@@ -152,8 +155,10 @@ async fn main() {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }

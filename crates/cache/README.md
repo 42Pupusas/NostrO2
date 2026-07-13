@@ -1,59 +1,27 @@
 # nostro2-cache
 
-Event ID deduplication cache strategies for Nostr relay implementations.
+Event-ID deduplication cache for Nostr relay clients.
 
-## Strategies
+## `Cache`
 
-### 1. DashMapCache (Lock-Free)
-- **Implementation**: `dashmap::DashMap` (concurrent hashmap)
-- **Pros**: Lock-free, excellent concurrent performance
-- **Cons**: No LRU eviction, simple clear-when-full strategy
-- **Best for**: High-throughput, many concurrent writers
+A `std::sync::Mutex<lru::LruCache<String, ()>>` behind an `Arc`, cheap to
+`clone` and share across relay connections. It is **not** lock-free — the
+mutex is held for the duration of each operation — but it was the fastest
+strategy in benchmarks under realistic multi-threaded relay pool scenarios
+(10-20 concurrent connections), beating sharded and lock-free alternatives.
 
-### 2. ParkingLotLruCache
-- **Implementation**: `parking_lot::Mutex<lru::LruCache>`
-- **Pros**: Fast mutex, automatic LRU eviction, bounded memory
-- **Cons**: Mutex contention under very high concurrency
-- **Best for**: Moderate concurrency with memory constraints
-
-### 3. StdMutexLruCache
-- **Implementation**: `std::sync::Mutex<lru::LruCache>`
-- **Pros**: No external deps, automatic LRU eviction
-- **Cons**: Slower than parking_lot under contention
-- **Best for**: Simple use cases, minimal dependencies
-
-## Benchmarks
-
-Run benchmarks to compare strategies:
-
-```bash
-# Run all benchmarks
-cargo bench --package nostro2-cache
-
-# Run specific benchmark
-cargo bench --package nostro2-cache -- single_thread
-cargo bench --package nostro2-cache -- multi_thread
-cargo bench --package nostro2-cache -- realistic
-
-# View HTML reports
-open target/criterion/report/index.html
-```
-
-### Benchmark Scenarios
-
-1. **Single Thread Insert**: Pure insertion performance
-2. **Multi Thread Insert**: Concurrent insert with 2, 4, 8, 10, 20 threads
-3. **Realistic Relay Pattern**: 10 threads with 20% duplicate rate
+- Automatic LRU eviction, bounded memory
+- Zero external dependencies beyond the `lru` crate
+- Simple, predictable behavior
 
 ## Usage
 
 ```rust
-use nostro2_cache::{DashMapCache, ParkingLotLruCache, StdMutexLruCache};
+use nostro2_cache::Cache;
 
-// Choose your strategy
-let cache = DashMapCache::new(10_000);
+let cache = Cache::new(10_000);
 
-// Check for duplicates
+// `insert` returns true for a new id, false for a duplicate.
 if cache.insert(event_id) {
     println!("New event!");
 } else {
@@ -61,8 +29,10 @@ if cache.insert(event_id) {
 }
 ```
 
-## Recommendations
+`Cache::new(0)` panics — an LRU cache must hold at least one entry.
 
-- **ring-relay-client**: Use `DashMapCache` for lock-free consistency
-- **nostro2-relay (async)**: Use `ParkingLotLruCache` for bounded memory
-- **Low concurrency**: Use `StdMutexLruCache` to minimize dependencies
+## Benchmarks
+
+```bash
+cargo bench --package nostro2-cache
+```

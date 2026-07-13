@@ -20,12 +20,12 @@
 
 use std::collections::BTreeMap;
 
-use base64::engine::{general_purpose, Engine as _};
-use nostro2_traits::hex::Hexable;
+use base64::engine::{Engine as _, general_purpose};
 use nostro2_traits::NostrKeypair;
+use nostro2_traits::hex::Hexable;
 use zeroize::Zeroize;
 
-use super::{Nip104Crypto, Nip104Error, SenderKeyState, MESSAGE_EVENT_KIND};
+use super::{MESSAGE_EVENT_KIND, Nip104Crypto, Nip104Error, SenderKeyState};
 
 type Result<T> = std::result::Result<T, Nip104Error>;
 
@@ -417,8 +417,8 @@ impl<K: NostrKeypair> GroupManager<K> {
         let (message_number, ciphertext_b64) = send.state.encrypt::<K>(plaintext)?;
         let content = Self::encode_outer_content(key_id, message_number, &ciphertext_b64)?;
 
-        let signer = K::from_secret_bytes(&send.sender_event_secret)
-            .map_err(Nip104Error::Signer)?;
+        let signer =
+            K::from_secret_bytes(&send.sender_event_secret).map_err(Nip104Error::Signer)?;
         let mut note = nostro2::NostrNote {
             kind: GROUP_MESSAGE_KIND,
             content,
@@ -662,7 +662,10 @@ mod tests {
 
         for i in 0..5 {
             let m = alice.encrypt("g", format!("m{i}").as_bytes(), i).unwrap();
-            assert_eq!(bob.decrypt(&m).unwrap().plaintext, format!("m{i}").as_bytes());
+            assert_eq!(
+                bob.decrypt(&m).unwrap().plaintext,
+                format!("m{i}").as_bytes()
+            );
         }
     }
 
@@ -845,7 +848,9 @@ mod tests {
             .collect();
 
         // Publish ONCE.
-        let ev = alice.encrypt_to_event("big", b"hello everyone", 1001).unwrap();
+        let ev = alice
+            .encrypt_to_event("big", b"hello everyone", 1001)
+            .unwrap();
         for (i, m) in members.iter_mut().enumerate() {
             let got = m
                 .decrypt_event(&ev)
@@ -870,8 +875,14 @@ mod tests {
         for i in 0..N {
             let body = format!("event #{i}");
             let ev = alice.encrypt_to_event("busy", body.as_bytes(), i).unwrap();
-            assert_eq!(bob.decrypt_event(&ev).unwrap().unwrap().plaintext, body.as_bytes());
-            assert_eq!(carol.decrypt_event(&ev).unwrap().unwrap().plaintext, body.as_bytes());
+            assert_eq!(
+                bob.decrypt_event(&ev).unwrap().unwrap().plaintext,
+                body.as_bytes()
+            );
+            assert_eq!(
+                carol.decrypt_event(&ev).unwrap().unwrap().plaintext,
+                body.as_bytes()
+            );
         }
     }
 
@@ -887,7 +898,11 @@ mod tests {
 
         let mut backlog = Vec::new();
         for i in 0..1_000 {
-            backlog.push(alice.encrypt_to_event("g", format!("old-{i}").as_bytes(), i).unwrap());
+            backlog.push(
+                alice
+                    .encrypt_to_event("g", format!("old-{i}").as_bytes(), i)
+                    .unwrap(),
+            );
         }
 
         // Eve joins now at the current iteration.
@@ -898,7 +913,10 @@ mod tests {
 
         // Forward secrecy for the future: a new message decrypts for Eve.
         let fresh = alice.encrypt_to_event("g", b"after eve", 3000).unwrap();
-        assert_eq!(eve.decrypt_event(&fresh).unwrap().unwrap().plaintext, b"after eve");
+        assert_eq!(
+            eve.decrypt_event(&fresh).unwrap().unwrap().plaintext,
+            b"after eve"
+        );
 
         // The backlog is in Eve's past with no stored keys → unrecoverable.
         let old = backlog.last().unwrap();
@@ -919,9 +937,15 @@ mod tests {
         let mut forged = ev.clone();
         forged.content.push('A'); // invalidates id + signature
 
-        assert!(matches!(bob.decrypt_event(&forged), Err(Nip104Error::InvalidHeader)));
+        assert!(matches!(
+            bob.decrypt_event(&forged),
+            Err(Nip104Error::InvalidHeader)
+        ));
         // Untouched chain: the authentic event still decrypts.
-        assert_eq!(bob.decrypt_event(&ev).unwrap().unwrap().plaintext, b"genuine");
+        assert_eq!(
+            bob.decrypt_event(&ev).unwrap().unwrap().plaintext,
+            b"genuine"
+        );
     }
 
     /// An event whose signature is valid but whose content is structurally
@@ -988,8 +1012,14 @@ mod tests {
         let got = bob.decrypt_event(&ev_a).unwrap().unwrap();
         assert_eq!(got.group_id, "groupA");
         assert_eq!(got.plaintext, b"secret A");
-        assert!(bob.known_senders("groupA").contains(&da.sender_event_pubkey));
-        assert!(!bob.known_senders("groupB").contains(&da.sender_event_pubkey));
+        assert!(
+            bob.known_senders("groupA")
+                .contains(&da.sender_event_pubkey)
+        );
+        assert!(
+            !bob.known_senders("groupB")
+                .contains(&da.sender_event_pubkey)
+        );
     }
 
     /// After a key rotation, a message from the *retired* chain no longer
@@ -1011,7 +1041,10 @@ mod tests {
         bob.apply_distribution(&d2).unwrap();
         let mut wrong = stale;
         wrong.sender_event_pubkey = d2.sender_event_pubkey.clone();
-        assert!(matches!(bob.decrypt(&wrong), Err(Nip104Error::InvalidHeader)));
+        assert!(matches!(
+            bob.decrypt(&wrong),
+            Err(Nip104Error::InvalidHeader)
+        ));
     }
 
     #[test]

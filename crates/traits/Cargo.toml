@@ -1,11 +1,15 @@
 [package]
 name = "nostro2-traits"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+rust-version = "1.87"
 categories = ["authentication", "cryptography"]
+keywords = ["nostr", "signer", "traits", "schnorr"]
 license = "MIT"
 description = "Signing traits for the nostro2 ecosystem (NostrSigner, NostrKeypair)."
-repository = "https://github.com/42Pupusas/NostrO2.git"
+repository = "https://github.com/42Pupusas/NostrO2"
+homepage = "https://github.com/42Pupusas/NostrO2"
+documentation = "https://docs.rs/nostro2-traits"
 
 [dev-dependencies]
 divan.workspace = true
@@ -16,5 +20,3 @@ proptest = "1"
 name = "hex_bench"
 path = "../../benches/hex_bench.rs"
 harness = false
-
-[dependencies]

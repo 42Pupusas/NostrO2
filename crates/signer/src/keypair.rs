@@ -103,9 +103,7 @@ impl NostrKeypairTrait for NostrKeypair {
                 };
             }
         }
-        panic!(
-            "secp256k1::SecretKey::from_byte_array rejected three CSPRNG draws — RNG is broken"
-        );
+        panic!("secp256k1::SecretKey::from_byte_array rejected three CSPRNG draws — RNG is broken");
     }
 
     #[cfg(feature = "k256")]
@@ -213,13 +211,15 @@ impl NostrKeypair {
     /// Returns `InvalidKey` if no encoding matches.
     pub fn from_any(value: &str) -> Result<Self, NostrKeypairError> {
         if value.starts_with("nsec1")
-            && let Ok(kp) = Self::from_nsec(value) {
-                return Ok(kp);
-            }
+            && let Ok(kp) = Self::from_nsec(value)
+        {
+            return Ok(kp);
+        }
         if value.len() == 64
-            && let Ok(kp) = Self::from_hex(value) {
-                return Ok(kp);
-            }
+            && let Ok(kp) = Self::from_hex(value)
+        {
+            return Ok(kp);
+        }
         for language in [xinachtli::Language::English, xinachtli::Language::Spanish] {
             if let Ok(kp) = Self::from_mnemonic(value, language) {
                 return Ok(kp);
@@ -253,7 +253,6 @@ impl NostrKeypair {
     pub fn nsec(&self) -> Result<String, NostrKeypairError> {
         Ok(KeypairBech32::to_nsec(self)?)
     }
-
 }
 
 // ── FromStr ────────────────────────────────────────────────────────────
@@ -293,7 +292,7 @@ mod tests {
 
         #[cfg(feature = "k256")]
         {
-            use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+            use k256::schnorr::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
             let pk_bytes = kp.pubkey_bytes();
             let vk = VerifyingKey::from_bytes((&pk_bytes).into()).unwrap();
             for sig in [a, b] {
@@ -303,14 +302,16 @@ mod tests {
         }
         #[cfg(feature = "secp256k1")]
         {
-            use secp256k1::{schnorr::Signature, XOnlyPublicKey};
+            use secp256k1::{XOnlyPublicKey, schnorr::Signature};
             let pk_bytes = kp.pubkey_bytes();
             let xonly = XOnlyPublicKey::from_byte_array(pk_bytes).unwrap();
             for sig in [a, b] {
                 let s = Signature::from_byte_array(sig);
-                assert!(secp256k1::SECP256K1
-                    .verify_schnorr(&s, &prehash, &xonly)
-                    .is_ok());
+                assert!(
+                    secp256k1::SECP256K1
+                        .verify_schnorr(&s, &prehash, &xonly)
+                        .is_ok()
+                );
             }
         }
     }

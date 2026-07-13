@@ -134,7 +134,10 @@ pub trait WireFrameExt {
 impl WireFrameExt for Lexer<'_> {
     fn parse_frame_tag(&mut self) -> Result<RelayEventTag, BourneError> {
         if self.array_start()? {
-            return Err(BourneError::new(BourneErrorKind::TypeMismatch, self.position()));
+            return Err(BourneError::new(
+                BourneErrorKind::TypeMismatch,
+                self.position(),
+            ));
         }
         let tag = RelayEventTag::from_str_wire(self.parse_str_value()?)
             .ok_or_else(|| BourneError::new(BourneErrorKind::UnknownField, self.position()))?;
@@ -144,7 +147,10 @@ impl WireFrameExt for Lexer<'_> {
 
     fn expect_more(&mut self) -> Result<(), BourneError> {
         if self.array_continue(b']')? {
-            Err(BourneError::new(BourneErrorKind::MissingField, self.position()))
+            Err(BourneError::new(
+                BourneErrorKind::MissingField,
+                self.position(),
+            ))
         } else {
             Ok(())
         }
@@ -154,7 +160,10 @@ impl WireFrameExt for Lexer<'_> {
         if self.array_continue(b']')? {
             Ok(())
         } else {
-            Err(BourneError::new(BourneErrorKind::TrailingData, self.position()))
+            Err(BourneError::new(
+                BourneErrorKind::TrailingData,
+                self.position(),
+            ))
         }
     }
 }
@@ -186,10 +195,18 @@ impl RelayFrameParser<'_> for NostrRelayEvent {
     fn sent_ok(tag: RelayEventTag, event_id: String, success: bool, message: String) -> Self {
         Self::SentOk(tag, event_id, success, message)
     }
-    fn eose(tag: RelayEventTag, sub_id: String) -> Self { Self::EndOfSubscription(tag, sub_id) }
-    fn closed(tag: RelayEventTag, sub_id: String) -> Self { Self::ClosedSubscription(tag, sub_id) }
-    fn notice(tag: RelayEventTag, message: String) -> Self { Self::Notice(tag, message) }
-    fn auth(tag: RelayEventTag, challenge: String) -> Self { Self::Auth(tag, challenge) }
+    fn eose(tag: RelayEventTag, sub_id: String) -> Self {
+        Self::EndOfSubscription(tag, sub_id)
+    }
+    fn closed(tag: RelayEventTag, sub_id: String) -> Self {
+        Self::ClosedSubscription(tag, sub_id)
+    }
+    fn notice(tag: RelayEventTag, message: String) -> Self {
+        Self::Notice(tag, message)
+    }
+    fn auth(tag: RelayEventTag, challenge: String) -> Self {
+        Self::Auth(tag, challenge)
+    }
 }
 
 impl<'input> FromJson<'input> for NostrRelayEvent {
@@ -261,8 +278,8 @@ pub enum NostrClientEvent {
 
 impl NostrClientEvent {
     fn fresh_sub_id() -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         static START_NS: OnceLock<u64> = OnceLock::new();
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -309,8 +326,6 @@ impl From<&super::note::NostrNote> for NostrClientEvent {
     }
 }
 
-
-
 impl From<super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: super::subscriptions::NostrSubscription) -> Self {
         Self::Subscribe(RelayEventTag::Req, Self::fresh_sub_id(), subscription)
@@ -319,7 +334,11 @@ impl From<super::subscriptions::NostrSubscription> for NostrClientEvent {
 
 impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     fn from(subscription: &super::subscriptions::NostrSubscription) -> Self {
-        Self::Subscribe(RelayEventTag::Req, Self::fresh_sub_id(), subscription.clone())
+        Self::Subscribe(
+            RelayEventTag::Req,
+            Self::fresh_sub_id(),
+            subscription.clone(),
+        )
     }
 }
 
