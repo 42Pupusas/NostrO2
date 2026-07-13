@@ -12,7 +12,7 @@
 //!
 //! Run: `cargo run -p nostro2-relay --example nip104_iris_dm`
 
-use nostro2::{NostrKeypair as _, NostrRelayEvent, NostrSigner as _};
+use nostro2::{NostrRelayEvent, NostrSigner as _};
 use nostro2_nips::{Invite, SessionManager};
 use nostro2_signer::NostrKeypair;
 use nostro2_traits::bech32::Bech32Crypto;
@@ -39,7 +39,6 @@ const MESSAGE: &str = "hello from nostro2 — live NIP-104 double ratchet :3";
 const OUR_NSEC: &str = "nsec17qf72rfytl0rdvtu3sy2m365xmxqeynghnl5tflftwnwxyhnglvsauzfgp";
 
 const INVITE_KIND: u32 = 30078;
-const INVITE_LABEL: &str = "double-ratchet/invites";
 
 #[tokio::main]
 async fn main() {

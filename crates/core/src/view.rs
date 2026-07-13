@@ -494,7 +494,7 @@ mod tests {
     // ── Subscription view tests ─────────────────────────
 
     #[test] fn sub_view_empty_filter() {
-        let sv: NostrSubscriptionView<'_> = bourne::parse_str(r#"{}"#).unwrap();
+        let sv: NostrSubscriptionView<'_> = bourne::parse_str(r"{}").unwrap();
         assert!(sv.authors.is_none());
         assert!(sv.ids.is_none());
         assert!(sv.kinds.is_none());

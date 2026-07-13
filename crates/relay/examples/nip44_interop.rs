@@ -60,12 +60,10 @@ async fn main() {
     use nostro2::NostrRelayEvent;
     let start = std::time::Instant::now();
     while start.elapsed() < std::time::Duration::from_secs(8) {
-        if let Ok(Some(ev)) =
+        if let Ok(Some(NostrRelayEvent::SentOk(_, id, ok, msg))) =
             tokio::time::timeout(std::time::Duration::from_millis(200), pool.recv()).await
         {
-            if let NostrRelayEvent::SentOk(_, id, ok, msg) = ev {
-                println!("OK id={id} accepted={ok} msg=\"{msg}\"");
-            }
+            println!("OK id={id} accepted={ok} msg=\"{msg}\"");
         }
     }
     println!("\nDone. Check Primal DMs for the recipient.");

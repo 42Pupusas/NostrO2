@@ -391,7 +391,7 @@ mod tests {
         relay.send(subscription).unwrap();
         println!("Connected in {:?}", time.elapsed());
         while let Some(msg) = relay.recv().await {
-            println!("{msg:?}",);
+            println!("{msg:?}");
         }
         println!("Done in {:?}", time.elapsed());
     }
