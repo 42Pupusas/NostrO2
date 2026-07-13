@@ -1,15 +1,25 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
 pub enum Nip46Method {
-    #[bourne(rename = "connect")] Connect,
-    #[bourne(rename = "sign_event")] SignEvent,
-    #[bourne(rename = "ping")] Ping,
-    #[bourne(rename = "get_public_key")] GetPublicKey,
-    #[bourne(rename = "nip44_encrypt")] Nip44Encrypt,
-    #[bourne(rename = "nip44_decrypt")] Nip44Decrypt,
+    #[bourne(rename = "connect")]
+    Connect,
+    #[bourne(rename = "sign_event")]
+    SignEvent,
+    #[bourne(rename = "ping")]
+    Ping,
+    #[bourne(rename = "get_public_key")]
+    GetPublicKey,
+    #[bourne(rename = "nip44_encrypt")]
+    Nip44Encrypt,
+    #[bourne(rename = "nip44_decrypt")]
+    Nip44Decrypt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
-pub struct Nip46Request { id: String, method: Nip46Method, params: Vec<String> }
+pub struct Nip46Request {
+    id: String,
+    method: Nip46Method,
+    params: Vec<String>,
+}
 impl std::fmt::Display for Nip46Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", json_bourne::to_string(self).unwrap_or_default())

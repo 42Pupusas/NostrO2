@@ -14,16 +14,16 @@ members = [
 
 [workspace.dependencies.nostro2-traits]
 path = "crates/traits"
-version = "0.3.0"
+version = "0.3.1"
 
 [workspace.dependencies]
 # JSON
 json-bourne = { version = "0.2", features = ["derive"] }
 
-nostro2 = { path = "crates/core", version = "0.7.0", default-features = false }
-nostro2-nips = { path = "crates/nips", version = "0.4.0", default-features = false }
-nostro2-signer = { path = "crates/signer", version = "0.5.0", default-features = false }
-nostro2-cache = { path = "crates/cache", version = "0.2.1" }
+nostro2 = { path = "crates/core", version = "0.7.1", default-features = false }
+nostro2-nips = { path = "crates/nips", version = "0.4.1", default-features = false }
+nostro2-signer = { path = "crates/signer", version = "0.5.1", default-features = false }
+nostro2-cache = { path = "crates/cache", version = "0.2.2" }
 
 # Cryptography
 base64 = "0.22"

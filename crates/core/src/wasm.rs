@@ -178,13 +178,19 @@ impl TryFrom<JsValue> for NostrNote {
 /// Extension trait for writing a JS `Array` tag row as JSON.
 #[cfg(target_arch = "wasm32")]
 pub trait TagRowJson {
-    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
+    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(
+        &self,
+        sink: &mut W,
+    ) -> Result<(), W::Error>;
 }
 
 #[cfg(target_arch = "wasm32")]
 impl TagRowJson for Array {
     #[allow(unknown_lints, crappy)]
-    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(
+        &self,
+        sink: &mut W,
+    ) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         for j in 0..self.length() {
             if j > 0 {

@@ -597,7 +597,8 @@ mod tests {
 
     #[test]
     fn relay_event_rejects_trailing_data() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EOSE","sub","extra"]"#);
+        let result: Result<NostrRelayEvent, _> =
+            json_bourne::parse_str(r#"["EOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
@@ -717,13 +718,15 @@ mod tests {
 
     #[test]
     fn client_event_rejects_close_trailing_data() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
+        let result: Result<NostrClientEvent, _> =
+            json_bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn client_event_rejects_req_trailing_data() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
+        let result: Result<NostrClientEvent, _> =
+            json_bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
         assert!(result.is_err());
     }
 

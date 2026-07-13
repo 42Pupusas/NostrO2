@@ -320,7 +320,8 @@ impl NostrRelay {
     {
         let msg: nostro2::NostrClientEvent = msg.into();
         // Pre-serialize JSON before sending to writer task
-        let msg_str = json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+        let msg_str =
+            json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
         self.sender
             .send(msg_str.into())
             .map_err(|_| crate::errors::NostrRelayError::SendError)?;
@@ -343,7 +344,8 @@ impl NostrRelay {
     {
         while let Some(msg) = stream.next().await {
             let msg: nostro2::NostrClientEvent = msg.into();
-            let msg_str = json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
+            let msg_str =
+                json_bourne::to_string(&msg).map_err(crate::errors::NostrRelayError::Serde)?;
             self.sender
                 .send(msg_str.into())
                 .map_err(|_| crate::errors::NostrRelayError::SendError)?;

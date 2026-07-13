@@ -3,7 +3,9 @@ use crate::tags::NostrTags;
 use json_bourne::ToJson;
 use nostro2_traits::hex::Hexable;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Hash, json_bourne::FromJson, json_bourne::ToJson,
+)]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,

@@ -47,7 +47,9 @@ pub const GROUP_SENDER_KEY_DISTRIBUTION_KIND: u32 = 10446;
 pub const GROUP_CHAT_MESSAGE_KIND: u32 = 14;
 
 /// Seed for one sender-key chain, distributed to members over their 1:1
-/// sessions. JSON field names are **camelCase** to match the reference
+/// sessions.
+///
+/// JSON field names are **camelCase** to match the reference
 /// `SenderKeyDistribution` byte-for-byte on the wire; `chain_key` is
 /// 64-char hex.
 #[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
