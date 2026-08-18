@@ -22,7 +22,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nostro2-relay = "0.3"
+nostro2-relay = "0.5"
 ```
 
 ### Choosing a Crypto Backend
@@ -32,10 +32,11 @@ By default, `nostro2-relay` uses the Ring crypto library. You can switch to AWS-
 ```toml
 [dependencies]
 # Use Ring (default)
-nostro2-relay = "0.3"
+nostro2-relay = "0.5"
 
-# Or use AWS-LC
-nostro2-relay = { version = "0.3", default-features = false, features = ["rustls-aws-lc"] }
+# Or use AWS-LC. `default-features = false` also drops the default `serde`
+# JSON backend, so name one explicitly.
+nostro2-relay = { version = "0.5", default-features = false, features = ["rustls-aws-lc", "serde"] }
 ```
 
 **Why choose one over the other?**

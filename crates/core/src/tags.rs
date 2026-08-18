@@ -36,6 +36,7 @@
 //! assert_eq!(tags.len(), 3);
 //! ```
 
+#[cfg(feature = "bourne")]
 use json_bourne::{Error, FromJson, JsonWrite, Lexer, ToJson};
 
 /// Collection of tags attached to a Nostr note.
@@ -208,9 +209,42 @@ impl NostrTags {
     }
 }
 
-// Wire format: `[[String]]`. Custom impls preserve the on-the-wire shape
-// while keeping the flat-cells storage internally.
+impl NostrTags {
+    /// Write the tag rows as a `[[String]]` JSON array using the
+    /// backend-independent [`crate::canonical::CanonicalWrite`] sink.
+    /// Used for NIP-01 canonical event-ID hashing.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the sink's error type.
+    pub fn write_canonical<W: crate::canonical::CanonicalWrite + ?Sized>(
+        &self,
+        w: &mut W,
+    ) -> Result<(), W::Error> {
+        w.write_byte(b'[')?;
+        for (i, row) in self.iter().enumerate() {
+            if i > 0 {
+                w.write_byte(b',')?;
+            }
+            w.write_byte(b'[')?;
+            for (j, cell) in row.iter().enumerate() {
+                if j > 0 {
+                    w.write_byte(b',')?;
+                }
+                w.write_escaped_str(cell)?;
+            }
+            w.write_byte(b']')?;
+        }
+        w.write_byte(b']')
+    }
+}
 
+// Wire format: `[[String]]`. Custom impls preserve the on-the-wire shape
+// while keeping the flat-cells storage internally. Neither backend's
+// derive can express "flatten into two parallel Vecs", so both sides
+// hand-write the same wire shape.
+
+#[cfg(feature = "bourne")]
 impl NostrTags {
     /// Parse a `[[String]]` tag array from a bourne lexer.
     ///
@@ -252,6 +286,7 @@ impl NostrTags {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl<'input> FromJson<'input> for NostrTags {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, Error> {
         let (cells, offsets) = Self::parse_rows(lex)?;
@@ -259,6 +294,7 @@ impl<'input> FromJson<'input> for NostrTags {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl ToJson for NostrTags {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_byte(b'[')?;
@@ -279,9 +315,54 @@ impl ToJson for NostrTags {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for NostrTags {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for row in self.iter() {
+            seq.serialize_element(row)?;
+        }
+        seq.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NostrTags {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let rows = Vec::<Vec<String>>::deserialize(deserializer)?;
+        let mut cells = Vec::new();
+        let mut offsets: Vec<u32> = vec![0];
+        for row in rows {
+            cells.extend(row);
+            let cell_count = u32::try_from(cells.len()).map_err(serde::de::Error::custom)?;
+            offsets.push(cell_count);
+        }
+        Ok(Self { cells, offsets })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "bourne")]
+    fn to_json_string<T: json_bourne::ToJson + ?Sized>(v: &T) -> String {
+        json_bourne::to_string(v).unwrap()
+    }
+    #[cfg(feature = "serde")]
+    fn to_json_string<T: serde::Serialize + ?Sized>(v: &T) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    #[cfg(feature = "bourne")]
+    fn from_json_str<T: for<'a> json_bourne::FromJson<'a>>(s: &str) -> Result<T, String> {
+        json_bourne::parse_str(s).map_err(|e| e.to_string())
+    }
+    #[cfg(feature = "serde")]
+    fn from_json_str<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, String> {
+        serde_json::from_str(s).map_err(|e| e.to_string())
+    }
 
     #[test]
     fn empty_default_has_no_rows() {
@@ -336,20 +417,20 @@ mod tests {
         tags.add_pubkey_tag(&"a".repeat(64), None);
         tags.add_event_tag(&"b".repeat(64));
 
-        let from_tags = json_bourne::to_string(&tags).unwrap();
+        let from_tags = to_json_string(&tags);
         let raw: Vec<Vec<String>> = vec![
             vec!["t".to_string(), "nostr".to_string()],
             vec!["p".to_string(), "a".repeat(64)],
             vec!["e".to_string(), "b".repeat(64)],
         ];
-        let from_vec = json_bourne::to_string(&raw).unwrap();
+        let from_vec = to_json_string(&raw);
         assert_eq!(from_tags, from_vec);
     }
 
     #[test]
     fn deserialize_from_legacy_shape() {
         let json = r#"[["t","nostr"],["p","abc","wss://relay"],["e","ev"]]"#;
-        let tags: NostrTags = json_bourne::parse_str(json).unwrap();
+        let tags: NostrTags = from_json_str(json).unwrap();
         assert_eq!(tags.len(), 3);
         assert_eq!(tags.row(1).unwrap().len(), 3);
         assert_eq!(tags.first_tagged_pubkey_ref(), Some("abc"));
@@ -379,14 +460,14 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_through_bourne() {
+    fn round_trip_through_json() {
         let mut tags = NostrTags::new();
         tags.add_custom_tag("t", "nostr");
         tags.add_pubkey_tag("abc", Some("wss://relay"));
         tags.add_event_tag("ev123");
 
-        let json = json_bourne::to_string(&tags).unwrap();
-        let back: NostrTags = json_bourne::parse_str(&json).unwrap();
+        let json = to_json_string(&tags);
+        let back: NostrTags = from_json_str(&json).unwrap();
         assert_eq!(tags, back);
     }
 
@@ -406,8 +487,8 @@ mod tests {
                 for row in &rows {
                     tags.add_row(row.iter().cloned());
                 }
-                let json = json_bourne::to_string(&tags).unwrap();
-                let back: NostrTags = json_bourne::parse_str(&json).unwrap();
+                let json = to_json_string(&tags);
+                let back: NostrTags = from_json_str(&json).unwrap();
                 prop_assert_eq!(&tags, &back);
             }
 

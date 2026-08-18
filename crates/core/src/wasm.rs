@@ -5,6 +5,7 @@ use js_sys::{Array, Object, Reflect};
 
 use crate::event::NostrEvent;
 use crate::note::NostrNote;
+#[cfg(feature = "bourne")]
 use crate::view::NostrNoteView;
 
 // ── Keep JsObj — groups JS Reflect helpers as methods, no free fns ─
@@ -133,6 +134,7 @@ impl From<&NostrNote> for JsValue {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl From<&NostrNoteView<'_>> for JsValue {
     fn from(view: &NostrNoteView<'_>) -> Self {
         JsObj::from_fields(
@@ -178,7 +180,7 @@ impl TryFrom<JsValue> for NostrNote {
 /// Extension trait for writing a JS `Array` tag row as JSON.
 #[cfg(target_arch = "wasm32")]
 pub trait TagRowJson {
-    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(
+    fn write_json_row<W: crate::canonical::CanonicalWrite + ?Sized>(
         &self,
         sink: &mut W,
     ) -> Result<(), W::Error>;
@@ -187,7 +189,7 @@ pub trait TagRowJson {
 #[cfg(target_arch = "wasm32")]
 impl TagRowJson for Array {
     #[allow(unknown_lints, crappy)]
-    fn write_json_row<W: json_bourne::JsonWrite + ?Sized>(
+    fn write_json_row<W: crate::canonical::CanonicalWrite + ?Sized>(
         &self,
         sink: &mut W,
     ) -> Result<(), W::Error> {
@@ -249,7 +251,10 @@ impl NostrEvent for JsValue {
             .map(Cow::Owned)
     }
     #[allow(unknown_lints, crappy)]
-    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_tags<W: crate::canonical::CanonicalWrite + ?Sized>(
+        &self,
+        sink: &mut W,
+    ) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         if let Ok(tags) = Reflect::get(self, &JsValue::from_str("tags")) {
             let outer = Array::from(&tags);
@@ -308,6 +313,7 @@ mod tests {
         let js: JsValue = n.clone().into();
         assert_eq!(n, NostrNote::try_from(js).unwrap());
     }
+    #[cfg(feature = "bourne")]
     #[wasm_bindgen_test]
     fn view_to_js_round_trips_through_note() {
         let n = sample_note();

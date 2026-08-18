@@ -1,21 +1,26 @@
 use crate::event::NostrEvent;
 use crate::tags::NostrTags;
-use json_bourne::ToJson;
 use nostro2_traits::hex::Hexable;
 
-#[derive(
-    Debug, Clone, Default, PartialEq, Eq, Hash, json_bourne::FromJson, json_bourne::ToJson,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
 )]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NostrNote {
     pub pubkey: String,
     pub created_at: i64,
     pub kind: u32,
-    #[bourne(default)]
+    #[cfg_attr(feature = "bourne", bourne(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub tags: NostrTags,
     pub content: String,
-    #[bourne(skip_if_none)]
+    #[cfg_attr(feature = "bourne", bourne(skip_if_none))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     pub id: Option<String>,
-    #[bourne(skip_if_none)]
+    #[cfg_attr(feature = "bourne", bourne(skip_if_none))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     pub sig: Option<String>,
 }
 
@@ -53,7 +58,14 @@ impl NostrNote {
     ///
     /// Returns [`crate::errors::NostrErrors::JsonError`] if serialization fails.
     pub fn serialize(&self) -> Result<String, crate::errors::NostrErrors> {
-        Ok(json_bourne::to_string(self)?)
+        #[cfg(feature = "bourne")]
+        {
+            Ok(json_bourne::to_string(self)?)
+        }
+        #[cfg(feature = "serde")]
+        {
+            Ok(serde_json::to_string(self)?)
+        }
     }
 }
 
@@ -76,15 +88,25 @@ impl NostrEvent for NostrNote {
     fn sig_hex(&self) -> Option<std::borrow::Cow<'_, str>> {
         self.sig.as_deref().map(std::borrow::Cow::Borrowed)
     }
-    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
-        self.tags.write_json(sink)
+    fn write_tags<W: crate::canonical::CanonicalWrite + ?Sized>(
+        &self,
+        sink: &mut W,
+    ) -> Result<(), W::Error> {
+        self.tags.write_canonical(sink)
     }
 }
 
 impl core::str::FromStr for NostrNote {
     type Err = crate::errors::NostrErrors;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(json_bourne::parse_str(s)?)
+        #[cfg(feature = "bourne")]
+        {
+            Ok(json_bourne::parse_str(s)?)
+        }
+        #[cfg(feature = "serde")]
+        {
+            Ok(serde_json::from_str(s)?)
+        }
     }
 }
 

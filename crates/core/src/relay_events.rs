@@ -1,3 +1,4 @@
+#[cfg(feature = "bourne")]
 use json_bourne::{
     Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson,
 };
@@ -21,7 +22,11 @@ pub enum RelayEventTag {
 /// the owning [`NostrRelayEvent`] parse the same `["TAG", …]` array shapes —
 /// they differ only in allocation strategy and whether the tag is stored.
 /// This trait factors out the common dispatch logic so there is a single
-/// implementation to test and maintain.
+/// implementation to test and maintain. `bourne`-only: it drives directly
+/// off `Lexer`'s checkpoint/restore API, which `serde` has no equivalent
+/// for; the `serde` backend implements `NostrRelayEvent`/`NostrClientEvent`
+/// directly against `serde_json::Value` instead.
+#[cfg(feature = "bourne")]
 pub trait RelayFrameParser<'input>: Sized {
     type Str: FromJson<'input>;
     type Note: FromJson<'input>;
@@ -75,16 +80,18 @@ pub trait RelayFrameParser<'input>: Sized {
 }
 
 impl RelayEventTag {
-    const fn as_quoted(self) -> &'static str {
+    /// `"EVENT"`, `"OK"`, … — the bare (unquoted) wire form.
+    #[cfg_attr(feature = "bourne", allow(dead_code))]
+    pub(crate) const fn as_wire(self) -> &'static str {
         match self {
-            Self::Event => "\"EVENT\"",
-            Self::Ok => "\"OK\"",
-            Self::Eose => "\"EOSE\"",
-            Self::Notice => "\"NOTICE\"",
-            Self::Close => "\"CLOSE\"",
-            Self::Auth => "\"AUTH\"",
-            Self::Req => "\"REQ\"",
-            Self::Closed => "\"CLOSED\"",
+            Self::Event => "EVENT",
+            Self::Ok => "OK",
+            Self::Eose => "EOSE",
+            Self::Notice => "NOTICE",
+            Self::Close => "CLOSE",
+            Self::Auth => "AUTH",
+            Self::Req => "REQ",
+            Self::Closed => "CLOSED",
         }
     }
 
@@ -103,6 +110,23 @@ impl RelayEventTag {
     }
 }
 
+#[cfg(feature = "bourne")]
+impl RelayEventTag {
+    const fn as_quoted(self) -> &'static str {
+        match self {
+            Self::Event => "\"EVENT\"",
+            Self::Ok => "\"OK\"",
+            Self::Eose => "\"EOSE\"",
+            Self::Notice => "\"NOTICE\"",
+            Self::Close => "\"CLOSE\"",
+            Self::Auth => "\"AUTH\"",
+            Self::Req => "\"REQ\"",
+            Self::Closed => "\"CLOSED\"",
+        }
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl<'input> FromJson<'input> for RelayEventTag {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         let s = lex.parse_str_value()?;
@@ -111,15 +135,32 @@ impl<'input> FromJson<'input> for RelayEventTag {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl ToJson for RelayEventTag {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_str_raw(self.as_quoted())
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for RelayEventTag {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_wire())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for RelayEventTag {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str_wire(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown relay tag: {s}")))
+    }
+}
+
 // ── Wire-frame parsing helpers ───────────────────────────────────
 
 /// Extension trait that adds nostr wire-frame parsing sugar to `Lexer`.
+#[cfg(feature = "bourne")]
 pub trait WireFrameExt {
     /// Consumes `[`, the tag string, and the following comma.
     /// Returns `TypeMismatch` for an empty array, `UnknownField` for an
@@ -131,6 +172,7 @@ pub trait WireFrameExt {
     fn expect_end(&mut self) -> Result<(), BourneError>;
 }
 
+#[cfg(feature = "bourne")]
 impl WireFrameExt for Lexer<'_> {
     fn parse_frame_tag(&mut self) -> Result<RelayEventTag, BourneError> {
         if self.array_start()? {
@@ -185,6 +227,7 @@ pub enum NostrRelayEvent {
     Auth(RelayEventTag, String),
 }
 
+#[cfg(feature = "bourne")]
 impl RelayFrameParser<'_> for NostrRelayEvent {
     type Str = String;
     type Note = crate::note::NostrNote;
@@ -209,12 +252,14 @@ impl RelayFrameParser<'_> for NostrRelayEvent {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl<'input> FromJson<'input> for NostrRelayEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         <Self as RelayFrameParser>::from_lex(lex)
     }
 }
 
+#[cfg(feature = "bourne")]
 impl ToJson for NostrRelayEvent {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_byte(b'[')?;
@@ -248,6 +293,7 @@ impl ToJson for NostrRelayEvent {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl std::str::FromStr for NostrRelayEvent {
     type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -255,10 +301,116 @@ impl std::str::FromStr for NostrRelayEvent {
     }
 }
 
+#[cfg(feature = "serde")]
+impl std::str::FromStr for NostrRelayEvent {
+    type Err = serde_json::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value)
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl TryFrom<&[u8]> for NostrRelayEvent {
     type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         json_bourne::parse(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for NostrRelayEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        match self {
+            Self::NewNote(tag, sub_id, note) => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(sub_id)?;
+                seq.serialize_element(note)?;
+                seq.end()
+            }
+            Self::SentOk(tag, event_id, success, message) => {
+                let mut seq = serializer.serialize_seq(Some(4))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(event_id)?;
+                seq.serialize_element(success)?;
+                seq.serialize_element(message)?;
+                seq.end()
+            }
+            Self::EndOfSubscription(tag, sub_id)
+            | Self::ClosedSubscription(tag, sub_id)
+            | Self::Notice(tag, sub_id)
+            | Self::Auth(tag, sub_id) => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(sub_id)?;
+                seq.end()
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NostrRelayEvent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let elems = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        let mut iter = elems.into_iter();
+        let tag_value = iter.next().ok_or_else(|| D::Error::custom("empty relay frame"))?;
+        let tag: RelayEventTag =
+            serde_json::from_value(tag_value).map_err(D::Error::custom)?;
+        let from_val = |v: Option<serde_json::Value>, field: &str| -> Result<serde_json::Value, D::Error> {
+            v.ok_or_else(|| D::Error::custom(format!("missing field: {field}")))
+        };
+        let mut rest_iter = iter;
+        let event = match tag {
+            RelayEventTag::Event => {
+                let sub_id: String =
+                    serde_json::from_value(from_val(rest_iter.next(), "sub_id")?)
+                        .map_err(D::Error::custom)?;
+                let note: crate::note::NostrNote =
+                    serde_json::from_value(from_val(rest_iter.next(), "note")?)
+                        .map_err(D::Error::custom)?;
+                Self::NewNote(tag, sub_id, note)
+            }
+            RelayEventTag::Ok => {
+                let event_id: String =
+                    serde_json::from_value(from_val(rest_iter.next(), "event_id")?)
+                        .map_err(D::Error::custom)?;
+                let success: bool = serde_json::from_value(from_val(rest_iter.next(), "success")?)
+                    .map_err(D::Error::custom)?;
+                let message: String =
+                    serde_json::from_value(from_val(rest_iter.next(), "message")?)
+                        .map_err(D::Error::custom)?;
+                Self::SentOk(tag, event_id, success, message)
+            }
+            RelayEventTag::Eose | RelayEventTag::Closed | RelayEventTag::Notice | RelayEventTag::Auth => {
+                let val: String = serde_json::from_value(from_val(rest_iter.next(), "value")?)
+                    .map_err(D::Error::custom)?;
+                match tag {
+                    RelayEventTag::Eose => Self::EndOfSubscription(tag, val),
+                    RelayEventTag::Closed => Self::ClosedSubscription(tag, val),
+                    RelayEventTag::Notice => Self::Notice(tag, val),
+                    RelayEventTag::Auth => Self::Auth(tag, val),
+                    _ => unreachable!(),
+                }
+            }
+            RelayEventTag::Close | RelayEventTag::Req => {
+                return Err(D::Error::custom(format!("not a relay-to-client tag: {}", tag.as_wire())));
+            }
+        };
+        if rest_iter.next().is_some() {
+            return Err(D::Error::custom("trailing data in relay frame"));
+        }
+        Ok(event)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<&[u8]> for NostrRelayEvent {
+    type Error = serde_json::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
     }
 }
 
@@ -342,6 +494,7 @@ impl From<&super::subscriptions::NostrSubscription> for NostrClientEvent {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl<'input> FromJson<'input> for NostrClientEvent {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         let tag = lex.parse_frame_tag()?;
@@ -374,6 +527,7 @@ impl<'input> FromJson<'input> for NostrClientEvent {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl ToJson for NostrClientEvent {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_byte(b'[')?;
@@ -400,6 +554,92 @@ impl ToJson for NostrClientEvent {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for NostrClientEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        match self {
+            Self::SendNoteEvent(tag, note) | Self::AuthEvent(tag, note) => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(note)?;
+                seq.end()
+            }
+            Self::Subscribe(tag, sub_id, filter) => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(sub_id)?;
+                seq.serialize_element(filter)?;
+                seq.end()
+            }
+            Self::CloseSubscriptionEvent(tag, sub_id) => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element(tag)?;
+                seq.serialize_element(sub_id)?;
+                seq.end()
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NostrClientEvent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let elems = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        let mut iter = elems.into_iter();
+        let tag_value = iter
+            .next()
+            .ok_or_else(|| D::Error::custom("empty client frame"))?;
+        let tag: RelayEventTag = serde_json::from_value(tag_value).map_err(D::Error::custom)?;
+        let from_val =
+            |v: Option<serde_json::Value>, field: &str| -> Result<serde_json::Value, D::Error> {
+                v.ok_or_else(|| D::Error::custom(format!("missing field: {field}")))
+            };
+        let mut rest_iter = iter;
+        let event = match tag {
+            RelayEventTag::Event | RelayEventTag::Auth => {
+                let note: crate::note::NostrNote =
+                    serde_json::from_value(from_val(rest_iter.next(), "note")?)
+                        .map_err(D::Error::custom)?;
+                match tag {
+                    RelayEventTag::Event => Self::SendNoteEvent(tag, note),
+                    _ => Self::AuthEvent(tag, note),
+                }
+            }
+            RelayEventTag::Req => {
+                let sub_id: String =
+                    serde_json::from_value(from_val(rest_iter.next(), "sub_id")?)
+                        .map_err(D::Error::custom)?;
+                let filter: super::subscriptions::NostrSubscription =
+                    serde_json::from_value(from_val(rest_iter.next(), "filter")?)
+                        .map_err(D::Error::custom)?;
+                Self::Subscribe(tag, sub_id, filter)
+            }
+            RelayEventTag::Close => {
+                let sub_id: String =
+                    serde_json::from_value(from_val(rest_iter.next(), "sub_id")?)
+                        .map_err(D::Error::custom)?;
+                Self::CloseSubscriptionEvent(tag, sub_id)
+            }
+            RelayEventTag::Ok
+            | RelayEventTag::Eose
+            | RelayEventTag::Closed
+            | RelayEventTag::Notice => {
+                return Err(D::Error::custom(format!(
+                    "not a client-to-relay tag: {}",
+                    tag.as_wire()
+                )));
+            }
+        };
+        if rest_iter.next().is_some() {
+            return Err(D::Error::custom("trailing data in client frame"));
+        }
+        Ok(event)
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl std::str::FromStr for NostrClientEvent {
     type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -407,10 +647,27 @@ impl std::str::FromStr for NostrClientEvent {
     }
 }
 
+#[cfg(feature = "serde")]
+impl std::str::FromStr for NostrClientEvent {
+    type Err = serde_json::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value)
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl TryFrom<&[u8]> for NostrClientEvent {
     type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         json_bourne::parse(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<&[u8]> for NostrClientEvent {
+    type Error = serde_json::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
     }
 }
 
@@ -432,13 +689,38 @@ mod tests {
         }
     }
 
-    fn round_trip<
-        T: json_bourne::ToJson + for<'a> json_bourne::FromJson<'a> + std::fmt::Debug + PartialEq,
-    >(
+    #[cfg(feature = "bourne")]
+    fn to_json_string<T: json_bourne::ToJson + ?Sized>(v: &T) -> String {
+        json_bourne::to_string(v).unwrap()
+    }
+    #[cfg(feature = "serde")]
+    fn to_json_string<T: serde::Serialize + ?Sized>(v: &T) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    #[cfg(feature = "bourne")]
+    fn from_json_str<T: for<'a> json_bourne::FromJson<'a>>(s: &str) -> Result<T, String> {
+        json_bourne::parse_str(s).map_err(|e| e.to_string())
+    }
+    #[cfg(feature = "serde")]
+    fn from_json_str<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, String> {
+        serde_json::from_str(s).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "bourne")]
+    fn round_trip<T: json_bourne::ToJson + for<'a> json_bourne::FromJson<'a> + std::fmt::Debug + PartialEq>(
         val: &T,
     ) {
-        let json = json_bourne::to_string(val).expect("serialize");
-        let back: T = json_bourne::parse_str(&json).expect("parse back");
+        let json = to_json_string(val);
+        let back: T = from_json_str(&json).unwrap();
+        assert_eq!(val, &back);
+    }
+    #[cfg(feature = "serde")]
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq>(
+        val: &T,
+    ) {
+        let json = to_json_string(val);
+        let back: T = from_json_str(&json).unwrap();
         assert_eq!(val, &back);
     }
 
@@ -534,7 +816,7 @@ mod tests {
     fn relay_event_from_str_round_trip() {
         let note = sample_note();
         let event = NostrRelayEvent::NewNote(RelayEventTag::Event, "sub1".into(), note);
-        let json = json_bourne::to_string(&event).unwrap();
+        let json = to_json_string(&event);
         let parsed: NostrRelayEvent = json.parse().unwrap();
         assert_eq!(event, parsed);
     }
@@ -543,7 +825,7 @@ mod tests {
     fn client_event_from_str_round_trip() {
         let note = sample_note();
         let event = NostrClientEvent::SendNoteEvent(RelayEventTag::Event, note);
-        let json = json_bourne::to_string(&event).unwrap();
+        let json = to_json_string(&event);
         let parsed: NostrClientEvent = json.parse().unwrap();
         assert_eq!(event, parsed);
     }
@@ -561,7 +843,7 @@ mod tests {
             (RelayEventTag::Closed, "CLOSED"),
         ];
         for (tag, expected_wire) in tags {
-            let quoted = tag.as_quoted();
+            let quoted = to_json_string(&tag);
             assert_eq!(quoted, format!("\"{expected_wire}\""));
             let parsed = RelayEventTag::from_str_wire(expected_wire).unwrap();
             assert_eq!(tag, parsed);
@@ -571,163 +853,131 @@ mod tests {
 
     #[test]
     fn relay_event_rejects_empty_array() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str("[]");
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>("[]").is_err());
     }
 
     #[test]
     fn relay_event_rejects_unknown_tag() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["BOGUS","sub"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["BOGUS","sub"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_tag_only() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EVENT"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["EVENT"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_truncated_ok() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid"]"#);
-        assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid",true]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["OK","eid"]"#).is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["OK","eid",true]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_trailing_data() {
-        let result: Result<NostrRelayEvent, _> =
-            json_bourne::parse_str(r#"["EOSE","sub","extra"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["EOSE","sub","extra"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_not_array() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"{"tag":"EVENT"}"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"{"tag":"EVENT"}"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_event_missing_note() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["EVENT","sub"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["EVENT","sub"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_event_trailing_data() {
         let note = sample_note();
-        let note_json = json_bourne::to_string(&note).unwrap();
+        let note_json = to_json_string(&note);
         let json = format!(r#"["EVENT","sub",{note_json},"extra"]"#);
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(&json);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(&json).is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_trailing_data() {
-        let result: Result<NostrRelayEvent, _> =
-            json_bourne::parse_str(r#"["OK","eid",true,"msg","extra"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["OK","eid",true,"msg","extra"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_missing_bool() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["OK","eid"]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_ok_missing_message() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["OK","eid",true]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["OK","eid",true]"#).is_err());
     }
 
     #[test]
     fn relay_event_rejects_client_only_tags() {
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["REQ","sub",{}]"#);
-        assert!(result.is_err());
-        let result: Result<NostrRelayEvent, _> = json_bourne::parse_str(r#"["CLOSE","sub"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["REQ","sub",{}]"#).is_err());
+        assert!(from_json_str::<NostrRelayEvent>(r#"["CLOSE","sub"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_empty_array() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str("[]");
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>("[]").is_err());
     }
 
     #[test]
     fn client_event_rejects_unknown_tag() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["BOGUS","sub"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["BOGUS","sub"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_server_only_tags() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["EOSE","sub"]"#);
-        assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["OK","eid",true,""]"#);
-        assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["NOTICE","msg"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["EOSE","sub"]"#).is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["OK","eid",true,""]"#).is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["NOTICE","msg"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_event() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["EVENT"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["EVENT"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_req() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ"]"#);
-        assert!(result.is_err());
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["REQ","sub"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["REQ"]"#).is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["REQ","sub"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_close() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["CLOSE"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["CLOSE"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_truncated_auth() {
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(r#"["AUTH"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["AUTH"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_event_trailing_data() {
         let note = sample_note();
-        let note_json = json_bourne::to_string(&note).unwrap();
+        let note_json = to_json_string(&note);
         let json = format!(r#"["EVENT",{note_json},"extra"]"#);
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(&json);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(&json).is_err());
     }
 
     #[test]
     fn client_event_rejects_auth_trailing_data() {
         let note = sample_note();
-        let note_json = json_bourne::to_string(&note).unwrap();
+        let note_json = to_json_string(&note);
         let json = format!(r#"["AUTH",{note_json},"extra"]"#);
-        let result: Result<NostrClientEvent, _> = json_bourne::parse_str(&json);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(&json).is_err());
     }
 
     #[test]
     fn client_event_rejects_close_trailing_data() {
-        let result: Result<NostrClientEvent, _> =
-            json_bourne::parse_str(r#"["CLOSE","sub","extra"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["CLOSE","sub","extra"]"#).is_err());
     }
 
     #[test]
     fn client_event_rejects_req_trailing_data() {
-        let result: Result<NostrClientEvent, _> =
-            json_bourne::parse_str(r#"["REQ","sub",{},"extra"]"#);
-        assert!(result.is_err());
+        assert!(from_json_str::<NostrClientEvent>(r#"["REQ","sub",{},"extra"]"#).is_err());
     }
 
     #[test]

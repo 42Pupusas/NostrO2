@@ -17,12 +17,17 @@ path = "crates/traits"
 version = "0.3.1"
 
 [workspace.dependencies]
-# JSON
-json-bourne = { version = "0.2", features = ["derive"] }
+# JSON — two interchangeable backends, selected per consumer via the
+# `bourne` / `serde` features on `nostro2` (and forwarded by `nostro2-nips`
+# / `nostro2-relay`). See `crates/core/src/lib.rs` for the mutual-exclusion
+# `compile_error!`.
+json-bourne = { version = "0.2.2", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-nostro2 = { path = "crates/core", version = "0.7.1", default-features = false }
-nostro2-nips = { path = "crates/nips", version = "0.4.1", default-features = false }
-nostro2-signer = { path = "crates/signer", version = "0.5.1", default-features = false }
+nostro2 = { path = "crates/core", version = "0.8.0", default-features = false }
+nostro2-nips = { path = "crates/nips", version = "0.5.0", default-features = false }
+nostro2-signer = { path = "crates/signer", version = "0.6.0", default-features = false }
 nostro2-cache = { path = "crates/cache", version = "0.2.2" }
 
 # Cryptography

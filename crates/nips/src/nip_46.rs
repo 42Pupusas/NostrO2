@@ -1,20 +1,36 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Nip46Method {
-    #[bourne(rename = "connect")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "connect"))]
+    #[cfg_attr(feature = "serde", serde(rename = "connect"))]
     Connect,
-    #[bourne(rename = "sign_event")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "sign_event"))]
+    #[cfg_attr(feature = "serde", serde(rename = "sign_event"))]
     SignEvent,
-    #[bourne(rename = "ping")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "ping"))]
+    #[cfg_attr(feature = "serde", serde(rename = "ping"))]
     Ping,
-    #[bourne(rename = "get_public_key")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "get_public_key"))]
+    #[cfg_attr(feature = "serde", serde(rename = "get_public_key"))]
     GetPublicKey,
-    #[bourne(rename = "nip44_encrypt")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "nip44_encrypt"))]
+    #[cfg_attr(feature = "serde", serde(rename = "nip44_encrypt"))]
     Nip44Encrypt,
-    #[bourne(rename = "nip44_decrypt")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "nip44_decrypt"))]
+    #[cfg_attr(feature = "serde", serde(rename = "nip44_decrypt"))]
     Nip44Decrypt,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Nip46Request {
     id: String,
     method: Nip46Method,
@@ -22,7 +38,11 @@ pub struct Nip46Request {
 }
 impl std::fmt::Display for Nip46Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", json_bourne::to_string(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            crate::json::NipJson::to_string(self).unwrap_or_default()
+        )
     }
 }
 impl Nip46Request {
@@ -33,28 +53,38 @@ impl Nip46Request {
     }
 }
 impl std::str::FromStr for Nip46Request {
-    type Err = json_bourne::Error;
+    type Err = crate::json::JsonError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        json_bourne::parse_str(s)
+        crate::json::NipJson::parse_str(s)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Nip46Response {
     id: String,
     result: String,
-    #[bourne(skip_if_none)]
+    #[cfg_attr(feature = "bourne", bourne(skip_if_none))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     error: Option<String>,
 }
 impl std::fmt::Display for Nip46Response {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", json_bourne::to_string(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            crate::json::NipJson::to_string(self).unwrap_or_default()
+        )
     }
 }
 impl std::str::FromStr for Nip46Response {
-    type Err = json_bourne::Error;
+    type Err = crate::json::JsonError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        json_bourne::parse_str(s)
+        crate::json::NipJson::parse_str(s)
     }
 }
 

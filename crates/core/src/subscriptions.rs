@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+#[cfg(feature = "bourne")]
 use json_bourne::{
     Error as BourneError, ErrorKind as BourneErrorKind, FromJson, JsonWrite, Lexer, ToJson,
 };
@@ -25,6 +26,7 @@ pub struct NostrSubscription {
     pub tags: Option<BTreeMap<String, HashSet<String>>>,
 }
 
+#[cfg(feature = "bourne")]
 impl NostrSubscription {
     fn parse_field(&mut self, key: &str, lex: &mut Lexer<'_>) -> Result<(), BourneError> {
         match key {
@@ -67,6 +69,7 @@ impl NostrSubscription {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl<'input> FromJson<'input> for NostrSubscription {
     fn from_lex(lex: &mut Lexer<'input>) -> Result<Self, BourneError> {
         lex.object_start()?;
@@ -80,6 +83,7 @@ impl<'input> FromJson<'input> for NostrSubscription {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl ToJson for NostrSubscription {
     fn write_json<W: JsonWrite + ?Sized>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_byte(b'{')?;
@@ -137,6 +141,98 @@ impl ToJson for NostrSubscription {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for NostrSubscription {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+
+        fn sorted<T: Ord + Clone>(set: &HashSet<T>) -> Vec<T> {
+            let mut v: Vec<T> = set.iter().cloned().collect();
+            v.sort();
+            v
+        }
+
+        let entry_count = usize::from(self.authors.is_some())
+            + usize::from(self.ids.is_some())
+            + usize::from(self.kinds.is_some())
+            + usize::from(self.since.is_some())
+            + usize::from(self.until.is_some())
+            + usize::from(self.limit.is_some())
+            + self.tags.as_ref().map_or(0, BTreeMap::len);
+        let mut map = serializer.serialize_map(Some(entry_count))?;
+        if let Some(v) = &self.authors {
+            map.serialize_entry("authors", &sorted(v))?;
+        }
+        if let Some(v) = &self.ids {
+            map.serialize_entry("ids", &sorted(v))?;
+        }
+        if let Some(v) = &self.kinds {
+            map.serialize_entry("kinds", &sorted(v))?;
+        }
+        if let Some(v) = self.since {
+            map.serialize_entry("since", &v)?;
+        }
+        if let Some(v) = self.until {
+            map.serialize_entry("until", &v)?;
+        }
+        if let Some(v) = self.limit {
+            map.serialize_entry("limit", &v)?;
+        }
+        if let Some(tags) = &self.tags {
+            for (letter, values) in tags {
+                map.serialize_entry(&format!("#{letter}"), &sorted(values))?;
+            }
+        }
+        map.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NostrSubscription {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+        let mut sub = Self::default();
+        for (key, value) in raw {
+            match key.as_str() {
+                "authors" => {
+                    sub.authors =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                "ids" => {
+                    sub.ids =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                "kinds" => {
+                    sub.kinds =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                "since" => {
+                    sub.since =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                "until" => {
+                    sub.until =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                "limit" => {
+                    sub.limit =
+                        Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+                }
+                _ if key.starts_with('#') => {
+                    let values: HashSet<String> =
+                        serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                    sub.tags
+                        .get_or_insert_with(BTreeMap::new)
+                        .insert(key[1..].to_string(), values);
+                }
+                _ => {}
+            }
+        }
+        Ok(sub)
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl TryFrom<&[u8]> for NostrSubscription {
     type Error = json_bourne::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
@@ -144,10 +240,27 @@ impl TryFrom<&[u8]> for NostrSubscription {
     }
 }
 
+#[cfg(feature = "serde")]
+impl TryFrom<&[u8]> for NostrSubscription {
+    type Error = serde_json::Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
+    }
+}
+
+#[cfg(feature = "bourne")]
 impl std::str::FromStr for NostrSubscription {
     type Err = json_bourne::Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         json_bourne::parse_str(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl std::str::FromStr for NostrSubscription {
+    type Err = serde_json::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value)
     }
 }
 
@@ -298,6 +411,24 @@ impl NostrSubscription {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "bourne")]
+    fn to_json_string<T: json_bourne::ToJson + ?Sized>(v: &T) -> String {
+        json_bourne::to_string(v).unwrap()
+    }
+    #[cfg(feature = "serde")]
+    fn to_json_string<T: serde::Serialize + ?Sized>(v: &T) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    #[cfg(feature = "bourne")]
+    fn from_json_str<T: for<'a> json_bourne::FromJson<'a>>(s: &str) -> Result<T, String> {
+        json_bourne::parse_str(s).map_err(|e| e.to_string())
+    }
+    #[cfg(feature = "serde")]
+    fn from_json_str<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, String> {
+        serde_json::from_str(s).map_err(|e| e.to_string())
+    }
+
     #[test]
     fn tag_keys_omit_hash_prefix() {
         let mut sub = NostrSubscription::new();
@@ -314,7 +445,7 @@ mod tests {
         };
         sub.add_tag("#p", "value1");
         sub.add_tag("#q", "value2");
-        let json = json_bourne::to_string(&sub).unwrap();
+        let json = to_json_string(&sub);
         assert!(json.contains("\"kinds\":[4]"));
         assert!(json.contains("\"#p\":[\"value1\"]"));
         assert!(json.contains("\"#q\":[\"value2\"]"));
@@ -325,7 +456,7 @@ mod tests {
         filter.add_tag("#p", "value1");
         filter.add_tag("#q", "value2");
         filter.add_tag("#p", "value3");
-        let json = json_bourne::to_string(&filter).unwrap();
+        let json = to_json_string(&filter);
         assert!(json.contains("\"#p\":[\"value1\",\"value3\"]"));
         assert!(json.contains("\"#q\":[\"value2\"]"));
     }
@@ -429,18 +560,18 @@ mod tests {
     }
     #[test]
     fn rejects_negative_limit() {
-        assert!(json_bourne::parse_str::<NostrSubscription>(r#"{"limit":-1}"#).is_err());
+        assert!(from_json_str::<NostrSubscription>(r#"{"limit":-1}"#).is_err());
     }
     #[test]
     fn skips_unknown_fields_in_filter() {
         let sub: NostrSubscription =
-            json_bourne::parse_str(r#"{"kinds":[1],"unknown_field":true}"#).unwrap();
+            from_json_str(r#"{"kinds":[1],"unknown_field":true}"#).unwrap();
         assert_eq!(sub.kinds, Some([1].into()));
     }
     #[test]
     fn parses_all_fields_from_json() {
         let json = r##"{"authors":["alice"],"ids":["deadbeef"],"kinds":[1,4],"since":100,"until":200,"limit":10,"#p":["bob"]}"##;
-        let sub: NostrSubscription = json_bourne::parse_str(json).unwrap();
+        let sub: NostrSubscription = from_json_str(json).unwrap();
         assert_eq!(sub.authors, Some(["alice".to_string()].into()));
         assert_eq!(sub.ids, Some(["deadbeef".to_string()].into()));
         assert_eq!(sub.kinds, Some([1, 4].into()));
@@ -450,7 +581,7 @@ mod tests {
         assert!(sub.tags.as_ref().unwrap()["p"].contains("bob"));
     }
     #[test]
-    fn round_trip_through_bourne() {
+    fn round_trip_through_json() {
         let filter = NostrSubscription::new()
             .kind(1)
             .author("alice")
@@ -458,8 +589,8 @@ mod tests {
             .since(100)
             .until(200)
             .tag("#p", "bob");
-        let json = json_bourne::to_string(&filter).unwrap();
-        let back: NostrSubscription = json_bourne::parse_str(&json).unwrap();
+        let json = to_json_string(&filter);
+        let back: NostrSubscription = from_json_str(&json).unwrap();
         assert_eq!(filter, back);
     }
     #[test]
@@ -469,8 +600,8 @@ mod tests {
             .kind(4)
             .author("bob")
             .author("alice");
-        let json1 = json_bourne::to_string(&filter).unwrap();
-        let json2 = json_bourne::to_string(&filter).unwrap();
+        let json1 = to_json_string(&filter);
+        let json2 = to_json_string(&filter);
         assert_eq!(json1, json2);
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -508,8 +639,8 @@ mod tests {
         proptest! {
             #[test]
             fn round_trip(sub in arb_subscription()) {
-                let json = json_bourne::to_string(&sub).unwrap();
-                let back: NostrSubscription = json_bourne::parse_str(&json).unwrap();
+                let json = to_json_string(&sub);
+                let back: NostrSubscription = from_json_str(&json).unwrap();
                 prop_assert_eq!(&sub, &back);
             }
         }

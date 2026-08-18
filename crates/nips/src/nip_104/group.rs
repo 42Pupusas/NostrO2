@@ -52,25 +52,40 @@ pub const GROUP_CHAT_MESSAGE_KIND: u32 = 14;
 /// JSON field names are **camelCase** to match the reference
 /// `SenderKeyDistribution` byte-for-byte on the wire; `chain_key` is
 /// 64-char hex.
-#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SenderKeyDistribution {
-    #[bourne(rename = "groupId")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "groupId"))]
+    #[cfg_attr(feature = "serde", serde(rename = "groupId"))]
     pub group_id: String,
-    #[bourne(rename = "keyId")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "keyId"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyId"))]
     pub key_id: u32,
-    #[bourne(rename = "senderEventPubkey")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "senderEventPubkey"))]
+    #[cfg_attr(feature = "serde", serde(rename = "senderEventPubkey"))]
     pub sender_event_pubkey: String,
-    #[bourne(rename = "chainKey")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "chainKey"))]
+    #[cfg_attr(feature = "serde", serde(rename = "chainKey"))]
     pub chain_key: String,
     pub iteration: u32,
-    #[bourne(rename = "createdAt")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "createdAt"))]
+    #[cfg_attr(feature = "serde", serde(rename = "createdAt"))]
     pub created_at: i64,
 }
 
 /// A published one-to-many group message. The `sender_event_pubkey`
 /// locates the receiving chain; `key_id` + `message_number` index it.
 /// `ciphertext` is the base64 NIP-44 v2 payload from the chain.
-#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupSenderKeyMessage {
     pub group_id: String,
     pub sender_event_pubkey: String,
@@ -310,7 +325,7 @@ impl<K: NostrKeypair> GroupManager<K> {
         let mut rumor = nostro2::NostrNote {
             pubkey: self.our_pubkey.clone(),
             kind: GROUP_SENDER_KEY_DISTRIBUTION_KIND,
-            content: json_bourne::to_string(dist)?,
+            content: crate::json::NipJson::to_string(dist)?,
             created_at,
             tags,
             ..Default::default()
@@ -334,7 +349,7 @@ impl<K: NostrKeypair> GroupManager<K> {
         if rumor.kind != GROUP_SENDER_KEY_DISTRIBUTION_KIND {
             return Ok(None);
         }
-        let dist: SenderKeyDistribution = json_bourne::parse_str(&rumor.content)?;
+        let dist: SenderKeyDistribution = crate::json::NipJson::parse_str(&rumor.content)?;
         self.apply_distribution(&dist)?;
         Ok(Some(dist))
     }
@@ -739,8 +754,8 @@ mod tests {
     fn distribution_json_roundtrips() {
         let mut alice = mgr("alice");
         let dist = alice.rotate_sending_chain("g", 1, 1234).unwrap();
-        let json = json_bourne::to_string(&dist).unwrap();
-        let back: SenderKeyDistribution = json_bourne::parse_str(&json).unwrap();
+        let json = crate::json::NipJson::to_string(&dist).unwrap();
+        let back: SenderKeyDistribution = crate::json::NipJson::parse_str(&json).unwrap();
         assert_eq!(dist, back);
     }
 
@@ -749,8 +764,8 @@ mod tests {
         let mut alice = mgr("alice");
         alice.rotate_sending_chain("g", 1, 0).unwrap();
         let msg = alice.encrypt("g", b"hi", 7).unwrap();
-        let json = json_bourne::to_string(&msg).unwrap();
-        let back: GroupSenderKeyMessage = json_bourne::parse_str(&json).unwrap();
+        let json = crate::json::NipJson::to_string(&msg).unwrap();
+        let back: GroupSenderKeyMessage = crate::json::NipJson::parse_str(&json).unwrap();
         assert_eq!(msg, back);
     }
 

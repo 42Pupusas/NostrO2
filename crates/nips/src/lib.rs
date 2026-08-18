@@ -6,6 +6,7 @@
     clippy::pedantic,
     clippy::nursery
 )]
+pub(crate) mod json;
 mod nip_104;
 mod nip_17;
 mod nip_44;

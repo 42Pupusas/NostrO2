@@ -6,7 +6,13 @@ publish = false
 description = "Cross-library comparison benchmarks (nostro2 vs upstream nostr crate)."
 
 [features]
-default = ["k256"]
+# `serde` matches the workspace-wide default so `cargo build --workspace`
+# doesn't unify conflicting `nostro2/bourne` + `nostro2/serde` requests
+# across sibling packages (Cargo unifies features for a shared dependency
+# across an entire `--workspace` build, and the two are mutually
+# exclusive). Run with `--no-default-features --features k256,bourne` to
+# benchmark the bourne backend instead.
+default = ["k256", "serde"]
 k256 = [
     "nostro2/k256",
     "nostro2-signer/k256",
@@ -17,13 +23,15 @@ secp256k1 = [
     "nostro2-signer/secp256k1",
     "nostro2-nips/secp256k1",
 ]
+bourne = ["nostro2/bourne", "nostro2-signer/bourne", "nostro2-nips/bourne"]
+serde = ["nostro2/serde", "nostro2-signer/serde", "nostro2-nips/serde"]
 
 [dependencies]
 
 [dev-dependencies]
-nostro2 = { workspace = true }
-nostro2-signer = { workspace = true }
-nostro2-nips = { workspace = true }
+nostro2 = { workspace = true, default-features = false }
+nostro2-signer = { workspace = true, default-features = false }
+nostro2-nips = { workspace = true, default-features = false }
 divan.workspace = true
 json-bourne.workspace = true
 serde_json = "1"

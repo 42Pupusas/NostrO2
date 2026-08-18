@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-signer"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -17,9 +17,17 @@ documentation = "https://docs.rs/nostro2-signer"
 # Default mirrors the historical behaviour. Consumers who want
 # `secp256k1` should set `default-features = false` and pick the
 # `secp256k1` feature here.
-default = ["k256"]
+#
+# `nostro2-signer` doesn't touch JSON itself, but it depends on `nostro2`
+# and `nostro2-nips`, both of which need exactly one JSON backend picked
+# (see `nostro2`'s `lib.rs` for the enforcing `compile_error!`). Forward
+# a default so consumers who only ask for `k256`/`secp256k1` still build;
+# opt into `bourne` explicitly for the zero-copy `*View` types.
+default = ["k256", "serde"]
 k256 = ["dep:k256", "nostro2/k256", "nostro2-nips/k256"]
 secp256k1 = ["dep:secp256k1", "nostro2/secp256k1", "nostro2-nips/secp256k1"]
+bourne = ["nostro2/bourne", "nostro2-nips/bourne"]
+serde = ["nostro2/serde", "nostro2-nips/serde"]
 
 [dependencies]
 xinachtli.workspace = true

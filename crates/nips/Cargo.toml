@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-nips"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -22,9 +22,13 @@ documentation = "https://docs.rs/nostro2-nips"
 # `NostrSigner` trait, ECDH through `NostrKeypair`, and verification
 # through `NostrNote::verify`. The HKDF/HMAC/SHA2 primitives used by
 # NIP-04/NIP-44 come from their own RustCrypto crates.
-default = ["k256"]
+# JSON backend: forwarded to `nostro2`, mutually exclusive, `serde` is
+# the default (see `nostro2`'s `lib.rs` for the enforcing `compile_error!`).
+default = ["k256", "serde"]
 k256 = ["nostro2/k256"]
 secp256k1 = ["nostro2/secp256k1"]
+bourne = ["dep:json-bourne", "nostro2/bourne"]
+serde = ["dep:serde", "dep:serde_json", "nostro2/serde"]
 
 [dependencies]
 base64.workspace = true
@@ -34,7 +38,9 @@ hmac.workspace = true
 nostro2 = { workspace = true, default-features = false }
 nostro2-traits.workspace = true
 getrandom.workspace = true
-json-bourne.workspace = true
+json-bourne = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 zeroize.workspace = true
 

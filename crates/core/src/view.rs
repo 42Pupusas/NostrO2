@@ -190,7 +190,10 @@ impl NostrEvent for NostrNoteView<'_> {
     fn sig_hex(&self) -> Option<Cow<'_, str>> {
         self.sig.as_deref().map(Cow::Borrowed)
     }
-    fn write_tags<W: json_bourne::JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error> {
+    fn write_tags<W: crate::canonical::CanonicalWrite + ?Sized>(
+        &self,
+        sink: &mut W,
+    ) -> Result<(), W::Error> {
         sink.write_byte(b'[')?;
         for (i, row) in self.tags.iter().enumerate() {
             if i > 0 {

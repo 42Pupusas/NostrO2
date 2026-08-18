@@ -1,16 +1,18 @@
 //! `nostro2` vs upstream `nostr` crate — head-to-head benchmarks.
 //!
-//! Requires exactly one curve feature (`k256` or `secp256k1`).
-//! With `--no-default-features` the bench compiles but has no benchmarks.
+//! Requires exactly one curve feature (`k256` or `secp256k1`) plus the
+//! `bourne` JSON backend (this file pins `json_bourne` directly and uses
+//! the zero-copy `NostrNoteView`, which is `bourne`-only).
+//! With neither satisfied the bench compiles but has no benchmarks.
 
 fn main() {
     divan::main();
 }
 
-#[cfg(not(any(feature = "k256", feature = "secp256k1")))]
+#[cfg(not(all(any(feature = "k256", feature = "secp256k1"), feature = "bourne")))]
 mod _empty {} // bench binary compiles but runs nothing
 
-#[cfg(any(feature = "k256", feature = "secp256k1"))]
+#[cfg(all(any(feature = "k256", feature = "secp256k1"), feature = "bourne"))]
 mod comparison {
     use divan::black_box;
     use nostr::JsonUtil;

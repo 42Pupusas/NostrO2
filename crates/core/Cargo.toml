@@ -1,6 +1,6 @@
 [package]
 name = "nostro2"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -13,21 +13,34 @@ homepage = "https://github.com/42Pupusas/NostrO2"
 documentation = "https://docs.rs/nostro2"
 
 [features]
-# No default backend. Cargo unifies features across the dep graph, so
+# No default curve. Cargo unifies features across the dep graph, so
 # defaulting to a curve here would silently force *every* downstream
 # consumer of `nostro2` to use that curve unless they remembered to set
 # `default-features = false`. Picking up the curve via a sibling crate
 # (e.g. `nostro2-signer`'s default) is fine — that's an explicit choice
 # by whichever crate the consumer reached for. The `compile_error!` in
 # `lib.rs` enforces that you do not pick both.
-default = []
+#
+# JSON backend: `bourne` and `serde` are mutually exclusive — pick
+# exactly one. `serde` is the default so upgrading `nostro2` without
+# touching `Cargo.toml` keeps working; opt into `bourne` explicitly for
+# its zero-copy `*View` types and lower allocation count. The
+# `compile_error!` in `lib.rs` enforces the exclusivity.
+default = ["serde"]
+# Forwarded into the dev-only `nostro2-signer` dep too, so `cargo test`
+# never unifies both backends onto this same crate at once (which would
+# trip the `compile_error!` below).
+bourne = ["dep:json-bourne", "nostro2-signer/bourne"]
+serde = ["dep:serde", "dep:serde_json", "nostro2-signer/serde"]
 k256 = ["dep:k256"]
 secp256k1 = ["dep:secp256k1"]
 
 [dependencies]
 k256 = { workspace = true, optional = true }
 secp256k1 = { workspace = true, optional = true }
-json-bourne.workspace = true
+json-bourne = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 nostro2-traits.workspace = true
 
@@ -45,7 +58,7 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 # 0.5.0 can't exist on crates.io until core is published, and core won't
 # publish while it requires it). `cargo publish` drops path-only dev-deps
 # from the uploaded manifest, breaking the cycle; local builds still resolve.
-nostro2-signer = { path = "../signer", features = ["k256"] }
+nostro2-signer = { path = "../signer", default-features = false, features = ["k256"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 divan.workspace = true

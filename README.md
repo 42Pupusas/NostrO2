@@ -150,6 +150,16 @@ You can also add `nostro2` to your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-nostro2 = "0.2.0"
+nostro2 = "0.8"
+```
+
+### JSON backend
+
+`nostro2` has two mutually exclusive JSON backends. `serde` is the
+default. Select `bourne` for its zero-copy `*View` types:
+
+```toml
+[dependencies]
+nostro2 = { version = "0.8", default-features = false, features = ["bourne"] }
 ```
 

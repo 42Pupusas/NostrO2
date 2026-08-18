@@ -103,6 +103,22 @@
 #[cfg(all(feature = "k256", feature = "secp256k1"))]
 compile_error!("features `k256` and `secp256k1` are mutually exclusive; pick exactly one");
 
+// The `bourne` and `serde` features pick the JSON backend for owned
+// types (`NostrNote`, `NostrTags`, `NostrSubscription`, relay/client
+// events) at compile time. Enabling both is a configuration error: both
+// backends provide the same wire shapes, so there is no sensible "both"
+// semantic and every downstream `impl` site would need to pick one
+// anyway. Enabling neither is also an error — none of the owned types
+// could be parsed or serialized. The zero-copy `*View` types are
+// `bourne`-only (they use `json-bourne`'s `Lexer` checkpoint/restore API
+// directly, which `serde` has no equivalent for) and are gated out
+// entirely under the `serde` backend.
+#[cfg(all(feature = "bourne", feature = "serde"))]
+compile_error!("features `bourne` and `serde` are mutually exclusive; pick exactly one");
+#[cfg(not(any(feature = "bourne", feature = "serde")))]
+compile_error!("exactly one JSON backend feature must be enabled: `bourne` or `serde`");
+
+pub(crate) mod canonical;
 pub mod errors;
 pub mod event;
 pub(crate) mod hash;
@@ -111,6 +127,7 @@ mod relay_events;
 mod subscriptions;
 mod tags;
 pub mod validation;
+#[cfg(feature = "bourne")]
 pub mod view;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -120,6 +137,7 @@ pub use note::{NostrNote, NostrNoteBuilder};
 pub use relay_events::{NostrClientEvent, NostrRelayEvent, RelayEventTag};
 pub use subscriptions::NostrSubscription;
 pub use tags::NostrTags;
+#[cfg(feature = "bourne")]
 pub use view::{
     NostrClientEventView, NostrNoteView, NostrRelayEventView, NostrSubscriptionView, TagsView,
 };
@@ -138,6 +156,24 @@ mod tests {
 
     use super::event::NostrEvent;
     use super::note::{NostrNote, NostrNoteBuilder};
+
+    #[cfg(feature = "bourne")]
+    fn to_json_string<T: json_bourne::ToJson + ?Sized>(v: &T) -> String {
+        json_bourne::to_string(v).unwrap()
+    }
+    #[cfg(feature = "serde")]
+    fn to_json_string<T: serde::Serialize + ?Sized>(v: &T) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    #[cfg(feature = "bourne")]
+    fn from_json_str<T: for<'a> json_bourne::FromJson<'a>>(s: &str) -> T {
+        json_bourne::parse_str(s).unwrap()
+    }
+    #[cfg(feature = "serde")]
+    fn from_json_str<T: serde::de::DeserializeOwned>(s: &str) -> T {
+        serde_json::from_str(s).unwrap()
+    }
 
     // An unsigned note — no `id`, no `sig` — must not verify, and the
     // failure must hold even if `id` is later filled in but `sig` isn't.
@@ -211,8 +247,8 @@ mod tests {
         note.tags.add_event_tag(PUB);
         note.tags.add_custom_tag("x", "y");
 
-        let json = json_bourne::to_string(&note).expect("serialize");
-        let round_trip: NostrNote = json_bourne::parse_str(&json).expect("parse back");
+        let json = to_json_string(&note);
+        let round_trip: NostrNote = from_json_str(&json);
         assert_eq!(note, round_trip);
     }
 
@@ -341,6 +377,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod proptests {
         use super::*;
+        #[cfg(feature = "bourne")]
         use crate::event::NostrEvent;
         use proptest::prelude::*;
 
@@ -370,8 +407,8 @@ mod tests {
         proptest! {
             #[test]
             fn json_round_trip(note in arb_note()) {
-                let json = json_bourne::to_string(&note).unwrap();
-                let back: NostrNote = json_bourne::parse_str(&json).unwrap();
+                let json = super::to_json_string(&note);
+                let back: NostrNote = super::from_json_str(&json);
                 prop_assert_eq!(&note, &back);
             }
 
@@ -384,6 +421,7 @@ mod tests {
                 prop_assert_eq!(&a.id, &b.id);
             }
 
+            #[cfg(feature = "bourne")]
             #[test]
             fn view_id_matches_owned_id(note in arb_note()) {
                 let mut owned = note;

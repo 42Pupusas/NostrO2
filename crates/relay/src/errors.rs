@@ -1,7 +1,10 @@
 #[derive(Debug)]
 pub enum NostrRelayError {
     Tungstenite(Box<tokio_tungstenite::tungstenite::Error>),
+    #[cfg(feature = "bourne")]
     Serde(json_bourne::Error),
+    #[cfg(feature = "serde")]
+    Serde(serde_json::Error),
     TokioSend(Box<tokio::sync::broadcast::error::SendError<nostro2::NostrClientEvent>>),
     SendError,
 }
@@ -31,6 +34,20 @@ impl std::error::Error for NostrRelayError {
 impl From<tokio_tungstenite::tungstenite::Error> for NostrRelayError {
     fn from(value: tokio_tungstenite::tungstenite::Error) -> Self {
         Self::Tungstenite(Box::new(value))
+    }
+}
+
+#[cfg(feature = "bourne")]
+impl From<json_bourne::Error> for NostrRelayError {
+    fn from(value: json_bourne::Error) -> Self {
+        Self::Serde(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<serde_json::Error> for NostrRelayError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Serde(value)
     }
 }
 

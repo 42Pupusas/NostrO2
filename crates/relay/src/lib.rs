@@ -16,6 +16,7 @@ compile_error!(
 );
 
 pub mod errors;
+mod json;
 mod pool;
 mod relay;
 pub use nostro2;

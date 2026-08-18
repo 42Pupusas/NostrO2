@@ -2,7 +2,10 @@
 
 #[derive(Debug)]
 pub enum NostrErrors {
+    #[cfg(feature = "bourne")]
     JsonError(json_bourne::Error),
+    #[cfg(feature = "serde")]
+    JsonError(serde_json::Error),
     MissingId,
     MissingSignature,
     MissingPubkey,
@@ -41,8 +44,16 @@ impl std::error::Error for NostrErrors {
     }
 }
 
+#[cfg(feature = "bourne")]
 impl From<json_bourne::Error> for NostrErrors {
     fn from(e: json_bourne::Error) -> Self {
+        Self::JsonError(e)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<serde_json::Error> for NostrErrors {
+    fn from(e: serde_json::Error) -> Self {
         Self::JsonError(e)
     }
 }
@@ -71,17 +82,22 @@ impl From<secp256k1::Error> for NostrErrors {
 mod tests {
     use super::*;
 
-    fn dummy_bourne_err() -> json_bourne::Error {
+    #[cfg(feature = "bourne")]
+    fn dummy_json_err() -> json_bourne::Error {
         json_bourne::Error::new(
             json_bourne::ErrorKind::UnexpectedEof,
             json_bourne::Position { offset: 0 },
         )
     }
+    #[cfg(feature = "serde")]
+    fn dummy_json_err() -> serde_json::Error {
+        serde_json::from_str::<()>("!!!").unwrap_err()
+    }
 
     #[test]
     fn display_covers_all_variants() {
         let cases: Vec<NostrErrors> = vec![
-            NostrErrors::JsonError(dummy_bourne_err()),
+            NostrErrors::JsonError(dummy_json_err()),
             NostrErrors::MissingId,
             NostrErrors::MissingSignature,
             NostrErrors::MissingPubkey,
@@ -99,7 +115,7 @@ mod tests {
     fn source_delegates_correctly() {
         use std::error::Error;
 
-        let json_err = NostrErrors::JsonError(dummy_bourne_err());
+        let json_err = NostrErrors::JsonError(dummy_json_err());
         assert!(json_err.source().is_some());
 
         let signer_err = NostrErrors::Signer(nostro2_traits::SignerError::MissingId);

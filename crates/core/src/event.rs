@@ -7,9 +7,9 @@
 
 use std::borrow::Cow;
 
-use json_bourne::JsonWrite;
 use nostro2_traits::hex::FromHex as _;
 
+use crate::canonical::CanonicalWrite;
 #[cfg(any(feature = "k256", feature = "secp256k1"))]
 use crate::errors::NostrErrors;
 use crate::hash::Sha256Sink;
@@ -33,7 +33,7 @@ pub trait NostrEvent {
     /// # Errors
     ///
     /// Propagates the writer's error type.
-    fn write_tags<W: JsonWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
+    fn write_tags<W: CanonicalWrite + ?Sized>(&self, sink: &mut W) -> Result<(), W::Error>;
 
     // ── Provided: hex → byte helpers ──────────────────────
 

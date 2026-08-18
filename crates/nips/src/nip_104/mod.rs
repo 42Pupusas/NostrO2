@@ -113,8 +113,8 @@ impl From<crate::Nip44Error> for Nip104Error {
         Self::Nip44(e)
     }
 }
-impl From<json_bourne::Error> for Nip104Error {
-    fn from(e: json_bourne::Error) -> Self {
+impl From<crate::json::JsonError> for Nip104Error {
+    fn from(e: crate::json::JsonError) -> Self {
         Self::Json(format!("{e:?}"))
     }
 }
@@ -161,12 +161,19 @@ impl Drop for KeyPairBytes {
 /// The plaintext ratchet header, transmitted NIP-44-encrypted in each
 /// message. Wire field names are camelCase to match the reference
 /// implementation's JSON exactly (this is the interop-critical type).
-#[derive(Debug, Clone, PartialEq, Eq, json_bourne::FromJson, json_bourne::ToJson)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "bourne",
+    derive(json_bourne::FromJson, json_bourne::ToJson)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Header {
     number: u32,
-    #[bourne(rename = "previousChainLength")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "previousChainLength"))]
+    #[cfg_attr(feature = "serde", serde(rename = "previousChainLength"))]
     previous_chain_length: u32,
-    #[bourne(rename = "nextPublicKey")]
+    #[cfg_attr(feature = "bourne", bourne(rename = "nextPublicKey"))]
+    #[cfg_attr(feature = "serde", serde(rename = "nextPublicKey"))]
     next_public_key: String,
 }
 
@@ -422,7 +429,7 @@ impl<K: NostrKeypair> Session<K> {
             .ok_or(Nip104Error::SessionNotReady)?;
 
         let our_kp = K::from_secret_bytes(&our_current.secret_bytes()?)?;
-        let header_json = json_bourne::to_string(&header)?;
+        let header_json = crate::json::NipJson::to_string(&header)?;
         let encrypted_header = our_kp
             .nip_44_encrypt(&header_json, their_next)?
             .into_owned();
@@ -820,7 +827,7 @@ pub(crate) trait Nip104Crypto: NostrKeypair + Sized {
     ) -> Result<Header> {
         let kp = Self::from_secret_bytes(our_secret)?;
         let json = kp.nip_44_decrypt(encrypted_header, sender)?;
-        Ok(json_bourne::parse_str(&json)?)
+        Ok(crate::json::NipJson::parse_str(&json)?)
     }
 
     /// Bound the skipped-key store to [`MAX_SKIP`], evicting the oldest.
@@ -865,12 +872,12 @@ mod tests {
             previous_chain_length: 2,
             next_public_key: "ab".repeat(32),
         };
-        let s = json_bourne::to_string(&h).unwrap();
+        let s = crate::json::NipJson::to_string(&h).unwrap();
         // Wire format must use camelCase keys to interoperate with Iris.
         assert!(s.contains("\"previousChainLength\":2"), "got {s}");
         assert!(s.contains("\"nextPublicKey\":"), "got {s}");
         assert!(!s.contains("previous_chain_length"), "got {s}");
-        let back: Header = json_bourne::parse_str(&s).unwrap();
+        let back: Header = crate::json::NipJson::parse_str(&s).unwrap();
         assert_eq!(back, h);
     }
 

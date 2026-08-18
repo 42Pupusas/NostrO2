@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-relay"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -13,9 +13,16 @@ homepage = "https://github.com/42Pupusas/NostrO2"
 documentation = "https://docs.rs/nostro2-relay"
 
 [features]
-default = ["rustls-ring"]
+default = ["rustls-ring", "serde"]
 rustls-ring = ["rustls/ring", "tokio-tungstenite/rustls-tls-native-roots"]
 rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots"]
+# JSON backend: forwarded to `nostro2`, mutually exclusive, `serde` is
+# the default (see `nostro2`'s `lib.rs` for the enforcing `compile_error!`).
+# Forwarded into the dev-only NIP/signer crates too, so `cargo test` never
+# unifies both backends onto `nostro2` at once (which would trip its
+# `compile_error!`).
+bourne = ["dep:json-bourne", "nostro2/bourne", "nostro2-nips/bourne", "nostro2-signer/bourne"]
+serde = ["dep:serde", "dep:serde_json", "nostro2/serde", "nostro2-nips/serde", "nostro2-signer/serde"]
 
 [dependencies]
 futures-util.workspace = true
@@ -28,14 +35,16 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "sync", 
 # selects no backend with a single clear `compile_error!`.
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
-nostro2.workspace = true
+nostro2 = { workspace = true, default-features = false }
 nostro2-cache.workspace = true
-json-bourne.workspace = true
+json-bourne = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
 
 [dev-dependencies]
-nostro2-signer = { workspace = true, features = ["k256"] }
-nostro2-nips = { workspace = true, features = ["k256"] }
+nostro2-signer = { workspace = true, default-features = false, features = ["k256"] }
+nostro2-nips = { workspace = true, default-features = false, features = ["k256"] }
 nostro2-traits.workspace = true
 divan.workspace = true
 lru.workspace = true
