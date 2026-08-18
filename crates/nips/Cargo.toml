@@ -8,7 +8,7 @@ keywords = ["nostr", "nips", "nip44", "nip04", "encryption"]
 license = "MIT"
 description = "NIP implementations (NIP-04, NIP-44, NIP-104, …) for the nostro2 Nostr toolset."
 repository = "https://github.com/42Pupusas/NostrO2"
-readme = "../../README.md"
+readme = "README.md"
 homepage = "https://github.com/42Pupusas/NostrO2"
 documentation = "https://docs.rs/nostro2-nips"
 
