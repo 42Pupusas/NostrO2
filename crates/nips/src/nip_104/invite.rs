@@ -360,8 +360,7 @@ impl Invite {
 
         // Peel layer 2: the raw shared secret.
         let dh_encrypted_bytes = K::decrypt_with_message_key(&shared_secret, &inner_event.content)?;
-        let dh_encrypted = String::from_utf8(dh_encrypted_bytes)
-            .map_err(|e| Nip104Error::Json(format!("inner utf8: {e}")))?;
+        let dh_encrypted = String::from_utf8(dh_encrypted_bytes)?;
 
         // Peel layer 1: inviter-id × invitee-id DH.
         let payload_json = inviter_identity.nip_44_decrypt(&dh_encrypted, &invitee_identity)?;

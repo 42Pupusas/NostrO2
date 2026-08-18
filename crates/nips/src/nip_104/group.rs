@@ -330,9 +330,7 @@ impl<K: NostrKeypair> GroupManager<K> {
             tags,
             ..Default::default()
         };
-        rumor
-            .serialize_id()
-            .map_err(|e| Nip104Error::Json(e.to_string()))?;
+        rumor.serialize_id()?;
         Ok(rumor)
     }
 

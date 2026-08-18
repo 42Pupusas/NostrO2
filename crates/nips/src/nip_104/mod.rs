@@ -78,7 +78,11 @@ pub enum Nip104Error {
     /// NIP-44 layer error.
     Nip44(crate::Nip44Error),
     /// JSON (de)serialization error.
-    Json(String),
+    Json(crate::json::JsonError),
+    /// Canonical event-ID serialization error.
+    Note(nostro2::errors::NostrErrors),
+    /// A decrypted layer did not contain valid UTF-8.
+    Utf8(std::string::FromUtf8Error),
     /// Base64 decoding error.
     Base64(base64::DecodeError),
 }
@@ -96,12 +100,26 @@ impl std::fmt::Display for Nip104Error {
             Self::Signer(e) => write!(f, "signer error: {e}"),
             Self::Nip44(e) => write!(f, "nip-44 error: {e}"),
             Self::Json(e) => write!(f, "json error: {e}"),
+            Self::Note(e) => write!(f, "note error: {e}"),
+            Self::Utf8(e) => write!(f, "utf8 error: {e}"),
             Self::Base64(e) => write!(f, "base64 error: {e}"),
         }
     }
 }
 
-impl std::error::Error for Nip104Error {}
+impl std::error::Error for Nip104Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Signer(e) => Some(e),
+            Self::Nip44(e) => Some(e),
+            Self::Json(e) => Some(e),
+            Self::Note(e) => Some(e),
+            Self::Utf8(e) => Some(e),
+            Self::Base64(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<SignerError> for Nip104Error {
     fn from(e: SignerError) -> Self {
@@ -115,7 +133,17 @@ impl From<crate::Nip44Error> for Nip104Error {
 }
 impl From<crate::json::JsonError> for Nip104Error {
     fn from(e: crate::json::JsonError) -> Self {
-        Self::Json(format!("{e:?}"))
+        Self::Json(e)
+    }
+}
+impl From<nostro2::errors::NostrErrors> for Nip104Error {
+    fn from(e: nostro2::errors::NostrErrors) -> Self {
+        Self::Note(e)
+    }
+}
+impl From<std::string::FromUtf8Error> for Nip104Error {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        Self::Utf8(e)
     }
 }
 impl From<base64::DecodeError> for Nip104Error {
@@ -1153,13 +1181,26 @@ mod tests {
             Nip104Error::UnknownPeer("npub1xyz".into()),
             Nip104Error::Signer(SignerError::InvalidSignature),
             Nip104Error::Nip44(crate::Nip44Error::MacMismatch),
-            Nip104Error::Json("unexpected token".into()),
+            Nip104Error::Json(crate::json::NipJson::parse_str::<Header>("!!!").unwrap_err()),
+            Nip104Error::Note(nostro2::errors::NostrErrors::MissingPubkey),
+            Nip104Error::Utf8(String::from_utf8(vec![0xff]).unwrap_err()),
             Nip104Error::Base64(general_purpose::STANDARD.decode("!!!").unwrap_err()),
         ];
         for err in &cases {
             assert!(!format!("{err}").is_empty(), "Display empty for {err:?}");
-            // The blanket `Error` impl carries no source; just exercise it.
-            let _ = err.source();
         }
+
+        let wrapping = [
+            Nip104Error::Signer(SignerError::InvalidSignature),
+            Nip104Error::Nip44(crate::Nip44Error::MacMismatch),
+            Nip104Error::Json(crate::json::NipJson::parse_str::<Header>("!!!").unwrap_err()),
+            Nip104Error::Note(nostro2::errors::NostrErrors::MissingPubkey),
+            Nip104Error::Utf8(String::from_utf8(vec![0xff]).unwrap_err()),
+            Nip104Error::Base64(general_purpose::STANDARD.decode("!!!").unwrap_err()),
+        ];
+        for err in &wrapping {
+            assert!(err.source().is_some(), "missing source for {err:?}");
+        }
+        assert!(Nip104Error::CannotSendYet.source().is_none());
     }
 }
