@@ -53,38 +53,62 @@ impl NostrPool {
             let url = (*url).to_string();
             let reconnect_config = reconnect_config.clone();
             tokio::task::spawn(async move {
-                if let Ok(relay) =
-                    crate::relay::NostrRelay::with_reconnect(&url, reconnect_config).await
-                {
+                let relay = {
+                    let mut attempt = 0;
                     loop {
-                        tokio::select! {
-                            Ok(msg) = sink.recv() => {
+                        match crate::relay::NostrRelay::with_reconnect(
+                            &url,
+                            reconnect_config.clone(),
+                        )
+                        .await
+                        {
+                            Ok(relay) => break relay,
+                            Err(e) => {
+                                if !reconnect_config.is_enabled()
+                                    || (reconnect_config.max_retries > 0
+                                        && attempt >= reconnect_config.max_retries)
+                                {
+                                    log::warn!("could not connect to {url}: {e}");
+                                    return;
+                                }
+                                let delay = reconnect_config.next_delay(attempt);
+                                log::warn!(
+                                    "connection to {url} failed ({e}), retrying in {delay:?}"
+                                );
+                                tokio::time::sleep(delay).await;
+                                attempt += 1;
+                            }
+                        }
+                    }
+                };
+                loop {
+                    tokio::select! {
+                        recv = sink.recv() => match recv {
+                            Ok(msg) => {
                                 if let Err(e) = relay.send(msg) {
                                     log::warn!("relay send failed: {e}");
                                 }
-                            },
-                            Some(msg) = relay.recv() => {
-                                if let nostro2::NostrRelayEvent::NewNote(.., ref note) =
-                                    msg
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                log::warn!("pool sink lagged, skipped {skipped} messages");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        },
+                        event = relay.recv() => if let Some(msg) = event {
+                            if let nostro2::NostrRelayEvent::NewNote(.., ref note) = msg {
+                                if let Some(ref id) = note.id
+                                    && seen.insert(id.clone())
+                                    && let Err(e) = stream_send.send(msg.clone())
                                 {
-                                    if let Some(ref id) = note.id
-                                        && seen.insert(id.clone())
-                                        && let Err(e) = stream_send.send(msg.clone())
-                                    {
-                                        log::warn!("pool stream send failed: {e}");
-                                    }
-                                    continue;
-                                }
-                                if let Err(e) = stream_send.send(msg) {
                                     log::warn!("pool stream send failed: {e}");
                                 }
-                            },
-                            else => {
-                                log::info!("relay connection closed");
-                                break;
+                            } else if let Err(e) = stream_send.send(msg) {
+                                log::warn!("pool stream send failed: {e}");
                             }
-
-                        }
+                        } else {
+                            log::warn!("relay stream ended for {url}");
+                            break;
+                        },
                     }
                 }
             });

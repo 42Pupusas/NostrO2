@@ -354,16 +354,16 @@ impl NostrRelay {
     /// Receives a message from the relay.
     /// Pulls raw text from the reader task's channel and parses it.
     ///
-    /// # Errors
-    ///
-    /// Returns `None` if the stream is closed or the frame fails to parse as a
-    /// NIP-01 / NIP-42 message. Callers that need to distinguish "stream
-    /// closed" from "garbage frame" should add a richer return type — the
-    /// previous implementation collapsed parse failures into a fake `Ping`
-    /// variant, which masked relay bugs.
+    /// Skips unparseable frames with a warning, so `None` always means
+    /// the stream is closed.
     pub async fn recv(&self) -> Option<nostro2::NostrRelayEvent> {
-        let msg_text = self.receiver.write().await.recv().await?;
-        msg_text.parse().ok()
+        loop {
+            let msg_text = self.receiver.write().await.recv().await?;
+            if let Ok(event) = msg_text.parse() {
+                return Some(event);
+            }
+            log::warn!("skipped an unparseable relay frame");
+        }
     }
 }
 
