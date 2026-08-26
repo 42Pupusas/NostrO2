@@ -59,20 +59,11 @@ impl LeakProbe {
         }
     }
 
-    /// Retry at a flat one-second cadence, so an orphaned task betrays itself
-    /// within a short window. The production default doubles up to 60s, which
-    /// would need a minutes-long test to observe.
-    ///
-    /// Delays are second-granular by contract: `is_enabled` and the manager's
-    /// own guard both test `as_secs()`, so a sub-second `max_delay` disables
-    /// reconnection instead of speeding it up.
+    /// Retry at a flat 100ms cadence, so an orphaned task betrays itself many
+    /// times inside the observation window. The production default doubles up
+    /// to 60s, which would need a minutes-long test to observe.
     fn eager_reconnect() -> nostro2_relay::ReconnectConfig {
-        nostro2_relay::ReconnectConfig {
-            max_retries: 0,
-            initial_delay: std::time::Duration::from_secs(1),
-            max_delay: std::time::Duration::from_secs(2),
-            backoff_multiplier: 1.0,
-        }
+        nostro2_relay::ReconnectConfig::fixed(std::time::Duration::from_millis(100))
     }
 
     async fn build_and_drop_pool(&self) {

@@ -18,6 +18,7 @@ compile_error!(
 pub mod errors;
 mod json;
 mod pool;
+mod reconnect;
 mod relay;
 mod socket;
 mod task_guard;
@@ -25,7 +26,8 @@ mod tls;
 mod url;
 pub use nostro2;
 pub use pool::NostrPool;
-pub use relay::{NostrRelay, ReconnectConfig};
+pub use reconnect::{ReconnectConfig, ReconnectSchedule};
+pub use relay::NostrRelay;
 pub use task_guard::TaskGuard;
 pub use socket::{WsMessage, WsSocket, WsSocketError};
 pub use tls::{RelayTls, RelayTlsError};

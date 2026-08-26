@@ -1,63 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
-use std::time::Duration;
 
-/// Configuration for automatic reconnection with exponential backoff
-///
-/// When a relay connection drops, it will automatically attempt to reconnect
-/// using an exponential backoff strategy.
-#[derive(Debug, Clone)]
-pub struct ReconnectConfig {
-    /// Maximum number of reconnection attempts (0 = infinite)
-    pub max_retries: u32,
-    /// Initial delay before first reconnection attempt
-    pub initial_delay: Duration,
-    /// Maximum delay between reconnection attempts
-    pub max_delay: Duration,
-    /// Multiplier for exponential backoff (e.g., 2.0 doubles the delay each time)
-    pub backoff_multiplier: f64,
-}
-
-impl Default for ReconnectConfig {
-    fn default() -> Self {
-        Self {
-            max_retries: 0, // Infinite retries by default
-            initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            backoff_multiplier: 2.0,
-        }
-    }
-}
-
-impl ReconnectConfig {
-    /// Create a config with no automatic reconnection
-    #[must_use]
-    pub const fn disabled() -> Self {
-        Self {
-            max_retries: 0,
-            initial_delay: Duration::from_secs(0),
-            max_delay: Duration::from_secs(0),
-            backoff_multiplier: 0.0,
-        }
-    }
-
-    /// Check if reconnection is enabled
-    #[must_use]
-    pub const fn is_enabled(&self) -> bool {
-        self.max_delay.as_secs() > 0
-    }
-
-    /// Calculate the next delay using exponential backoff
-    #[must_use]
-    pub fn next_delay(&self, attempt: u32) -> Duration {
-        if !self.is_enabled() {
-            return Duration::from_secs(0);
-        }
-
-        let delay_secs =
-            self.initial_delay.as_secs_f64() * self.backoff_multiplier.powf(f64::from(attempt));
-        Duration::from_secs_f64(delay_secs.min(self.max_delay.as_secs_f64()))
-    }
-}
+pub use crate::reconnect::ReconnectConfig;
 
 #[derive(Clone)]
 pub struct NostrRelay {
@@ -229,7 +172,7 @@ impl NostrRelay {
             }
 
             let delay = config.next_delay(attempt);
-            if delay.as_secs() == 0 {
+            if delay.is_zero() {
                 break;
             }
 
