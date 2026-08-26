@@ -16,6 +16,7 @@ compile_error!(
 );
 
 pub mod errors;
+mod guard;
 mod json;
 mod pool;
 mod reconnect;
@@ -26,6 +27,7 @@ mod tls;
 mod url;
 pub use nostro2;
 pub use pool::NostrPool;
+pub use guard::{DriverGuard, Shutdown};
 pub use reconnect::{ReconnectConfig, ReconnectSchedule};
 pub use relay::NostrRelay;
 pub use task_guard::TaskGuard;
