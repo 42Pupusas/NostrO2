@@ -19,6 +19,8 @@ pub mod errors;
 mod json;
 mod pool;
 mod relay;
+mod task_guard;
 pub use nostro2;
 pub use pool::NostrPool;
 pub use relay::{NostrRelay, ReconnectConfig};
+pub use task_guard::TaskGuard;

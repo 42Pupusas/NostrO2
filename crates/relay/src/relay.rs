@@ -75,6 +75,10 @@ pub struct NostrRelay {
     /// Reconnection configuration
     #[allow(dead_code)]
     reconnect_config: std::sync::Arc<ReconnectConfig>,
+    /// Aborts the connection manager when the last clone of this relay drops.
+    /// The manager reconnects forever by default, so without this it survives
+    /// its owner and holds a socket open for the lifetime of the process.
+    _manager: std::sync::Arc<crate::task_guard::TaskGuard>,
 }
 impl NostrRelay {
     /// Creates a new relay connection with default reconnection settings.
@@ -132,7 +136,7 @@ impl NostrRelay {
         let (sink, stream) = futures_util::StreamExt::split(initial_connection);
 
         // Spawn connection manager task
-        tokio::spawn(Self::connection_manager(
+        let manager = tokio::spawn(Self::connection_manager(
             url,
             reconnect_config,
             incoming_tx,
@@ -146,6 +150,7 @@ impl NostrRelay {
             sender: outgoing_tx,
             url: url_arc,
             reconnect_config: reconnect_config_arc,
+            _manager: std::sync::Arc::new(crate::task_guard::TaskGuard::new(manager)),
         })
     }
 

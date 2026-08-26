@@ -6,6 +6,11 @@ pub struct NostrPool {
     pub stream: std::sync::Arc<
         tokio::sync::RwLock<tokio::sync::mpsc::UnboundedReceiver<nostro2::NostrRelayEvent>>,
     >,
+    /// Aborts every per-relay task when the last clone of this pool drops.
+    /// A task still inside the initial connect-retry loop never observes the
+    /// closed sink, so an unreachable relay would otherwise retry forever and
+    /// keep the pool's tasks alive for the lifetime of the process.
+    _relays: std::sync::Arc<Vec<crate::task_guard::TaskGuard>>,
 }
 impl NostrPool {
     /// Create a new relay pool with default settings.
@@ -46,76 +51,80 @@ impl NostrPool {
             tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
         let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
         let seen = nostro2_cache::Cache::new(cache_size);
+        let mut guards = Vec::with_capacity(relays.len());
         for url in relays {
             let mut sink = sink_rx.resubscribe();
             let stream_send = stream_tx.clone();
             let seen = seen.clone();
             let url = (*url).to_string();
             let reconnect_config = reconnect_config.clone();
-            tokio::task::spawn(async move {
-                let relay = {
-                    let mut attempt = 0;
-                    loop {
-                        match crate::relay::NostrRelay::with_reconnect(
-                            &url,
-                            reconnect_config.clone(),
-                        )
-                        .await
-                        {
-                            Ok(relay) => break relay,
-                            Err(e) => {
-                                if !reconnect_config.is_enabled()
-                                    || (reconnect_config.max_retries > 0
-                                        && attempt >= reconnect_config.max_retries)
-                                {
-                                    log::warn!("could not connect to {url}: {e}");
-                                    return;
+            guards.push(crate::task_guard::TaskGuard::new(tokio::task::spawn(
+                async move {
+                    let relay = {
+                        let mut attempt = 0;
+                        loop {
+                            match crate::relay::NostrRelay::with_reconnect(
+                                &url,
+                                reconnect_config.clone(),
+                            )
+                            .await
+                            {
+                                Ok(relay) => break relay,
+                                Err(e) => {
+                                    if !reconnect_config.is_enabled()
+                                        || (reconnect_config.max_retries > 0
+                                            && attempt >= reconnect_config.max_retries)
+                                    {
+                                        log::warn!("could not connect to {url}: {e}");
+                                        return;
+                                    }
+                                    let delay = reconnect_config.next_delay(attempt);
+                                    log::warn!(
+                                        "connection to {url} failed ({e}), retrying in {delay:?}"
+                                    );
+                                    tokio::time::sleep(delay).await;
+                                    attempt += 1;
                                 }
-                                let delay = reconnect_config.next_delay(attempt);
-                                log::warn!(
-                                    "connection to {url} failed ({e}), retrying in {delay:?}"
-                                );
-                                tokio::time::sleep(delay).await;
-                                attempt += 1;
                             }
                         }
-                    }
-                };
-                loop {
-                    tokio::select! {
-                        recv = sink.recv() => match recv {
-                            Ok(msg) => {
-                                if let Err(e) = relay.send(msg) {
-                                    log::warn!("relay send failed: {e}");
+                    };
+                    loop {
+                        tokio::select! {
+                            recv = sink.recv() => match recv {
+                                Ok(msg) => {
+                                    if let Err(e) = relay.send(msg) {
+                                        log::warn!("relay send failed: {e}");
+                                    }
                                 }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                log::warn!("pool sink lagged, skipped {skipped} messages");
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        },
-                        event = relay.recv() => if let Some(msg) = event {
-                            if let nostro2::NostrRelayEvent::NewNote(.., ref note) = msg {
-                                if let Some(ref id) = note.id
-                                    && seen.insert(id.clone())
-                                    && let Err(e) = stream_send.send(msg.clone())
-                                {
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                    log::warn!("pool sink lagged, skipped {skipped} messages");
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            },
+                            event = relay.recv() => if let Some(msg) = event {
+                                if let nostro2::NostrRelayEvent::NewNote(.., ref note) = msg {
+                                    if let Some(ref id) = note.id
+                                        && seen.insert(id.clone())
+                                        && let Err(e) = stream_send.send(msg.clone())
+                                    {
+                                        log::warn!("pool stream send failed: {e}");
+                                    }
+                                } else if let Err(e) = stream_send.send(msg) {
                                     log::warn!("pool stream send failed: {e}");
                                 }
-                            } else if let Err(e) = stream_send.send(msg) {
-                                log::warn!("pool stream send failed: {e}");
-                            }
-                        } else {
-                            log::warn!("relay stream ended for {url}");
-                            break;
-                        },
+                            } else {
+                                log::warn!("relay stream ended for {url}");
+                                break;
+                            },
+                        }
                     }
-                }
-            });
+                },
+            )));
         }
         Self {
             stream: std::sync::Arc::new(tokio::sync::RwLock::new(stream)),
             sink,
+            _relays: std::sync::Arc::new(guards),
         }
     }
 
