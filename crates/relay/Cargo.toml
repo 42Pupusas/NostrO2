@@ -35,6 +35,10 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "sync", 
 # selects no backend with a single clear `compile_error!`.
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
+quetzalcoatl.workspace = true
+coyoquil.workspace = true
+webpki-roots.workspace = true
+
 nostro2 = { workspace = true, default-features = false }
 nostro2-cache.workspace = true
 json-bourne = { workspace = true, optional = true }
@@ -43,6 +47,10 @@ serde_json = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
 
 [dev-dependencies]
+# An independent RFC-6455 implementation, used as the test server so the
+# socket tests prove interop rather than codec self-consistency. Sync, so
+# the tests need no async runtime at all.
+tungstenite = { version = "0.26", default-features = false }
 nostro2-signer = { workspace = true, default-features = false, features = ["k256"] }
 nostro2-nips = { workspace = true, default-features = false, features = ["k256"] }
 nostro2-traits.workspace = true

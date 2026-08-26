@@ -48,6 +48,11 @@ xinachtli = { version = "0.1", features = ["english", "spanish"] }
 tokio = { version = "^1.44" }
 futures-util = { version = "0.3", features = ["sink", "std"] }
 
+# Runtime-free WebSocket pipeline: lock-free rings + RFC-6455 codec.
+quetzalcoatl = { version = "0.14", features = ["async"] }
+coyoquil = "0.3"
+webpki-roots = "1"
+
 # Misc
 chrono = "0.4"
 tracing-test = "0.2"
