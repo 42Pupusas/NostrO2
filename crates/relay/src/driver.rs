@@ -33,6 +33,8 @@ pub struct DriverConfig {
     /// worst-case delay before a queued frame reaches the socket. Lower it
     /// to cut send latency, at the cost of more idle wakeups.
     pub read_timeout: std::time::Duration,
+    /// What to do with a note whose signature does not check out.
+    pub verify: crate::verifier::VerifyPolicy,
 }
 
 impl DriverConfig {
@@ -46,7 +48,15 @@ impl DriverConfig {
             inbound_capacity: 1024,
             connect_timeout: std::time::Duration::from_secs(10),
             read_timeout: std::time::Duration::from_millis(100),
+            verify: crate::verifier::VerifyPolicy::default(),
         }
+    }
+
+    /// Replaces the signature policy for inbound notes.
+    #[must_use]
+    pub const fn with_verify(mut self, verify: crate::verifier::VerifyPolicy) -> Self {
+        self.verify = verify;
+        self
     }
 
     /// Replaces the reconnection policy.
@@ -123,6 +133,7 @@ pub struct RelayDriver {
     outbound: quetzalcoatl::mpsc::Consumer<String>,
     inbound: quetzalcoatl::spmc::Producer<DriverEvent>,
     handshake: Option<quetzalcoatl::spsc::Producer<Handshake>>,
+    verifier: crate::verifier::NoteVerifier,
 }
 
 impl RelayDriver {
@@ -161,7 +172,14 @@ impl RelayDriver {
             outbound: outbound_rx,
             inbound: inbound_tx,
             handshake: Some(handshake_tx),
+            verifier: crate::verifier::NoteVerifier::with_policy(config.verify),
         };
+        if !driver.verifier.is_enforcing() {
+            log::warn!(
+                "{}: inbound notes are not signature-checked; the relay can forge events",
+                driver.url
+            );
+        }
         let handle = std::thread::Builder::new()
             .name("nostr-relay-driver".to_owned())
             .spawn(move || driver.run())
@@ -246,15 +264,21 @@ impl RelayDriver {
         Ok(())
     }
 
-    /// Parses one relay frame and publishes it.
+    /// Parses one relay frame, checks its signature, and publishes it.
     ///
     /// An unparseable frame is a relay extension or junk, not a fatal error,
-    /// so the connection stays up.
+    /// so the connection stays up. A note that fails verification is a forgery
+    /// attempt by the relay, so it never reaches the application.
     fn dispatch(&self, text: &str) {
-        match text.parse::<nostro2::NostrRelayEvent>() {
-            Ok(event) => self.emit(DriverEvent::Message(Box::new(event))),
-            Err(_) => log::warn!("skipped an unparseable frame from {}", self.url),
+        let Ok(event) = text.parse::<nostro2::NostrRelayEvent>() else {
+            log::warn!("skipped an unparseable frame from {}", self.url);
+            return;
+        };
+        if !self.verifier.judge(&event).is_admit() {
+            log::warn!("dropped a note with a bad signature from {}", self.url);
+            return;
         }
+        self.emit(DriverEvent::Message(Box::new(event)));
     }
 
     /// Publishes an event, dropping it when the application is not reading.
@@ -357,8 +381,10 @@ mod tests {
     enum Script {
         /// Echo every client frame back verbatim.
         Echo,
-        /// Send one note, then serve normally.
+        /// Send one properly signed note, then serve normally.
         SendNote,
+        /// Send a note whose signature does not match its contents.
+        SendForgedNote,
         /// Complete the upgrade, then drop the connection at once.
         DropAfterUpgrade,
         /// Refuse the upgrade.
@@ -376,11 +402,40 @@ mod tests {
                 Self::DropAfterUpgrade => Self::drop_after_upgrade(stream),
                 Self::Echo => Self::echo(stream, halt, None),
                 Self::SendNote => Self::echo(stream, halt, Some(Self::note())),
+                Self::SendForgedNote => Self::echo(stream, halt, Some(Self::forged_note())),
             }
         }
 
+        fn signed_note(content: &str) -> nostro2::NostrNote {
+            use nostro2::{NostrKeypair as _, NostrSigner as _};
+            let keypair = nostro2_signer::NostrKeypair::generate();
+            let mut note = nostro2::NostrNote {
+                kind: 1,
+                content: content.to_owned(),
+                pubkey: keypair.public_key(),
+                ..Default::default()
+            };
+            note.sign_with(&keypair).unwrap();
+            note
+        }
+
+        fn frame(note: &nostro2::NostrNote) -> String {
+            format!(
+                "[\"EVENT\",\"sub\",{}]",
+                crate::json::RelayJson::to_string(note).unwrap()
+            )
+        }
+
         fn note() -> String {
-            "[\"EVENT\",\"sub\",{\"id\":\"aa\",\"pubkey\":\"bb\",\"created_at\":1,\"kind\":1,\"tags\":[],\"content\":\"hi\",\"sig\":\"cc\"}]".to_owned()
+            Self::frame(&Self::signed_note("hi"))
+        }
+
+        /// A note signed correctly, then edited. The signature no longer
+        /// covers the content, which is what a malicious relay would send.
+        fn forged_note() -> String {
+            let mut note = Self::signed_note("hi");
+            note.content = "tampered after signing".to_owned();
+            Self::frame(&note)
         }
 
         fn refuse(mut stream: std::net::TcpStream) {
@@ -498,6 +553,39 @@ mod tests {
         let ports = relay.spawn_driver();
         let event = Awaited::message(&ports);
         assert!(matches!(event, nostro2::NostrRelayEvent::NewNote(..)));
+    }
+
+    // A relay is untrusted: it can invent a note and attribute it to any
+    // pubkey. The driver checks the signature, so the forgery never reaches
+    // the application.
+    #[test]
+    fn a_forged_note_never_reaches_the_reader() {
+        let relay = FakeRelay::serving(Script::SendForgedNote);
+        let mut ports = relay.spawn_driver();
+        assert_eq!(Awaited::handshake(&mut ports), Ok(()));
+
+        ports
+            .outbound
+            .push("[\"NOTICE\",\"after the forgery\"]".to_owned())
+            .unwrap();
+
+        // The echo arrives after the forged note, so receiving it proves the
+        // forgery was dropped rather than merely delayed.
+        match Awaited::message(&ports) {
+            nostro2::NostrRelayEvent::Notice(_, text) => assert_eq!(text, "after the forgery"),
+            other => panic!("a forged note reached the reader: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_trusting_driver_admits_a_forged_note() {
+        let relay = FakeRelay::serving(Script::SendForgedNote);
+        let config = relay.config().with_verify(crate::verifier::VerifyPolicy::Trust);
+        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        assert!(matches!(
+            Awaited::message(&ports),
+            nostro2::NostrRelayEvent::NewNote(..)
+        ));
     }
 
     // The echo server returns whatever it receives, so an outbound frame that

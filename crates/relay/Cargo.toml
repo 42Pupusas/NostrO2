@@ -13,9 +13,15 @@ homepage = "https://github.com/42Pupusas/NostrO2"
 documentation = "https://docs.rs/nostro2-relay"
 
 [features]
-default = ["rustls-ring", "serde"]
+default = ["rustls-ring", "serde", "k256"]
 rustls-ring = ["rustls/ring"]
 rustls-aws-lc = ["rustls/aws-lc-rs"]
+# Curve backend for inbound signature checking. Without one the driver
+# cannot inspect a signature and admits every note it parses, so a relay
+# could forge events from any pubkey. Mutually exclusive, like the JSON
+# backends.
+k256 = ["nostro2/k256"]
+secp256k1 = ["nostro2/secp256k1"]
 # JSON backend: forwarded to `nostro2`, mutually exclusive, `serde` is
 # the default (see `nostro2`'s `lib.rs` for the enforcing `compile_error!`).
 # Forwarded into the dev-only NIP/signer crates too, so `cargo test` never
@@ -54,3 +60,4 @@ nostro2-nips = { workspace = true, default-features = false, features = ["k256"]
 nostro2-traits.workspace = true
 divan.workspace = true
 lru.workspace = true
+nostr-sdk = { version = "0.45", default-features = false, features = ["ring", "rustls-tls-webpki-roots"] }
