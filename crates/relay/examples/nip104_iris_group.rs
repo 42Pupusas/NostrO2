@@ -64,7 +64,7 @@ async fn main() {
     println!("target npub : {target_npub}");
     println!("target hex  : {target_hex}\n");
 
-    let pool = nostro2_relay::NostrPool::new(RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(RELAYS);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // The 1:1 router (follows key rotation) and the group state machine.

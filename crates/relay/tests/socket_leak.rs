@@ -11,21 +11,28 @@
 struct CountingRelay {
     port: u16,
     accepts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    _task: nostro2_relay::TaskGuard,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CountingRelay {
-    async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    fn start() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let counter = accepts.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                if let Ok((stream, _)) = listener.accept().await {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    drop(stream);
+        let halt = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !halt.load(std::sync::atomic::Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        drop(stream);
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
                 }
             }
         });
@@ -33,7 +40,8 @@ impl CountingRelay {
         Self {
             port,
             accepts,
-            _task: nostro2_relay::TaskGuard::new(task),
+            stop,
+            handle: Some(handle),
         }
     }
 
@@ -46,6 +54,15 @@ impl CountingRelay {
     }
 }
 
+impl Drop for CountingRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Drives the scenario that leaked: build a pool, drop it, then watch whether
 /// anything still reconnects to the relay behind its back.
 struct LeakProbe {
@@ -53,9 +70,9 @@ struct LeakProbe {
 }
 
 impl LeakProbe {
-    async fn new() -> Self {
+    fn new() -> Self {
         Self {
-            relay: CountingRelay::start().await,
+            relay: CountingRelay::start(),
         }
     }
 
@@ -66,37 +83,35 @@ impl LeakProbe {
         nostro2_relay::ReconnectConfig::fixed(std::time::Duration::from_millis(100))
     }
 
-    async fn build_and_drop_pool(&self) {
+    fn build_and_drop_pool(&self) {
         let url = self.relay.url();
         let pool =
             nostro2_relay::NostrPool::with_config(&[url.as_str()], 128, &Self::eager_reconnect());
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::thread::sleep(std::time::Duration::from_millis(300));
         drop(pool);
     }
 
-    async fn build_and_drop_default_pool(&self) {
+    fn build_and_drop_default_pool(&self) {
         let url = self.relay.url();
         let pool = nostro2_relay::NostrPool::new(&[url.as_str()]);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::thread::sleep(std::time::Duration::from_millis(300));
         drop(pool);
     }
 
-    async fn accepts_after_drop(&self, settle: std::time::Duration) -> usize {
-        tokio::time::sleep(settle).await;
+    fn accepts_after_drop(&self, settle: std::time::Duration) -> usize {
+        std::thread::sleep(settle);
         let baseline = self.relay.accepts();
-        tokio::time::sleep(settle).await;
+        std::thread::sleep(settle);
         self.relay.accepts() - baseline
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn dropped_pool_stops_reconnecting() {
-    let probe = LeakProbe::new().await;
-    probe.build_and_drop_pool().await;
+#[test]
+fn dropped_pool_stops_reconnecting() {
+    let probe = LeakProbe::new();
+    probe.build_and_drop_pool();
 
-    let reconnects = probe
-        .accepts_after_drop(std::time::Duration::from_secs(3))
-        .await;
+    let reconnects = probe.accepts_after_drop(std::time::Duration::from_secs(3));
 
     assert_eq!(
         reconnects, 0,
@@ -104,16 +119,14 @@ async fn dropped_pool_stops_reconnecting() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn repeated_pool_rebuilds_do_not_accumulate_connections() {
-    let probe = LeakProbe::new().await;
+#[test]
+fn repeated_pool_rebuilds_do_not_accumulate_connections() {
+    let probe = LeakProbe::new();
     for _ in 0..4 {
-        probe.build_and_drop_default_pool().await;
+        probe.build_and_drop_default_pool();
     }
 
-    let reconnects = probe
-        .accepts_after_drop(std::time::Duration::from_secs(3))
-        .await;
+    let reconnects = probe.accepts_after_drop(std::time::Duration::from_secs(3));
 
     assert_eq!(
         reconnects, 0,

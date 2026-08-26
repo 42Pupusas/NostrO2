@@ -63,7 +63,7 @@ async fn main() {
 
     let mut manager = SessionManager::new(me);
 
-    let pool = nostro2_relay::NostrPool::new(RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(RELAYS);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // 2. Fetch the target's published invite.

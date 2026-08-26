@@ -33,7 +33,7 @@ async fn main() {
     println!("Connecting to {} relays...", relays.len());
 
     // Create pool with relays
-    let pool = nostro2_relay::NostrPool::new(&relays);
+    let mut pool = nostro2_relay::NostrPool::new(&relays);
 
     // Subscribe to kind 1 events with limit 3000 per relay
     let subscription = nostro2::NostrSubscription {

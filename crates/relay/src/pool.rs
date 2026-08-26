@@ -1,32 +1,65 @@
+//! A fan-out over several relays.
+//!
+//! [`NostrPool`] owns one [`NostrRelay`] per URL and merges their streams
+//! into one, dropping notes it has already delivered. Each relay is driven
+//! by its own thread, and one forwarder thread per relay moves that relay's
+//! events into the shared ring. Nothing here holds a lock.
+//!
+//! [`NostrRelay`]: crate::relay::NostrRelay
+
+/// A set of relays addressed as one.
+///
+/// A handle is [`Send`] but not [`Sync`], like [`NostrRelay`]: clone it to
+/// read from another thread.
+///
+/// [`NostrRelay`]: crate::relay::NostrRelay
 #[derive(Clone)]
 pub struct NostrPool {
-    // _urls: std::collections::HashSet<String>,
-    // relays: std::collections::HashMap<String, crate::relay::NostrRelay>,
-    pub sink: tokio::sync::broadcast::Sender<nostro2::NostrClientEvent>,
-    pub stream: std::sync::Arc<
-        tokio::sync::RwLock<tokio::sync::mpsc::UnboundedReceiver<nostro2::NostrRelayEvent>>,
-    >,
-    /// Aborts every per-relay task when the last clone of this pool drops.
-    /// A task still inside the initial connect-retry loop never observes the
-    /// closed sink, so an unreachable relay would otherwise retry forever and
-    /// keep the pool's tasks alive for the lifetime of the process.
-    _relays: std::sync::Arc<Vec<crate::task_guard::TaskGuard>>,
+    /// One sender per relay. These are `!Sync`, so the pool owns them
+    /// directly and clones them with itself rather than sharing one set.
+    relays: Vec<crate::relay::NostrRelay>,
+    stream: quetzalcoatl::mpmc::Consumer<nostro2::NostrRelayEvent>,
+    /// Stops every forwarder thread when the last clone of this pool drops.
+    _forwarders: std::sync::Arc<Vec<PoolForwarder>>,
 }
+
+impl std::fmt::Debug for NostrPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NostrPool")
+            .field("relays", &self.relays.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl NostrPool {
-    /// Create a new relay pool with default settings.
-    ///
-    /// Uses a deduplication cache size of 10,000 events and default reconnection settings.
+    /// Connects to every relay, keeping the 10,000 most recent note ids to
+    /// suppress duplicates.
     #[must_use]
     pub fn new(relays: &[&str]) -> Self {
         Self::with_cache_size(relays, 10_000)
     }
 
-    /// Create a new relay pool with custom cache size and reconnection settings.
+    /// Connects to every relay with a custom duplicate-suppression cache.
     ///
-    /// # Arguments
-    /// * `relays` - Array of relay WebSocket URLs to connect to
-    /// * `cache_size` - Maximum number of event IDs to cache for deduplication
-    /// * `reconnect_config` - Configuration for automatic reconnection
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::NostrPool;
+    ///
+    /// let pool = NostrPool::with_cache_size(&["wss://relay.example.com"], 50_000);
+    /// ```
+    #[must_use]
+    pub fn with_cache_size(relays: &[&str], cache_size: usize) -> Self {
+        Self::with_config(
+            relays,
+            cache_size,
+            &crate::reconnect::ReconnectConfig::default(),
+        )
+    }
+
+    /// Connects to every relay with a custom cache size and retry policy.
+    ///
+    /// Relays whose URL does not parse are skipped with a warning, so one bad
+    /// address does not sink the pool.
     ///
     /// # Example
     /// ```no_run
@@ -45,117 +78,48 @@ impl NostrPool {
     pub fn with_config(
         relays: &[&str],
         cache_size: usize,
-        reconnect_config: &crate::relay::ReconnectConfig,
+        reconnect: &crate::reconnect::ReconnectConfig,
     ) -> Self {
-        let (stream_tx, stream) =
-            tokio::sync::mpsc::unbounded_channel::<nostro2::NostrRelayEvent>();
-        let (sink, sink_rx) = tokio::sync::broadcast::channel(100);
+        let (stream_tx, stream_rx) = quetzalcoatl::mpmc::RingBuffer::<nostro2::NostrRelayEvent>::new(
+            quetzalcoatl::capacity::Capacity::at_least(1024),
+        )
+        .split();
         let seen = nostro2_cache::Cache::new(cache_size);
-        let mut guards = Vec::with_capacity(relays.len());
+
+        let mut connected = Vec::with_capacity(relays.len());
+        let mut forwarders = Vec::with_capacity(relays.len());
         for url in relays {
-            let mut sink = sink_rx.resubscribe();
-            let stream_send = stream_tx.clone();
-            let seen = seen.clone();
-            let url = (*url).to_string();
-            let reconnect_config = reconnect_config.clone();
-            guards.push(crate::task_guard::TaskGuard::new(tokio::task::spawn(
-                async move {
-                    let relay = {
-                        let mut attempt = 0;
-                        loop {
-                            match crate::relay::NostrRelay::with_reconnect(
-                                &url,
-                                reconnect_config.clone(),
-                            )
-                            .await
-                            {
-                                Ok(relay) => break relay,
-                                Err(e) => {
-                                    if !reconnect_config.is_enabled()
-                                        || (reconnect_config.max_retries > 0
-                                            && attempt >= reconnect_config.max_retries)
-                                    {
-                                        log::warn!("could not connect to {url}: {e}");
-                                        return;
-                                    }
-                                    let delay = reconnect_config.next_delay(attempt);
-                                    log::warn!(
-                                        "connection to {url} failed ({e}), retrying in {delay:?}"
-                                    );
-                                    tokio::time::sleep(delay).await;
-                                    attempt += 1;
-                                }
-                            }
-                        }
-                    };
-                    loop {
-                        tokio::select! {
-                            recv = sink.recv() => match recv {
-                                Ok(msg) => {
-                                    if let Err(e) = relay.send(msg) {
-                                        log::warn!("relay send failed: {e}");
-                                    }
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                    log::warn!("pool sink lagged, skipped {skipped} messages");
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                            },
-                            event = relay.recv() => if let Some(msg) = event {
-                                if let nostro2::NostrRelayEvent::NewNote(.., ref note) = msg {
-                                    if let Some(ref id) = note.id
-                                        && seen.insert(id.clone())
-                                        && let Err(e) = stream_send.send(msg.clone())
-                                    {
-                                        log::warn!("pool stream send failed: {e}");
-                                    }
-                                } else if let Err(e) = stream_send.send(msg) {
-                                    log::warn!("pool stream send failed: {e}");
-                                }
-                            } else {
-                                log::warn!("relay stream ended for {url}");
-                                break;
-                            },
-                        }
-                    }
-                },
-            )));
+            match crate::relay::NostrRelay::detached(url, reconnect.clone()) {
+                Ok(relay) => {
+                    forwarders.push(PoolForwarder::spawn(
+                        relay.clone(),
+                        stream_tx.clone(),
+                        seen.clone(),
+                    ));
+                    connected.push(relay);
+                }
+                Err(e) => log::warn!("skipping relay {url}: {e}"),
+            }
         }
+
         Self {
-            stream: std::sync::Arc::new(tokio::sync::RwLock::new(stream)),
-            sink,
-            _relays: std::sync::Arc::new(guards),
+            relays: connected,
+            stream: stream_rx,
+            _forwarders: std::sync::Arc::new(forwarders),
         }
     }
 
-    /// Create a new relay pool with a custom deduplication cache size and
-    /// default reconnection settings.
-    ///
-    /// # Arguments
-    /// * `relays` - Array of relay WebSocket URLs to connect to
-    /// * `cache_size` - Maximum number of event IDs to cache for deduplication
-    ///
-    /// # Example
-    /// ```no_run
-    /// use nostro2_relay::NostrPool;
-    ///
-    /// // Pool with 50K event cache (higher memory, fewer duplicates)
-    /// let pool = NostrPool::with_cache_size(&["wss://relay.example.com"], 50_000);
-    /// ```
+    /// The relays this pool drives.
     #[must_use]
-    pub fn with_cache_size(relays: &[&str], cache_size: usize) -> Self {
-        Self::with_config(
-            relays,
-            cache_size,
-            &crate::relay::ReconnectConfig::default(),
-        )
+    pub fn relays(&self) -> &[crate::relay::NostrRelay] {
+        &self.relays
     }
-    /// Sends a message to all relays in the pool.
+
+    /// Sends a message to every relay in the pool.
     ///
     /// # Errors
     ///
-    /// Returns an error if the message fails to send, which might happen if all broadcast
-    /// channels are closed.
+    /// Returns the first error a relay produces.
     pub fn send<T>(
         &self,
         msg: T,
@@ -164,11 +128,147 @@ impl NostrPool {
         T: Into<nostro2::NostrClientEvent> + Clone + Send + Sync,
     {
         let msg: nostro2::NostrClientEvent = msg.into();
-        self.sink.send(msg.clone())?;
+        for relay in &self.relays {
+            relay.send(msg.clone())?;
+        }
         Ok(msg)
     }
-    pub async fn recv(&self) -> Option<nostro2::NostrRelayEvent> {
-        let mut stream = self.stream.write().await;
-        stream.recv().await
+
+    /// Returns the next event from any relay, waiting for one to arrive.
+    ///
+    /// This takes `&mut self` because a reader owns its position in the
+    /// stream. Clone the pool to read from another task.
+    #[allow(clippy::future_not_send)]
+    pub async fn recv(&mut self) -> Option<nostro2::NostrRelayEvent> {
+        self.stream.pop_async().await
+    }
+
+    /// Returns the next event from any relay, parking the thread until one
+    /// arrives.
+    pub fn recv_blocking(&mut self) -> Option<nostro2::NostrRelayEvent> {
+        self.stream.pop_block()
+    }
+
+    /// Stops every relay in the pool.
+    pub fn close(&self) {
+        for relay in &self.relays {
+            relay.close();
+        }
+    }
+}
+
+/// Moves one relay's events into the pool's shared ring.
+///
+/// A relay reader is `!Sync` and blocks, so each relay gets its own thread
+/// rather than a shared task. The thread ends when its relay closes.
+struct PoolForwarder {
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// The guard rather than the handle: a guard is `Send + Sync`, so a
+    /// pool that holds these still moves between threads.
+    guard: std::sync::Arc<crate::guard::DriverGuard>,
+}
+
+impl PoolForwarder {
+    fn spawn(
+        relay: crate::relay::NostrRelay,
+        stream: quetzalcoatl::mpmc::Producer<nostro2::NostrRelayEvent>,
+        seen: nostro2_cache::Cache,
+    ) -> Self {
+        let guard = relay.guard();
+        let mut reader = relay;
+        let handle = std::thread::Builder::new()
+            .name("nostr-pool-forwarder".to_owned())
+            .spawn(move || {
+                while let Some(event) = reader.recv_blocking() {
+                    if Self::is_duplicate(&event, &seen) {
+                        continue;
+                    }
+                    if stream.push(event).is_err() {
+                        log::warn!("pool stream is full, dropped an event");
+                    }
+                }
+            })
+            .expect("the operating system can spawn a thread");
+
+        Self {
+            handle: Some(handle),
+            guard,
+        }
+    }
+
+    fn is_duplicate(event: &nostro2::NostrRelayEvent, seen: &nostro2_cache::Cache) -> bool {
+        let nostro2::NostrRelayEvent::NewNote(.., note) = event else {
+            return false;
+        };
+        note.id.as_ref().is_some_and(|id| !seen.insert(id.clone()))
+    }
+}
+
+impl Drop for PoolForwarder {
+    fn drop(&mut self) {
+        self.guard.stop();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pool must cross a thread boundary, even though its ring endpoints
+    /// are `!Sync`. This fails to compile if that stops being true.
+    #[test]
+    fn a_pool_moves_between_threads() {
+        let pool = NostrPool::with_config(
+            &["ws://127.0.0.1:1"],
+            8,
+            &crate::reconnect::ReconnectConfig::disabled(),
+        );
+        std::thread::spawn(move || {
+            let _ = pool.relays().len();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn an_unparseable_url_is_skipped_without_sinking_the_pool() {
+        let pool = NostrPool::with_config(
+            &["not-a-url", "ws://127.0.0.1:1"],
+            8,
+            &crate::reconnect::ReconnectConfig::disabled(),
+        );
+        assert_eq!(pool.relays().len(), 1);
+    }
+
+    #[test]
+    fn a_duplicate_note_is_only_forwarded_once() {
+        let seen = nostro2_cache::Cache::new(16);
+        let note = nostro2::NostrNote {
+            id: Some("duplicate-id".to_owned()),
+            ..Default::default()
+        };
+        let event = nostro2::NostrRelayEvent::NewNote(
+            nostro2::RelayEventTag::Event,
+            "sub".to_owned(),
+            note,
+        );
+
+        assert!(!PoolForwarder::is_duplicate(&event, &seen));
+        assert!(PoolForwarder::is_duplicate(&event, &seen));
+    }
+
+    #[test]
+    fn a_non_note_event_is_never_a_duplicate() {
+        let seen = nostro2_cache::Cache::new(16);
+        let event = nostro2::NostrRelayEvent::Notice(
+            nostro2::RelayEventTag::Notice,
+            "hello".to_owned(),
+        );
+
+        assert!(!PoolForwarder::is_duplicate(&event, &seen));
+        assert!(!PoolForwarder::is_duplicate(&event, &seen));
     }
 }

@@ -50,7 +50,7 @@ async fn main() {
     );
 
     // 4. Publish to relays.
-    let pool = nostro2_relay::NostrPool::new(RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(RELAYS);
     // Give the sockets a moment to connect.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     pool.send(&giftwrap).expect("failed to queue giftwrap");

@@ -14,7 +14,7 @@ async fn main() {
     let url = "ws://127.0.0.1:4848";
     println!("Connecting to {url}...");
 
-    let relay = NostrRelay::new(url).await.expect("connect failed");
+    let mut relay = NostrRelay::new(url).await.expect("connect failed");
     println!("Connected.");
 
     // Subscribe so we can observe our own event come back.

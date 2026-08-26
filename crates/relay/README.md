@@ -13,8 +13,8 @@ WebSocket relay client and connection pool for the Nostr protocol.
 - **Automatic Reconnection** - Exponential backoff reconnection when connections drop
 - **Event Deduplication** - Built-in LRU cache to prevent duplicate events across relays
 - **Configurable Crypto Backend** - Choose between Ring or AWS-LC for TLS/crypto operations
-- **Async/Await** - Built on Tokio for efficient async I/O
-- **Zero-Copy Message Passing** - Optimized internal architecture using channels
+- **No Runtime** - Each connection runs on a plain thread. The crate depends on no async runtime, and its futures run on whichever executor you already have
+- **Lock-Free Message Passing** - Connections talk to your code through lock-free rings, with no mutex on the data path
 
 ## Installation
 
@@ -22,7 +22,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nostro2-relay = "0.5"
+nostro2-relay = "0.6"
 ```
 
 ### Choosing a Crypto Backend
@@ -32,11 +32,11 @@ By default, `nostro2-relay` uses the Ring crypto library. You can switch to AWS-
 ```toml
 [dependencies]
 # Use Ring (default)
-nostro2-relay = "0.5"
+nostro2-relay = "0.6"
 
 # Or use AWS-LC. `default-features = false` also drops the default `serde`
 # JSON backend, so name one explicitly.
-nostro2-relay = { version = "0.5", default-features = false, features = ["rustls-aws-lc", "serde"] }
+nostro2-relay = { version = "0.6", default-features = false, features = ["rustls-aws-lc", "serde"] }
 ```
 
 **Why choose one over the other?**
@@ -56,8 +56,8 @@ use nostro2::NostrSubscription;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to a relay
-    let relay = NostrRelay::new("wss://relay.example.com").await?;
+    // Connect to a relay. `recv` takes `&mut self`, so bind it mutably.
+    let mut relay = NostrRelay::new("wss://relay.example.com").await?;
 
     // Create a subscription filter
     let filter = NostrSubscription {
@@ -89,7 +89,7 @@ use nostro2::NostrSubscription;
 #[tokio::main]
 async fn main() {
     // Create a pool with multiple relays
-    let pool = NostrPool::new(&[
+    let mut pool = NostrPool::new(&[
         "wss://relay.damus.io",
         "wss://relay.snort.social",
         "wss://nos.lol",
@@ -217,24 +217,50 @@ pool.send(note)?;
 ### NostrRelay
 
 - Single WebSocket connection to one relay
-- Separate reader/writer tasks for concurrent I/O
-- Unbounded channels for message passing
+- One thread owns the socket, the frame codec, and the retry budget, so
+  nothing on the connection needs a lock
+- Frames move over lock-free rings: outbound is many-producer, inbound is
+  many-consumer
 - Automatic reconnection with exponential backoff
+- Parses relay frames on the connection thread, so a pool parses in parallel
 
 ### NostrPool
 
 - Manages multiple `NostrRelay` instances
-- Broadcast channel for sending to all relays
-- Aggregated receiver for all relay events
+- Sends to every relay, and merges their streams into one
 - Built-in event deduplication using `nostro2-cache`
-- Each relay runs in its own task
+- Each relay runs on its own thread
+
+### Handles are `Send`, not `Sync`
+
+A handle owns a private cursor into the ring, so it moves between threads but
+is not shared by reference. Clone it to read or write from somewhere else:
+
+```rust
+let reader = relay.clone();   // reads the same stream
+let writer = relay.clone();   // writes to the same socket
+```
+
+Readers **compete**: each message reaches exactly one handle. Clone to spread
+work over several readers, not to give each reader a copy of the stream.
+
+### Blocking callers
+
+Every reader has a blocking twin, for code that owns a thread rather than a
+task. No runtime is involved:
+
+```rust
+while let Some(event) = relay.recv_blocking() {
+    println!("{event:?}");
+}
+```
 
 ## Performance Considerations
 
-- **Zero-copy message passing** using Arc and channels
+- **Lock-free rings** on the data path, with no mutex between your code and the socket
 - **LRU cache** with O(1) insert/lookup for deduplication
-- **Parallel relay connections** spawn independent tasks
-- **Efficient serialization** with pre-serialized JSON in writer tasks
+- **Parallel relay connections** each own a thread and parse their own frames
+- **Efficient serialization** with JSON serialized before it reaches the ring
 
 ## Error Handling
 
@@ -244,7 +270,7 @@ use nostro2_relay::errors::NostrRelayError;
 match relay.send(subscription) {
     Ok(_) => println!("Subscription sent"),
     Err(NostrRelayError::SendError) => {
-        eprintln!("Connection closed");
+        eprintln!("Connection closed, or the outbound queue is full");
     }
     Err(e) => eprintln!("Error: {}", e),
 }
@@ -252,8 +278,9 @@ match relay.send(subscription) {
 
 ## Compatibility
 
-- **Rust**: 1.75+ (2021 edition)
-- **Tokio**: Requires async runtime
+- **Rust**: 1.87+ (2024 edition)
+- **Runtime**: none required. The async methods run on any executor; the
+  `*_blocking` twins need no executor at all
 - **Platform**: Linux, macOS, Windows
 - **WASM**: Not yet supported (coming soon)
 
@@ -262,8 +289,8 @@ match relay.send(subscription) {
 See the `examples/` directory for more usage patterns:
 
 ```bash
-cargo run --example single_relay
-cargo run --example relay_pool
+cargo run --example local_relay
+cargo run --example simple_test
 ```
 
 ## Related Crates

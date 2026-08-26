@@ -56,7 +56,7 @@ async fn main() {
     println!("our identity npub : {}", me.npub().unwrap());
     println!("our identity hex  : {}", me.public_key());
 
-    let pool = nostro2_relay::NostrPool::new(RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(RELAYS);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Path A: a specific invite URL was passed — accept it directly.
@@ -67,7 +67,7 @@ async fn main() {
             Err(e) => println!("could not parse invite URL: {e}"),
         }
         // Give the publish a moment to flush.
-        collect_oks(&pool, Duration::from_secs(6)).await;
+        collect_oks(&mut pool, Duration::from_secs(6)).await;
         return;
     }
 
@@ -145,7 +145,7 @@ fn accept_and_publish(
     }
 }
 
-async fn collect_oks(pool: &nostro2_relay::NostrPool, dur: Duration) {
+async fn collect_oks(pool: &mut nostro2_relay::NostrPool, dur: Duration) {
     let start = Instant::now();
     while start.elapsed() < dur {
         if let Ok(Some(NostrRelayEvent::SentOk(_, id, ok, msg))) =

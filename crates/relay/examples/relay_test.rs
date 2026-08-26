@@ -30,7 +30,7 @@ async fn main() {
         TEST_RELAYS.len()
     );
 
-    let pool = nostro2_relay::NostrPool::new(TEST_RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(TEST_RELAYS);
 
     // Send a subscription for kind 1 events
     let subscription = nostro2::NostrSubscription {

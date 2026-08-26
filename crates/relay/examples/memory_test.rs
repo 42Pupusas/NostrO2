@@ -16,7 +16,7 @@ async fn main() {
     println!("Or: top -p $(pgrep -f memory_test)\n");
 
     // Create async pool
-    let pool = nostro2_relay::NostrPool::new(TEST_RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(TEST_RELAYS);
 
     // Subscribe
     let subscription = nostro2::NostrSubscription {

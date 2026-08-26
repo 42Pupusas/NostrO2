@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-relay"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -14,8 +14,8 @@ documentation = "https://docs.rs/nostro2-relay"
 
 [features]
 default = ["rustls-ring", "serde"]
-rustls-ring = ["rustls/ring", "tokio-tungstenite/rustls-tls-native-roots"]
-rustls-aws-lc = ["rustls/aws-lc-rs", "tokio-tungstenite/rustls-tls-native-roots"]
+rustls-ring = ["rustls/ring"]
+rustls-aws-lc = ["rustls/aws-lc-rs"]
 # JSON backend: forwarded to `nostro2`, mutually exclusive, `serde` is
 # the default (see `nostro2`'s `lib.rs` for the enforcing `compile_error!`).
 # Forwarded into the dev-only NIP/signer crates too, so `cargo test` never
@@ -25,15 +25,10 @@ bourne = ["dep:json-bourne", "nostro2/bourne", "nostro2-nips/bourne", "nostro2-s
 serde = ["dep:serde", "dep:serde_json", "nostro2/serde", "nostro2-nips/serde", "nostro2-signer/serde"]
 
 [dependencies]
+# Only for the `Stream` bound on `NostrRelay::send_all`. The crate drives no
+# executor of its own: every connection runs on a plain thread.
 futures-util.workspace = true
 log = "0.4"
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }
-# `connect` (which pulls in `stream`) provides `connect_async_with_config`
-# and `MaybeTlsStream`, both used unconditionally in `relay.rs`. Keep them in
-# the base set so the crate always type-checks; the `rustls-*` features add
-# the actual TLS provider + native roots, and `lib.rs` rejects a build that
-# selects no backend with a single clear `compile_error!`.
-tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
 quetzalcoatl.workspace = true
 coyoquil.workspace = true
@@ -50,7 +45,10 @@ rustls = { version = "0.23", features = ["std", "tls12"], default-features = fal
 # An independent RFC-6455 implementation, used as the test server so the
 # socket tests prove interop rather than codec self-consistency. Sync, so
 # the tests need no async runtime at all.
-tungstenite = { version = "0.26", default-features = false }
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+# Tests and benchmarks only: they drive the crate's futures and need an
+# executor. The library itself pulls in no runtime.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }
 nostro2-signer = { workspace = true, default-features = false, features = ["k256"] }
 nostro2-nips = { workspace = true, default-features = false, features = ["k256"] }
 nostro2-traits.workspace = true

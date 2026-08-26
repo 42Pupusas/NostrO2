@@ -73,7 +73,7 @@ async fn main() {
     let mut invite_event = invite.to_event(unix_now()).expect("build invite event");
     invite_event.sign_with(&me).expect("sign invite");
 
-    let pool = nostro2_relay::NostrPool::new(RELAYS);
+    let mut pool = nostro2_relay::NostrPool::new(RELAYS);
     tokio::time::sleep(Duration::from_secs(2)).await;
     pool.send(&invite_event).expect("publish invite");
 
