@@ -26,8 +26,12 @@ pub struct DriverConfig {
     pub inbound_capacity: usize,
     /// Bound on the TCP handshake.
     pub connect_timeout: std::time::Duration,
-    /// Pace of the IO loop, and the worst-case delay before a send is
-    /// written to the socket.
+    /// Pace of the IO loop.
+    ///
+    /// One thread owns the socket, so it blocks in `read` and drains the
+    /// outbound ring between reads. This value is therefore also the
+    /// worst-case delay before a queued frame reaches the socket. Lower it
+    /// to cut send latency, at the cost of more idle wakeups.
     pub read_timeout: std::time::Duration,
 }
 
@@ -57,6 +61,13 @@ impl DriverConfig {
     pub const fn with_capacities(mut self, outbound: usize, inbound: usize) -> Self {
         self.outbound_capacity = outbound;
         self.inbound_capacity = inbound;
+        self
+    }
+
+    /// Replaces the IO loop pace, which bounds send latency.
+    #[must_use]
+    pub const fn with_read_timeout(mut self, read_timeout: std::time::Duration) -> Self {
+        self.read_timeout = read_timeout;
         self
     }
 }
@@ -457,6 +468,11 @@ mod tests {
         fn settle() {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+
+        /// Clears events already queued, so a later wait times a fresh one.
+        fn drain(ports: &DriverPorts) {
+            while ports.inbound.pop().is_some() {}
+        }
     }
 
     #[test]
@@ -503,6 +519,36 @@ mod tests {
             nostro2::NostrRelayEvent::Notice(_, text) => assert_eq!(text, "echoed"),
             other => panic!("expected the echoed notice, got {other:?}"),
         }
+    }
+
+    // One thread owns the socket, so a queued frame waits at most one read
+    // timeout before it is written. This pins that bound: it is the price of
+    // the single-owner design, and a regression here is a latency bug.
+    #[test]
+    fn a_send_reaches_the_relay_within_one_read_timeout() {
+        let relay = FakeRelay::serving(Script::Echo);
+        let config = relay
+            .config()
+            .with_read_timeout(std::time::Duration::from_millis(20));
+        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        assert_eq!(Awaited::handshake(&mut ports), Ok(()));
+        Awaited::drain(&ports);
+
+        let sent = std::time::Instant::now();
+        ports
+            .outbound
+            .push("[\"NOTICE\",\"paced\"]".to_owned())
+            .unwrap();
+        match Awaited::message(&ports) {
+            nostro2::NostrRelayEvent::Notice(_, text) => assert_eq!(text, "paced"),
+            other => panic!("expected the echoed notice, got {other:?}"),
+        }
+
+        let elapsed = sent.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "a send took {elapsed:?}, far past the 20ms pace"
+        );
     }
 
     #[test]
