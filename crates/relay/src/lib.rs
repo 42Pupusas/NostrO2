@@ -15,6 +15,7 @@ compile_error!(
     "nostro2-relay needs a TLS backend; enable exactly one of `rustls-ring` (default) or `rustls-aws-lc`"
 );
 
+mod driver;
 pub mod errors;
 mod guard;
 mod json;
@@ -27,6 +28,7 @@ mod tls;
 mod url;
 pub use nostro2;
 pub use pool::NostrPool;
+pub use driver::{DriverConfig, DriverEvent, DriverPorts, Handshake, RelayDriver};
 pub use guard::{DriverGuard, Shutdown};
 pub use reconnect::{ReconnectConfig, ReconnectSchedule};
 pub use relay::NostrRelay;
