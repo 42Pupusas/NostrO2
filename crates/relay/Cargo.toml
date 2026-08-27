@@ -60,4 +60,12 @@ nostro2-nips = { workspace = true, default-features = false, features = ["k256"]
 nostro2-traits.workspace = true
 divan.workspace = true
 lru.workspace = true
+# The reference tokio implementation, used as the comparison arm in the
+# pipeline benchmark. Never a real dependency: `cargo tree -i nostr-sdk`
+# on the library graph prints nothing.
 nostr-sdk = { version = "0.45", default-features = false, features = ["ring", "rustls-tls-webpki-roots"] }
+
+[[bench]]
+name = "pipeline"
+path = "benches/pipeline.rs"
+harness = false
