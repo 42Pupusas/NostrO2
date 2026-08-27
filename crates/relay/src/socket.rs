@@ -169,8 +169,14 @@ impl WsSocket {
     /// Dials `url`, runs TLS when the scheme asks for it, and completes the
     /// RFC-6455 upgrade.
     ///
-    /// `connect_timeout` bounds the TCP handshake. `read_timeout` becomes the
-    /// socket's steady-state read timeout, which paces the driver loop.
+    /// `connect_timeout` bounds the TCP handshake, the TLS handshake, and
+    /// the upgrade exchange alike: each waits on a relay that has not
+    /// answered yet. `read_timeout` applies only afterwards, as the driver
+    /// loop's steady-state pace.
+    ///
+    /// The two must not be confused. The pace is short by design, so using
+    /// it during the upgrade would fail every relay that takes longer than
+    /// a few milliseconds to reply.
     ///
     /// # Errors
     ///
@@ -184,7 +190,7 @@ impl WsSocket {
     ) -> Result<Self, WsSocketError> {
         let stream = Self::dial(url, connect_timeout)?;
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(read_timeout))?;
+        stream.set_read_timeout(Some(connect_timeout))?;
         let transport = if url.is_secure() {
             Transport::Tls(Box::new(tls.connect(url.host(), stream)?))
         } else {
@@ -198,6 +204,7 @@ impl WsSocket {
             encode_buf: Vec::with_capacity(READ_CHUNK),
         };
         socket.upgrade(url)?;
+        socket.set_read_timeout(read_timeout)?;
         Ok(socket)
     }
 
@@ -392,6 +399,10 @@ mod tests {
             Self::spawn(Behaviour::CloseImmediately)
         }
 
+        fn dawdling() -> Self {
+            Self::spawn(Behaviour::SlowUpgrade)
+        }
+
         fn spawn(behaviour: Behaviour) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -431,6 +442,8 @@ mod tests {
         RefuseUpgrade,
         Ping,
         CloseImmediately,
+        /// Waits before answering the upgrade, like a loaded relay.
+        SlowUpgrade,
     }
 
     impl Behaviour {
@@ -443,7 +456,14 @@ mod tests {
                 Self::Echo => Self::echo(stream),
                 Self::Ping => Self::ping(stream),
                 Self::CloseImmediately => Self::close(stream),
+                Self::SlowUpgrade => Self::slow_upgrade(stream),
             }
+        }
+
+        /// The upgrade takes far longer than any sane IO pace.
+        fn slow_upgrade(stream: std::net::TcpStream) {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            Self::echo(stream);
         }
 
         fn refuse(mut stream: std::net::TcpStream) {
@@ -524,6 +544,27 @@ mod tests {
     fn a_handshake_completes_against_an_independent_server() {
         let server = EchoServer::start();
         let _socket = server.client();
+    }
+
+    // The IO pace is short, and a busy relay can take far longer than that
+    // to answer an upgrade. The pace must therefore apply only after the
+    // upgrade completes: `connect_timeout` covers the exchange itself.
+    #[test]
+    fn a_slow_relay_still_completes_its_upgrade() {
+        let server = EchoServer::dawdling();
+        let mut socket = WsSocket::connect(
+            &server.url(),
+            &crate::tls::RelayTls::new().unwrap(),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(5),
+        )
+        .expect("a relay slower than the IO pace must still connect");
+
+        socket.send_text("[\"REQ\",\"sub\",{}]").unwrap();
+        assert_eq!(
+            Waited::message(&mut socket),
+            WsMessage::Text("[\"REQ\",\"sub\",{}]".to_owned())
+        );
     }
 
     #[test]

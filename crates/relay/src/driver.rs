@@ -28,16 +28,29 @@ pub struct DriverConfig {
     pub connect_timeout: std::time::Duration,
     /// Pace of the IO loop.
     ///
-    /// One thread owns the socket, so it blocks in `read` and drains the
-    /// outbound ring between reads. This value is therefore also the
-    /// worst-case delay before a queued frame reaches the socket. Lower it
-    /// to cut send latency, at the cost of more idle wakeups.
+    /// One thread owns the socket, so it blocks in `read` and does its other
+    /// work between reads. This value therefore bounds two latencies:
+    ///
+    /// - the delay before a queued frame reaches the socket;
+    /// - the delay before the thread notices a raised shutdown flag, which
+    ///   is what a dropped [`crate::guard::DriverGuard`] waits for.
+    ///
+    /// A shorter pace cuts both. Measured on an idle connection, the price
+    /// is flat: one driver costs about 1% of a core whether it wakes every
+    /// 100ms or every millisecond, because an empty wakeup is only a timed
+    /// `read` returning nothing. The default is therefore short.
     pub read_timeout: std::time::Duration,
     /// What to do with a note whose signature does not check out.
     pub verify: crate::verifier::VerifyPolicy,
 }
 
 impl DriverConfig {
+    /// The default IO pace.
+    ///
+    /// This bounds send latency and shutdown latency alike. It is short
+    /// because a wakeup that finds nothing is nearly free.
+    pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5);
+
     /// A configuration with the default policy and sizes.
     #[must_use]
     pub fn new(url: crate::url::RelayUrl) -> Self {
@@ -47,7 +60,7 @@ impl DriverConfig {
             outbound_capacity: 256,
             inbound_capacity: 1024,
             connect_timeout: std::time::Duration::from_secs(10),
-            read_timeout: std::time::Duration::from_millis(100),
+            read_timeout: Self::DEFAULT_READ_TIMEOUT,
             verify: crate::verifier::VerifyPolicy::default(),
         }
     }
@@ -636,6 +649,28 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "a send took {elapsed:?}, far past the 20ms pace"
+        );
+    }
+
+    // A driver blocked in `read` notices a raised shutdown flag only when
+    // that read returns, so stopping one costs at most a single IO pace.
+    // This measured ~100ms per connection before the pace shrank, which
+    // dominated every short-lived connection.
+    #[test]
+    fn dropping_the_ports_costs_at_most_one_read_timeout() {
+        let relay = FakeRelay::serving(Script::Echo);
+        let config = relay
+            .config()
+            .with_read_timeout(std::time::Duration::from_millis(10));
+        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        assert_eq!(Awaited::handshake(&mut ports), Ok(()));
+
+        let stopping = std::time::Instant::now();
+        drop(ports);
+        let elapsed = stopping.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "shutdown took {elapsed:?} with a 10ms pace"
         );
     }
 
