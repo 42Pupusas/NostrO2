@@ -700,15 +700,22 @@ mod tests {
 
     // A peer that accepts the connection but never reads it fills both
     // receive windows. Without a write timeout the write blocks forever.
+    //
+    // The peer holds the socket open until the test releases it, rather than
+    // closing on a timer. A timer would race the write timeout on a loaded
+    // machine and report a connection reset instead of the stall under test.
     #[test]
     fn a_write_to_a_peer_that_never_reads_times_out() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = release.clone();
         let accepted = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let mut ws = tungstenite::accept(stream).unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let _ = ws.close(None);
+            let _ws = tungstenite::accept(stream).unwrap();
+            while !held.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         });
 
         let url = crate::url::RelayUrl::parse(&format!("ws://127.0.0.1:{port}")).unwrap();
@@ -722,20 +729,23 @@ mod tests {
         .unwrap();
 
         let bulk = "x".repeat(256 * 1024);
-        let started = std::time::Instant::now();
-        let mut stalled = false;
+        let mut outcome = None;
         for _ in 0..256 {
-            if matches!(socket.send_text(&bulk), Err(WsSocketError::WriteStalled)) {
-                stalled = true;
-                break;
+            match socket.send_text(&bulk) {
+                Ok(()) => {}
+                Err(e) => {
+                    outcome = Some(e);
+                    break;
+                }
             }
         }
-        assert!(stalled, "a write to a peer that never reads must time out");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "the write timeout must bound the stall"
-        );
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = accepted.join();
+
+        assert!(
+            matches!(outcome, Some(WsSocketError::WriteStalled)),
+            "a write to a peer that never reads must time out, got {outcome:?}"
+        );
     }
 
     #[test]

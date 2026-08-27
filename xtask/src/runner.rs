@@ -54,11 +54,18 @@ impl Runner {
         let result = std::process::Command::new(&self.cargo).args(&args).output();
 
         match result {
+            // Both streams are kept: cargo reports the failing job on stderr,
+            // but the test harness names the failing test on stdout, and a
+            // report that shows only one of them cannot be acted on.
             Ok(output) => Outcome {
                 label: combo.label(),
                 task,
                 passed: output.status.success(),
-                output: String::from_utf8_lossy(&output.stderr).into_owned(),
+                output: format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
             },
             Err(e) => Outcome {
                 label: combo.label(),

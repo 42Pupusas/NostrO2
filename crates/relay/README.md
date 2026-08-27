@@ -11,10 +11,33 @@ WebSocket relay client and connection pool for the Nostr protocol.
 - **Single Relay Connection** - Connect to individual Nostr relays
 - **Connection Pool** - Manage multiple relay connections with automatic aggregation
 - **Automatic Reconnection** - Exponential backoff reconnection when connections drop
+- **Signature Verification** - Inbound notes are checked before you see them, so a relay cannot forge events
 - **Event Deduplication** - Built-in LRU cache to prevent duplicate events across relays
 - **Configurable Crypto Backend** - Choose between Ring or AWS-LC for TLS/crypto operations
 - **No Runtime** - Each connection runs on a plain thread. The crate depends on no async runtime, and its futures run on whichever executor you already have
 - **Lock-Free Message Passing** - Connections talk to your code through lock-free rings, with no mutex on the data path
+
+## Built for long-lived services
+
+The intended user is a daemon that holds a pool open for weeks and reconnects
+through every network fault. Such a service fails quietly, so the crate states
+these guarantees and tests each one in `tests/liveness.rs`:
+
+- **A dead connection is detected.** TCP never reports a peer that stops
+  answering, so a quiet connection is pinged and a silent one is dropped.
+  Without this a half-open socket stalls a reader forever and no reconnect
+  ever starts.
+- **A stalled write never freezes the connection.** A relay that accepts the
+  socket but stops reading it fills both receive windows. One thread owns the
+  socket, so an unbounded write would stop reads too.
+- **A reconnect restores your subscriptions.** A subscription lives on the
+  relay, which forgets it when the connection drops. The driver replays the
+  open filters, so a service does not go silent while looking connected.
+- **A reader is always released.** A spent retry budget, an explicit close, or
+  even a panic on the IO thread ends the stream rather than parking a reader
+  forever.
+- **Reconnecting leaks nothing.** Sockets and threads stay flat across
+  thousands of reconnects.
 
 ## Installation
 
@@ -102,7 +125,7 @@ async fn main() {
         ..Default::default()
     };
 
-    pool.send(&filter).expect("Failed to send subscription");
+    pool.send(filter).expect("Failed to send subscription");
 
     // Receive deduplicated events from all relays
     while let Some(event) = pool.recv().await {
@@ -192,8 +215,52 @@ let config = ReconnectConfig {
 let pool = NostrPool::with_config(
     &["wss://relay1.example.com", "wss://relay2.example.com"],
     10_000,  // cache size
-    config
+    &config
 );
+```
+
+### Liveness tuning
+
+`DriverConfig` carries every timing policy. The defaults suit a public relay;
+lower them for a link you control.
+
+```rust
+use nostro2_relay::{DriverConfig, HeartbeatConfig, NostrPool, NostrRelay, RelayUrl};
+use std::time::Duration;
+
+let config = DriverConfig::new(RelayUrl::parse("wss://relay.example.com")?)
+    // Probe after 15s of silence, give up 5s later. Default: 45s / 20s.
+    .with_heartbeat(HeartbeatConfig {
+        idle_timeout: Duration::from_secs(15),
+        reply_timeout: Duration::from_secs(5),
+    })
+    // Bound one socket write. Default: 20s.
+    .with_write_timeout(Duration::from_secs(10));
+
+let relay = NostrRelay::with_driver_config(config)?;
+
+// The same knobs for every relay in a pool.
+let pool = NostrPool::with_driver_config(&["wss://relay.example.com"], 10_000, &|url| {
+    DriverConfig::new(url).with_write_timeout(Duration::from_secs(10))
+});
+```
+
+### Reacting to a reconnect
+
+`recv` yields only relay messages. Use the `_event` twins when the service has
+to see the connection lifecycle itself:
+
+```rust
+use nostro2_relay::DriverEvent;
+
+while let Some(event) = relay.recv_event().await {
+    match event {
+        DriverEvent::Connected => println!("connected; subscriptions restored"),
+        DriverEvent::Disconnected(reason) => eprintln!("dropped: {reason:?}"),
+        DriverEvent::Exhausted => break,
+        DriverEvent::Message(event) => println!("{event:?}"),
+    }
+}
 ```
 
 ### Publishing Events
@@ -272,6 +339,21 @@ match relay.send(subscription) {
     Err(NostrRelayError::SendError) => {
         eprintln!("Connection closed, or the outbound queue is full");
     }
+    Err(e) => eprintln!("Error: {}", e),
+}
+```
+
+A pool does not stop at the first relay that refuses a message, because a pool
+exists so one dead relay cannot silence the set. The message reaches every
+relay that accepts it, and the error names the shortfall:
+
+```rust
+match pool.send(subscription) {
+    Ok(_) => println!("every relay accepted it"),
+    Err(NostrRelayError::PartialSend { delivered, total }) => {
+        eprintln!("reduced coverage: {delivered} of {total} relays");
+    }
+    Err(NostrRelayError::SendError) => eprintln!("no relay accepted it"),
     Err(e) => eprintln!("Error: {}", e),
 }
 ```
