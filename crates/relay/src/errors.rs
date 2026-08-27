@@ -15,6 +15,16 @@ pub enum NostrRelayError {
     Serde(serde_json::Error),
     /// The outbound ring is full, or the connection has stopped.
     SendError,
+    /// A pool delivered a message to some of its relays but not all.
+    ///
+    /// The message did reach `delivered` relays, so this is a warning about
+    /// reduced coverage rather than a failed send.
+    PartialSend {
+        /// How many relays accepted the message.
+        delivered: usize,
+        /// How many relays the pool holds.
+        total: usize,
+    },
 }
 
 impl std::fmt::Display for NostrRelayError {
@@ -25,6 +35,10 @@ impl std::fmt::Display for NostrRelayError {
             Self::Tls(e) => write!(f, "{e}"),
             Self::Serde(e) => write!(f, "serialization error: {e}"),
             Self::SendError => f.write_str("the relay connection is not accepting messages"),
+            Self::PartialSend { delivered, total } => write!(
+                f,
+                "the message reached {delivered} of {total} relays"
+            ),
         }
     }
 }
@@ -35,7 +49,7 @@ impl std::error::Error for NostrRelayError {
             Self::Url(e) => Some(e),
             Self::Tls(e) => Some(e),
             Self::Serde(e) => Some(e),
-            Self::Connect(_) | Self::SendError => None,
+            Self::Connect(_) | Self::SendError | Self::PartialSend { .. } => None,
         }
     }
 }

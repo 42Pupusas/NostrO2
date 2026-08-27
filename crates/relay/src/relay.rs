@@ -111,6 +111,24 @@ impl NostrRelay {
         Ok(Self::spawn(config)?.0)
     }
 
+    /// Connects with a fully specified driver configuration.
+    ///
+    /// Use this to tune the liveness probe, the ring sizes, or the IO pace,
+    /// which the simpler constructors leave at their defaults. Like
+    /// [`Self::detached`], this returns before the first attempt settles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrRelayError::Tls`] when the TLS backend refuses to
+    /// build a configuration.
+    ///
+    /// [`NostrRelayError::Tls`]: crate::errors::NostrRelayError::Tls
+    pub fn with_driver_config(
+        config: crate::driver::DriverConfig,
+    ) -> Result<Self, crate::errors::NostrRelayError> {
+        Ok(Self::spawn(config)?.0)
+    }
+
     /// Spawns the driver thread without waiting for its first connection.
     ///
     /// The handshake port comes back separately, so waiting for the first

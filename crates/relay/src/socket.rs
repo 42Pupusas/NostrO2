@@ -154,6 +154,10 @@ pub struct WsSocket {
     decoder: coyoquil::FrameDecoder,
     read_buf: Vec<u8>,
     encode_buf: Vec<u8>,
+    /// Set by any inbound byte, including control frames the caller never
+    /// sees. A pong is proof of life but not a message, so liveness cannot
+    /// be judged from [`Self::poll`]'s return value alone.
+    saw_traffic: bool,
 }
 
 impl std::fmt::Debug for WsSocket {
@@ -202,6 +206,7 @@ impl WsSocket {
             decoder: coyoquil::FrameDecoder::new(coyoquil::Role::Client),
             read_buf: vec![0_u8; READ_CHUNK],
             encode_buf: Vec::with_capacity(READ_CHUNK),
+            saw_traffic: false,
         };
         socket.upgrade(url)?;
         socket.set_read_timeout(read_timeout)?;
@@ -279,6 +284,24 @@ impl WsSocket {
         self.write_frame(&coyoquil::Frame::Text(text))
     }
 
+    /// Whether any byte arrived since the last call, and clears the flag.
+    ///
+    /// Control frames count. A relay that answers a ping with a pong and
+    /// nothing else is alive, but [`Self::poll`] reports no message for it,
+    /// so the driver asks here instead.
+    pub fn took_traffic(&mut self) -> bool {
+        std::mem::take(&mut self.saw_traffic)
+    }
+
+    /// Writes a ping frame, to probe a connection that has gone quiet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WsSocketError::Io`] when the write fails.
+    pub fn send_ping(&mut self) -> Result<(), WsSocketError> {
+        self.write_frame(&coyoquil::Frame::Ping(b"nostro2"))
+    }
+
     /// Writes a close frame with a normal status.
     ///
     /// # Errors
@@ -326,6 +349,7 @@ impl WsSocket {
             match self.transport.read(&mut self.read_buf) {
                 Ok(0) => return Err(WsSocketError::Eof),
                 Ok(n) => {
+                    self.saw_traffic = true;
                     let chunk = &self.read_buf[..n];
                     self.decoder.push(chunk)?;
                 }

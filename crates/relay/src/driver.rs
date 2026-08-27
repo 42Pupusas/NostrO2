@@ -42,6 +42,12 @@ pub struct DriverConfig {
     pub read_timeout: std::time::Duration,
     /// What to do with a note whose signature does not check out.
     pub verify: crate::verifier::VerifyPolicy,
+    /// When to probe a quiet connection, and when to give up on it.
+    ///
+    /// TCP never reports a peer that stops answering, so without this a
+    /// broken connection looks exactly like a quiet one and the driver
+    /// waits forever instead of reconnecting.
+    pub heartbeat: crate::heartbeat::HeartbeatConfig,
 }
 
 impl DriverConfig {
@@ -62,7 +68,15 @@ impl DriverConfig {
             connect_timeout: std::time::Duration::from_secs(10),
             read_timeout: Self::DEFAULT_READ_TIMEOUT,
             verify: crate::verifier::VerifyPolicy::default(),
+            heartbeat: crate::heartbeat::HeartbeatConfig::default(),
         }
+    }
+
+    /// Replaces the liveness policy.
+    #[must_use]
+    pub const fn with_heartbeat(mut self, heartbeat: crate::heartbeat::HeartbeatConfig) -> Self {
+        self.heartbeat = heartbeat;
+        self
     }
 
     /// Replaces the signature policy for inbound notes.
@@ -147,6 +161,7 @@ pub struct RelayDriver {
     inbound: quetzalcoatl::spmc::Producer<DriverEvent>,
     handshake: Option<quetzalcoatl::spsc::Producer<Handshake>>,
     verifier: crate::verifier::NoteVerifier,
+    heartbeat: crate::heartbeat::HeartbeatConfig,
 }
 
 impl RelayDriver {
@@ -186,6 +201,7 @@ impl RelayDriver {
             inbound: inbound_tx,
             handshake: Some(handshake_tx),
             verifier: crate::verifier::NoteVerifier::with_policy(config.verify),
+            heartbeat: config.heartbeat,
         };
         if !driver.verifier.is_enforcing() {
             log::warn!(
@@ -243,6 +259,7 @@ impl RelayDriver {
 
     /// Runs one connection until it ends, and returns why it ended.
     fn serve(&mut self, mut socket: crate::socket::WsSocket) -> Option<String> {
+        let mut heartbeat = crate::heartbeat::Heartbeat::new(self.heartbeat);
         loop {
             if self.shutdown.is_raised() {
                 let _ = socket.send_close();
@@ -263,6 +280,34 @@ impl RelayDriver {
                 }
                 Ok(None) => {}
                 Err(e) => return Some(e.to_string()),
+            }
+            if let Some(reason) = Self::check_liveness(&mut socket, &mut heartbeat) {
+                return Some(reason);
+            }
+        }
+    }
+
+    /// Probes a quiet connection and reports one that stopped answering.
+    ///
+    /// Returns the reason to end the connection, or `None` to keep serving.
+    fn check_liveness(
+        socket: &mut crate::socket::WsSocket,
+        heartbeat: &mut crate::heartbeat::Heartbeat,
+    ) -> Option<String> {
+        if socket.took_traffic() {
+            heartbeat.saw_traffic();
+        }
+        match heartbeat.assess() {
+            crate::heartbeat::Liveness::Healthy => None,
+            crate::heartbeat::Liveness::Probe => match socket.send_ping() {
+                Ok(()) => {
+                    heartbeat.probed();
+                    None
+                }
+                Err(e) => Some(e.to_string()),
+            },
+            crate::heartbeat::Liveness::Dead => {
+                Some("the relay stopped answering".to_owned())
             }
         }
     }
@@ -392,6 +437,10 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum Script {
+        /// Complete the upgrade, then never send or answer anything, while
+        /// holding the socket open. This is a half-open connection: TCP
+        /// still believes it is fine.
+        Mute,
         /// Echo every client frame back verbatim.
         Echo,
         /// Send one properly signed note, then serve normally.
@@ -413,6 +462,7 @@ mod tests {
             match self {
                 Self::Refuse => Self::refuse(stream),
                 Self::DropAfterUpgrade => Self::drop_after_upgrade(stream),
+                Self::Mute => Self::mute(stream, halt),
                 Self::Echo => Self::echo(stream, halt, None),
                 Self::SendNote => Self::echo(stream, halt, Some(Self::note())),
                 Self::SendForgedNote => Self::echo(stream, halt, Some(Self::forged_note())),
@@ -455,6 +505,18 @@ mod tests {
             let mut scratch = [0_u8; 1024];
             let _ = stream.read(&mut scratch);
             let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+        }
+
+        /// Upgrades, then reads nothing and writes nothing. `tungstenite`
+        /// would answer a ping by itself, so this never reads the socket.
+        fn mute(stream: std::net::TcpStream, halt: &std::sync::atomic::AtomicBool) {
+            let Ok(ws) = tungstenite::accept(stream) else {
+                return;
+            };
+            while !halt.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            drop(ws);
         }
 
         fn drop_after_upgrade(stream: std::net::TcpStream) {
@@ -672,6 +734,54 @@ mod tests {
             elapsed < std::time::Duration::from_millis(100),
             "shutdown took {elapsed:?} with a 10ms pace"
         );
+    }
+
+    // A relay that holds the socket open and answers nothing must be
+    // detected, or a reader waits forever on a connection that is already
+    // gone. TCP reports nothing in this case: only a probe reveals it.
+    #[test]
+    fn a_silent_relay_ends_the_connection() {
+        let relay = FakeRelay::serving(Script::Mute);
+        let config = relay
+            .config()
+            .with_reconnect(crate::reconnect::ReconnectConfig::disabled())
+            .with_heartbeat(crate::heartbeat::HeartbeatConfig {
+                idle_timeout: std::time::Duration::from_millis(100),
+                reply_timeout: std::time::Duration::from_millis(100),
+            });
+        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Some(DriverEvent::Disconnected(reason)) = ports.inbound.pop() {
+                assert_eq!(reason.as_deref(), Some("the relay stopped answering"));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("a silent relay was never detected");
+    }
+
+    // A relay that answers the probe is alive. The connection must survive,
+    // or every quiet subscription would be torn down on a timer.
+    #[test]
+    fn a_relay_that_answers_pings_keeps_its_connection() {
+        let relay = FakeRelay::serving(Script::Echo);
+        let config = relay.config().with_heartbeat(crate::heartbeat::HeartbeatConfig {
+            idle_timeout: std::time::Duration::from_millis(20),
+            reply_timeout: std::time::Duration::from_millis(100),
+        });
+        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        assert_eq!(Awaited::handshake(&mut ports), Ok(()));
+        Awaited::drain(&ports);
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        while let Some(event) = ports.inbound.pop() {
+            assert!(
+                !matches!(event, DriverEvent::Disconnected(_)),
+                "a responsive relay was dropped by the heartbeat"
+            );
+        }
     }
 
     #[test]

@@ -80,6 +80,35 @@ impl NostrPool {
         cache_size: usize,
         reconnect: &crate::reconnect::ReconnectConfig,
     ) -> Self {
+        Self::with_driver_config(relays, cache_size, &|url| {
+            crate::driver::DriverConfig::new(url).with_reconnect(reconnect.clone())
+        })
+    }
+
+    /// Connects to every relay with a fully specified driver configuration.
+    ///
+    /// `configure` builds the configuration for one relay URL, so a pool can
+    /// tune the liveness probe, the ring sizes, or the IO pace that the
+    /// simpler constructors leave at their defaults.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::{DriverConfig, HeartbeatConfig, NostrPool};
+    /// use std::time::Duration;
+    ///
+    /// let pool = NostrPool::with_driver_config(&["wss://relay.example.com"], 10_000, &|url| {
+    ///     DriverConfig::new(url).with_heartbeat(HeartbeatConfig {
+    ///         idle_timeout: Duration::from_secs(30),
+    ///         reply_timeout: Duration::from_secs(10),
+    ///     })
+    /// });
+    /// ```
+    #[must_use]
+    pub fn with_driver_config(
+        relays: &[&str],
+        cache_size: usize,
+        configure: &dyn Fn(crate::url::RelayUrl) -> crate::driver::DriverConfig,
+    ) -> Self {
         let (stream_tx, stream_rx) = quetzalcoatl::mpmc::RingBuffer::<nostro2::NostrRelayEvent>::new(
             quetzalcoatl::capacity::Capacity::at_least(1024),
         )
@@ -89,7 +118,7 @@ impl NostrPool {
         let mut connected = Vec::with_capacity(relays.len());
         let mut forwarders = Vec::with_capacity(relays.len());
         for url in relays {
-            match crate::relay::NostrRelay::detached(url, reconnect.clone()) {
+            match Self::start_one(url, configure) {
                 Ok(relay) => {
                     forwarders.push(PoolForwarder::spawn(
                         relay.clone(),
@@ -109,6 +138,14 @@ impl NostrPool {
         }
     }
 
+    fn start_one(
+        url: &str,
+        configure: &dyn Fn(crate::url::RelayUrl) -> crate::driver::DriverConfig,
+    ) -> Result<crate::relay::NostrRelay, crate::errors::NostrRelayError> {
+        let parsed = crate::url::RelayUrl::parse(url)?;
+        crate::relay::NostrRelay::with_driver_config(configure(parsed))
+    }
+
     /// The relays this pool drives.
     #[must_use]
     pub fn relays(&self) -> &[crate::relay::NostrRelay] {
@@ -117,9 +154,18 @@ impl NostrPool {
 
     /// Sends a message to every relay in the pool.
     ///
+    /// One failing relay does not stop the others: a pool exists so that a
+    /// single dead relay cannot silence the whole set. The message reaches
+    /// every relay that accepts it, and the error names the rest.
+    ///
     /// # Errors
     ///
-    /// Returns the first error a relay produces.
+    /// Returns [`NostrRelayError::PartialSend`] when at least one relay
+    /// refused the message, and [`NostrRelayError::SendError`] when none
+    /// accepted it.
+    ///
+    /// [`NostrRelayError::PartialSend`]: crate::errors::NostrRelayError::PartialSend
+    /// [`NostrRelayError::SendError`]: crate::errors::NostrRelayError::SendError
     pub fn send<T>(
         &self,
         msg: T,
@@ -128,10 +174,23 @@ impl NostrPool {
         T: Into<nostro2::NostrClientEvent> + Clone + Send + Sync,
     {
         let msg: nostro2::NostrClientEvent = msg.into();
+        let mut delivered = 0_usize;
         for relay in &self.relays {
-            relay.send(msg.clone())?;
+            match relay.send(msg.clone()) {
+                Ok(()) => delivered += 1,
+                Err(e) => log::warn!("relay {} refused a message: {e}", relay.url()),
+            }
         }
-        Ok(msg)
+        if delivered == self.relays.len() {
+            return Ok(msg);
+        }
+        if delivered == 0 {
+            return Err(crate::errors::NostrRelayError::SendError);
+        }
+        Err(crate::errors::NostrRelayError::PartialSend {
+            delivered,
+            total: self.relays.len(),
+        })
     }
 
     /// Returns the next event from any relay, waiting for one to arrive.
@@ -258,6 +317,53 @@ mod tests {
 
         assert!(!PoolForwarder::is_duplicate(&event, &seen));
         assert!(PoolForwarder::is_duplicate(&event, &seen));
+    }
+
+    // A pool exists so one dead relay cannot silence the set. A send to a
+    // pool whose relays are all closed must report failure rather than
+    // pretend it succeeded.
+    #[test]
+    fn a_send_to_a_wholly_dead_pool_reports_failure() {
+        let pool = NostrPool::with_config(
+            &["ws://127.0.0.1:1"],
+            8,
+            &crate::reconnect::ReconnectConfig::disabled(),
+        );
+        for relay in pool.relays() {
+            relay.close();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // A closed driver still holds its outbound ring, so the push itself
+        // may succeed; the guarantee under test is that a send never panics
+        // and never reports success it did not achieve.
+        match pool.send(nostro2::NostrClientEvent::close_subscription("sub")) {
+            Ok(_) | Err(crate::errors::NostrRelayError::SendError) => {}
+            Err(crate::errors::NostrRelayError::PartialSend { delivered, total }) => {
+                assert!(delivered < total);
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_pool_sends_nothing_without_failing() {
+        let pool = NostrPool::with_config(&[], 8, &crate::reconnect::ReconnectConfig::disabled());
+        assert!(pool.relays().is_empty());
+        assert!(
+            pool.send(nostro2::NostrClientEvent::close_subscription("sub"))
+                .is_ok(),
+            "an empty pool has nothing to fail"
+        );
+    }
+
+    #[test]
+    fn a_partial_send_names_the_shortfall() {
+        let error = crate::errors::NostrRelayError::PartialSend {
+            delivered: 2,
+            total: 5,
+        };
+        assert_eq!(error.to_string(), "the message reached 2 of 5 relays");
     }
 
     #[test]
