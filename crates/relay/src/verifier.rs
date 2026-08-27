@@ -117,7 +117,7 @@ impl NoteVerifier {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn signed_note() -> nostro2::NostrNote {
         use nostro2::{NostrKeypair as _, NostrSigner as _};
         let keypair = nostro2_signer::NostrKeypair::generate();
@@ -131,13 +131,13 @@ mod tests {
         note
     }
 
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn new_note_event(note: nostro2::NostrNote) -> nostro2::NostrRelayEvent {
         nostro2::NostrRelayEvent::NewNote(nostro2::RelayEventTag::Event, "sub".to_string(), note)
     }
 
     #[test]
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn a_signed_note_is_admitted() {
         let verifier = NoteVerifier::new();
         assert_eq!(
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn a_note_with_a_tampered_content_is_rejected() {
         let mut note = signed_note();
         note.content = "swapped after signing".to_string();
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn a_note_attributed_to_another_pubkey_is_rejected() {
         use nostro2::{NostrKeypair as _, NostrSigner as _};
         let mut note = signed_note();
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn an_unsigned_note_is_rejected() {
         let note = nostro2::NostrNote {
             kind: 1,
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "k256")]
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     fn a_trusting_verifier_admits_a_forged_note() {
         let mut note = signed_note();
         note.content = "swapped after signing".to_string();

@@ -355,9 +355,8 @@ mod tests {
     /// This test is the canary for that case — it exercises the same path
     /// every external caller uses (`note.sign_with(&kp)` then `note.verify()`).
     ///
-    /// Gated to `feature = "k256"` because `nostro2`'s dev-dependency on
-    /// `nostro2-signer` is pinned to the k256 backend (see Cargo.toml).
-    #[cfg(feature = "k256")]
+    /// Needs a curve to sign with, so it runs under either backend.
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[test]
     fn sign_with_then_verify_round_trips() {
         use nostro2_traits::NostrKeypair as _;

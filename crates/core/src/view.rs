@@ -535,27 +535,14 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "k256")]
+    /// `NostrKeypair` is the same name under either curve, so one test
+    /// covers both backends.
+    #[cfg(any(feature = "k256", feature = "secp256k1"))]
     #[test]
     fn view_verify_signature_round_trips() {
         use nostro2_traits::NostrKeypair as _;
         let kp = nostro2_signer::NostrKeypair::generate();
         let mut note = crate::NostrNoteBuilder::text_note("view verify test").build();
-        note.tags.add_custom_tag("t", "nostr");
-        note.sign_with(&kp).expect("sign");
-        let json = json_bourne::to_string(&note).unwrap();
-        let view: NostrNoteView<'_> = json_bourne::parse_str(&json).unwrap();
-        assert!(view.verify(), "view of signed note must verify");
-    }
-
-    /// Runs with `--features secp256k1` (requires matching dev-dep
-    /// `nostro2-signer = { features = ["secp256k1"] }`).
-    #[cfg(feature = "secp256k1")]
-    #[test]
-    fn view_verify_signature_round_trips_secp() {
-        use nostro2_signer::nostro2_traits::NostrKeypair as _;
-        let kp = nostro2_signer::Secp256k1Keypair::generate();
-        let mut note = crate::NostrNoteBuilder::text_note("view verify test secp").build();
         note.tags.add_custom_tag("t", "nostr");
         note.sign_with(&kp).expect("sign");
         let json = json_bourne::to_string(&note).unwrap();

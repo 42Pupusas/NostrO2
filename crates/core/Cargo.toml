@@ -32,8 +32,13 @@ default = ["serde"]
 # trip the `compile_error!` below).
 bourne = ["dep:json-bourne", "nostro2-signer/bourne"]
 serde = ["dep:serde", "dep:serde_json", "nostro2-signer/serde"]
-k256 = ["dep:k256"]
-secp256k1 = ["dep:secp256k1"]
+# Forwarded into the dev-only `nostro2-signer` dep for the same reason as
+# the JSON backends: a dev-dependency that pins one curve makes the other
+# curve impossible to test, because Cargo unifies features across a
+# package's normal and dev graphs. Since this crate has no default curve,
+# `cargo test -p nostro2` needs one named explicitly.
+k256 = ["dep:k256", "nostro2-signer/k256"]
+secp256k1 = ["dep:secp256k1", "nostro2-signer/secp256k1"]
 
 [dependencies]
 k256 = { workspace = true, optional = true }
@@ -58,7 +63,7 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 # 0.5.0 can't exist on crates.io until core is published, and core won't
 # publish while it requires it). `cargo publish` drops path-only dev-deps
 # from the uploaded manifest, breaking the cycle; local builds still resolve.
-nostro2-signer = { path = "../signer", default-features = false, features = ["k256"] }
+nostro2-signer = { path = "../signer", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 divan.workspace = true

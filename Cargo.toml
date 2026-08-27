@@ -10,6 +10,7 @@ members = [
     "crates/cache",
     "crates/relay",
     "benches",
+    "xtask",
 ]
 
 [workspace.dependencies.nostro2-traits]
