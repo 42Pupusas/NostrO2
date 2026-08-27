@@ -40,6 +40,13 @@ pub struct DriverConfig {
     /// 100ms or every millisecond, because an empty wakeup is only a timed
     /// `read` returning nothing. The default is therefore short.
     pub read_timeout: std::time::Duration,
+    /// Bound on one socket write.
+    ///
+    /// A relay that accepts the connection but stops reading it is not a
+    /// relay that disconnects. Both receive windows fill, and a blocking
+    /// write never returns, which freezes the thread that also serves
+    /// reads. This bound turns that into a disconnect and a reconnect.
+    pub write_timeout: std::time::Duration,
     /// What to do with a note whose signature does not check out.
     pub verify: crate::verifier::VerifyPolicy,
     /// When to probe a quiet connection, and when to give up on it.
@@ -57,6 +64,13 @@ impl DriverConfig {
     /// because a wakeup that finds nothing is nearly free.
     pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5);
 
+    /// The default bound on one socket write.
+    ///
+    /// Long enough that a slow but working relay is never cut off, short
+    /// enough that a relay which stopped reading is noticed while the
+    /// service still has time to reconnect.
+    pub const DEFAULT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
     /// A configuration with the default policy and sizes.
     #[must_use]
     pub fn new(url: crate::url::RelayUrl) -> Self {
@@ -67,6 +81,7 @@ impl DriverConfig {
             inbound_capacity: 1024,
             connect_timeout: std::time::Duration::from_secs(10),
             read_timeout: Self::DEFAULT_READ_TIMEOUT,
+            write_timeout: Self::DEFAULT_WRITE_TIMEOUT,
             verify: crate::verifier::VerifyPolicy::default(),
             heartbeat: crate::heartbeat::HeartbeatConfig::default(),
         }
@@ -105,6 +120,13 @@ impl DriverConfig {
     #[must_use]
     pub const fn with_read_timeout(mut self, read_timeout: std::time::Duration) -> Self {
         self.read_timeout = read_timeout;
+        self
+    }
+
+    /// Replaces the bound on one socket write.
+    #[must_use]
+    pub const fn with_write_timeout(mut self, write_timeout: std::time::Duration) -> Self {
+        self.write_timeout = write_timeout;
         self
     }
 }
@@ -157,11 +179,13 @@ pub struct RelayDriver {
     shutdown: crate::guard::Shutdown,
     connect_timeout: std::time::Duration,
     read_timeout: std::time::Duration,
+    write_timeout: std::time::Duration,
     outbound: quetzalcoatl::mpsc::Consumer<String>,
     inbound: quetzalcoatl::spmc::Producer<DriverEvent>,
     handshake: Option<quetzalcoatl::spsc::Producer<Handshake>>,
     verifier: crate::verifier::NoteVerifier,
     heartbeat: crate::heartbeat::HeartbeatConfig,
+    session: crate::session::Session,
 }
 
 impl RelayDriver {
@@ -197,11 +221,13 @@ impl RelayDriver {
             shutdown: shutdown.clone(),
             connect_timeout: config.connect_timeout,
             read_timeout: config.read_timeout,
+            write_timeout: config.write_timeout,
             outbound: outbound_rx,
             inbound: inbound_tx,
             handshake: Some(handshake_tx),
             verifier: crate::verifier::NoteVerifier::with_policy(config.verify),
             heartbeat: config.heartbeat,
+            session: crate::session::Session::new(),
         };
         if !driver.verifier.is_enforcing() {
             log::warn!(
@@ -229,12 +255,20 @@ impl RelayDriver {
                 &self.tls,
                 self.connect_timeout,
                 self.read_timeout,
+                self.write_timeout,
             ) {
-                Ok(socket) => {
+                Ok(mut socket) => {
                     self.report_handshake(Ok(()));
                     self.schedule.succeeded();
+                    // A relay forgets every subscription when the connection
+                    // drops, so a reconnect must restate them or the service
+                    // stays connected and silent.
+                    let restored = self.restore_session(&mut socket);
                     self.emit(DriverEvent::Connected);
-                    let reason = self.serve(socket);
+                    let reason = match restored {
+                        Ok(()) => self.serve(socket),
+                        Err(e) => Some(e.to_string()),
+                    };
                     self.emit(DriverEvent::Disconnected(reason));
                 }
                 Err(e) => {
@@ -312,11 +346,32 @@ impl RelayDriver {
         }
     }
 
+    /// Replays the open subscriptions onto a fresh connection.
+    fn restore_session(
+        &self,
+        socket: &mut crate::socket::WsSocket,
+    ) -> Result<(), crate::socket::WsSocketError> {
+        if self.session.is_empty() {
+            return Ok(());
+        }
+        log::debug!(
+            "{}: restoring {} subscription(s) after reconnect",
+            self.url,
+            self.session.len()
+        );
+        let frames: Vec<String> = self.session.replay().map(ToOwned::to_owned).collect();
+        for frame in frames {
+            socket.send_text(&frame)?;
+        }
+        Ok(())
+    }
+
     fn write_pending(
         &mut self,
         socket: &mut crate::socket::WsSocket,
     ) -> Result<(), crate::socket::WsSocketError> {
         while let Some(frame) = self.outbound.pop() {
+            self.session.observe(&frame);
             socket.send_text(&frame)?;
         }
         Ok(())

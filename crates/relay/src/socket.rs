@@ -44,6 +44,12 @@ pub enum WsSocketError {
     HeadTooLarge,
     /// The peer closed the transport without a close frame.
     Eof,
+    /// A write did not complete within the write timeout.
+    ///
+    /// The peer accepted the connection but stopped reading it, so both
+    /// receive windows filled. The frame is partly written, so the stream
+    /// is out of sync and the connection must be rebuilt.
+    WriteStalled,
 }
 
 impl std::fmt::Display for WsSocketError {
@@ -56,6 +62,9 @@ impl std::fmt::Display for WsSocketError {
             Self::Protocol(e) => write!(f, "websocket protocol error: {e}"),
             Self::HeadTooLarge => f.write_str("websocket upgrade response head is too large"),
             Self::Eof => f.write_str("relay closed the connection"),
+            Self::WriteStalled => {
+                f.write_str("relay accepted the connection but stopped reading it")
+            }
         }
     }
 }
@@ -66,7 +75,7 @@ impl std::error::Error for WsSocketError {
             Self::Io(e) => Some(e),
             Self::Tls(e) => Some(e),
             Self::Resolve(_) | Self::Handshake(_) | Self::Protocol(_) | Self::HeadTooLarge
-            | Self::Eof => None,
+            | Self::Eof | Self::WriteStalled => None,
         }
     }
 }
@@ -191,10 +200,14 @@ impl WsSocket {
         tls: &crate::tls::RelayTls,
         connect_timeout: std::time::Duration,
         read_timeout: std::time::Duration,
+        write_timeout: std::time::Duration,
     ) -> Result<Self, WsSocketError> {
         let stream = Self::dial(url, connect_timeout)?;
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(connect_timeout))?;
+        // Set before the TLS wrap, which keeps this same descriptor, so the
+        // bound applies to plain and encrypted transports alike.
+        stream.set_write_timeout(Some(write_timeout))?;
         let transport = if url.is_secure() {
             Transport::Tls(Box::new(tls.connect(url.host(), stream)?))
         } else {
@@ -314,12 +327,27 @@ impl WsSocket {
         ))))
     }
 
+    /// Encodes and writes one frame.
+    ///
+    /// A relay that stops reading is not a relay that disconnects: its
+    /// receive window fills, then ours, and a blocking write never returns.
+    /// The socket carries a write timeout for that case, and a timed-out
+    /// write is reported as [`WsSocketError::WriteStalled`] rather than a
+    /// bare timeout, because a half-written frame leaves the stream out of
+    /// sync and the connection cannot be reused.
     fn write_frame(&mut self, frame: &coyoquil::Frame<'_>) -> Result<(), WsSocketError> {
         self.encode_buf.clear();
         frame.encode_masked(coyoquil::MaskKey::new(), &mut self.encode_buf);
-        self.transport.write_all(&self.encode_buf)?;
-        self.transport.flush()?;
-        Ok(())
+        match self.transport.write_all(&self.encode_buf) {
+            Ok(()) => {}
+            Err(e) if Self::is_timeout(&e) => return Err(WsSocketError::WriteStalled),
+            Err(e) => return Err(WsSocketError::Io(e)),
+        }
+        match self.transport.flush() {
+            Ok(()) => Ok(()),
+            Err(e) if Self::is_timeout(&e) => Err(WsSocketError::WriteStalled),
+            Err(e) => Err(WsSocketError::Io(e)),
+        }
     }
 
     /// Returns the next application message.
@@ -447,6 +475,7 @@ mod tests {
                 &crate::tls::RelayTls::new().unwrap(),
                 std::time::Duration::from_secs(5),
                 std::time::Duration::from_millis(200),
+                std::time::Duration::from_secs(5),
             )
             .unwrap()
         }
@@ -581,6 +610,7 @@ mod tests {
             &crate::tls::RelayTls::new().unwrap(),
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(5),
+            std::time::Duration::from_secs(5),
         )
         .expect("a relay slower than the IO pace must still connect");
 
@@ -661,10 +691,51 @@ mod tests {
             &crate::tls::RelayTls::new().unwrap(),
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(5),
         )
         .unwrap_err();
         assert!(matches!(error, WsSocketError::Handshake(_)));
         assert!(error.to_string().contains("upgrade failed"));
+    }
+
+    // A peer that accepts the connection but never reads it fills both
+    // receive windows. Without a write timeout the write blocks forever.
+    #[test]
+    fn a_write_to_a_peer_that_never_reads_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let _ = ws.close(None);
+        });
+
+        let url = crate::url::RelayUrl::parse(&format!("ws://127.0.0.1:{port}")).unwrap();
+        let mut socket = WsSocket::connect(
+            &url,
+            &crate::tls::RelayTls::new().unwrap(),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap();
+
+        let bulk = "x".repeat(256 * 1024);
+        let started = std::time::Instant::now();
+        let mut stalled = false;
+        for _ in 0..256 {
+            if matches!(socket.send_text(&bulk), Err(WsSocketError::WriteStalled)) {
+                stalled = true;
+                break;
+            }
+        }
+        assert!(stalled, "a write to a peer that never reads must time out");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the write timeout must bound the stall"
+        );
+        let _ = accepted.join();
     }
 
     #[test]
@@ -678,6 +749,7 @@ mod tests {
             &crate::tls::RelayTls::new().unwrap(),
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(5),
         )
         .unwrap_err();
         assert!(matches!(error, WsSocketError::Io(_)));
@@ -691,6 +763,7 @@ mod tests {
             &crate::tls::RelayTls::new().unwrap(),
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(5),
         )
         .unwrap_err();
         assert!(matches!(error, WsSocketError::Resolve(_)));

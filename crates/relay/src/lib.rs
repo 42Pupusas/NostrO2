@@ -15,6 +15,14 @@
 //!   answering, so [`Heartbeat`] pings a quiet connection and drops one that
 //!   does not reply. Without this a half-open socket stalls a reader
 //!   forever, and reconnection never starts.
+//! - **A stalled write never freezes the driver.** A relay that accepts the
+//!   connection but stops reading it fills both receive windows. One thread
+//!   owns the socket, so a blocking write would stop reads too. Writes are
+//!   bounded by `DriverConfig::write_timeout`.
+//! - **A reconnect restores the subscriptions.** A subscription lives on the
+//!   relay, which forgets it when the connection drops. [`Session`] records
+//!   the open filters and the driver replays them on the new connection, so
+//!   a service does not go silent while looking connected.
 //! - **A reader is always released.** Every way a driver can end, including
 //!   a spent retry budget, an explicit close, or a panic on the IO thread,
 //!   ends the stream rather than leaving a reader parked.
@@ -53,6 +61,7 @@ mod json;
 mod pool;
 mod reconnect;
 mod relay;
+mod session;
 mod socket;
 mod tls;
 mod url;
@@ -64,6 +73,7 @@ pub use guard::{DriverGuard, Shutdown};
 pub use heartbeat::{Heartbeat, HeartbeatConfig, Liveness};
 pub use reconnect::{ReconnectConfig, ReconnectSchedule};
 pub use relay::NostrRelay;
+pub use session::Session;
 pub use socket::{WsMessage, WsSocket, WsSocketError};
 pub use tls::{RelayTls, RelayTlsError};
 pub use url::{RelayScheme, RelayUrl, RelayUrlError};

@@ -278,6 +278,16 @@ impl NostrRelay {
         }
     }
 
+    /// Returns the next event including the lifecycle ones, parking the
+    /// thread until one arrives.
+    ///
+    /// This is the synchronous twin of [`Self::recv_event`]. A service that
+    /// must react to a reconnect needs this rather than [`Self::recv_blocking`],
+    /// which hides the lifecycle.
+    pub fn recv_event_blocking(&mut self) -> Option<crate::driver::DriverEvent> {
+        self.inbound.pop_block()
+    }
+
     /// Stops the connection and its thread.
     ///
     /// Every clone of this handle stops with it, and a reader parked in

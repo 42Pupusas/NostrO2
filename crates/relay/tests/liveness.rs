@@ -40,6 +40,7 @@ impl Deadline {
 struct ScriptedRelay {
     port: u16,
     accepts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -50,19 +51,24 @@ impl ScriptedRelay {
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let counter = accepts.clone();
+        let reqs = requests.clone();
         let halt = stop.clone();
         let handle = std::thread::spawn(move || {
             let mut sessions = Vec::new();
             while !halt.load(std::sync::atomic::Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let seq = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         stream.set_nonblocking(false).unwrap();
                         let halt = halt.clone();
-                        sessions.push(std::thread::spawn(move || script.serve(stream, &halt)));
+                        let reqs = reqs.clone();
+                        sessions.push(std::thread::spawn(move || {
+                            script.serve(stream, &halt, seq, &reqs);
+                        }));
                     }
                     Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
                 }
@@ -75,9 +81,15 @@ impl ScriptedRelay {
         Self {
             port,
             accepts,
+            requests,
             stop,
             handle: Some(handle),
         }
+    }
+
+    /// How many REQ frames every session has received in total.
+    fn requests(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        self.requests.clone()
     }
 
     fn url(&self) -> String {
@@ -109,10 +121,19 @@ enum Script {
     Mute,
     /// Upgrade, then drop the connection at once, forcing a reconnect.
     DropAtOnce,
+    /// Drop the first connection after a moment, then serve normally.
+    /// This forces exactly one reconnect on an otherwise healthy relay.
+    DropOnce,
 }
 
 impl Script {
-    fn serve(self, stream: std::net::TcpStream, halt: &std::sync::atomic::AtomicBool) {
+    fn serve(
+        self,
+        stream: std::net::TcpStream,
+        halt: &std::sync::atomic::AtomicBool,
+        seq: usize,
+        requests: &std::sync::atomic::AtomicUsize,
+    ) {
         stream
             .set_read_timeout(Some(std::time::Duration::from_millis(20)))
             .unwrap();
@@ -120,6 +141,44 @@ impl Script {
             return;
         };
         if matches!(self, Self::DropAtOnce) {
+            return;
+        }
+        if matches!(self, Self::DropOnce) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+            while std::time::Instant::now() < deadline {
+                match ws.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        if text.starts_with("[\"REQ\"") {
+                            requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(ref e))
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(_) => return,
+                }
+            }
+            // The first session drops to force a reconnect; later ones stay
+            // up so the client's resubscription can be observed.
+            if seq == 0 {
+                return;
+            }
+            while !halt.load(std::sync::atomic::Ordering::Relaxed) {
+                match ws.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        if text.starts_with("[\"REQ\"") {
+                            requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    Ok(tungstenite::Message::Close(_)) => return,
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(ref e))
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(_) => return,
+                }
+            }
             return;
         }
         // Never read the socket: `tungstenite` answers a ping during `read`,
@@ -141,6 +200,147 @@ impl Script {
             }
         }
     }
+}
+
+// A relay that stops reading is not the same as a relay that disconnects.
+// Its receive window fills, then ours, and a blocking write never returns.
+// That stalls the driver thread, which also serves reads, so the whole
+// connection freezes with no error anywhere and no reconnect ever starts.
+//
+// The driver must instead bound the write, end the connection, and try
+// again. Note that the retry budget does not run out here: every attempt
+// connects successfully before stalling, so the schedule counts no
+// consecutive failures. The write timeout is what bounds the damage.
+#[test]
+fn a_relay_that_stops_reading_does_not_freeze_the_driver() {
+    let relay = ScriptedRelay::start(Script::Mute);
+    let url = relay.url();
+
+    Deadline::enforce(
+        std::time::Duration::from_secs(20),
+        "a driver writing to a relay that never reads",
+        move || {
+            let mut ports = nostro2_relay::RelayDriver::spawn(
+                nostro2_relay::DriverConfig::new(nostro2_relay::RelayUrl::parse(&url).unwrap())
+                    .with_reconnect(nostro2_relay::ReconnectConfig::fixed(
+                        std::time::Duration::from_millis(10),
+                    ))
+                    .with_write_timeout(std::time::Duration::from_millis(300)),
+                nostro2_relay::RelayTls::new().unwrap(),
+            );
+            assert!(ports.handshake.pop_block().unwrap().is_ok());
+
+            let bulk = "x".repeat(64 * 1024);
+            for _ in 0..256 {
+                if ports.outbound.push(bulk.clone()).is_err() {
+                    break;
+                }
+            }
+
+            // Without the write timeout the driver blocks inside write_all
+            // and no disconnect is ever announced, so this loop hangs.
+            loop {
+                match ports.inbound.pop_block() {
+                    Some(nostro2_relay::DriverEvent::Disconnected(reason)) => {
+                        assert!(
+                            reason.is_some_and(|r| r.contains("stopped reading")),
+                            "the disconnect must name the stalled write"
+                        );
+                        return;
+                    }
+                    Some(_) => {}
+                    None => panic!("the driver ended without reporting the stall"),
+                }
+            }
+        },
+    );
+}
+
+// The quietest failure of all. A subscription lives on the relay, not on
+// the client, so a reconnect starts a connection with no subscriptions on
+// it. A service that subscribed once at startup then receives nothing ever
+// again, while `recv` swallows the reconnect events and reports no error.
+//
+// This test states the guarantee a long-lived service needs: after a
+// reconnect, the subscriptions it asked for are in force again.
+#[test]
+fn a_reconnect_restores_the_subscriptions() {
+    let relay = ScriptedRelay::start(Script::DropOnce);
+    let url = relay.url();
+    let seen = relay.requests();
+
+    Deadline::enforce(
+        std::time::Duration::from_secs(20),
+        "a relay resubscribing after a reconnect",
+        move || {
+            let mut relay = nostro2_relay::NostrRelay::with_driver_config(
+                nostro2_relay::DriverConfig::new(nostro2_relay::RelayUrl::parse(&url).unwrap())
+                    .with_reconnect(nostro2_relay::ReconnectConfig::fixed(
+                        std::time::Duration::from_millis(10),
+                    )),
+            )
+            .unwrap();
+
+            let filter = nostro2::NostrSubscription {
+                kinds: Some(std::collections::HashSet::from([1])),
+                ..Default::default()
+            };
+            relay.send(filter).unwrap();
+
+            // Wait for the drop and the reconnect that follows it.
+            let mut reconnects = 0;
+            while reconnects < 2 {
+                match relay.recv_event_blocking() {
+                    Some(nostro2_relay::DriverEvent::Connected) => reconnects += 1,
+                    Some(_) => {}
+                    None => panic!("the driver stopped before reconnecting"),
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            assert!(
+                seen.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+                "the relay must receive the subscription again after a reconnect, \
+                 or the service goes silent forever"
+            );
+        },
+    );
+}
+
+// A pool sends through its relays, so each driver records its own session.
+// This states that the pool inherits the guarantee rather than needing a
+// second mechanism of its own.
+#[test]
+fn a_pool_also_restores_its_subscriptions() {
+    let relay = ScriptedRelay::start(Script::DropOnce);
+    let url = relay.url();
+    let seen = relay.requests();
+
+    Deadline::enforce(
+        std::time::Duration::from_secs(20),
+        "a pool resubscribing after a reconnect",
+        move || {
+            let pool = nostro2_relay::NostrPool::with_config(
+                &[&url],
+                64,
+                &nostro2_relay::ReconnectConfig::fixed(std::time::Duration::from_millis(10)),
+            );
+            let filter = nostro2::NostrSubscription {
+                kinds: Some(std::collections::HashSet::from([1])),
+                ..Default::default()
+            };
+            pool.send(filter).unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if seen.load(std::sync::atomic::Ordering::Relaxed) >= 2 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("the pool never restated its subscription after the reconnect");
+        },
+    );
 }
 
 /// Counts the file descriptors this process holds.
