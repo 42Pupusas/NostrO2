@@ -33,7 +33,9 @@ nostro2-cache = { path = "crates/cache", version = "0.2.2" }
 
 # Cryptography
 base64 = "0.22"
-chacha20 = "0.10"
+# 0.10.1 is yanked upstream. Cargo.lock is not committed, so state the floor
+# here rather than relying on resolution to skip it.
+chacha20 = "0.10.2"
 hkdf = "0.13"
 hmac = "0.13"
 k256 = { version = "0.14.0", default-features = false, features = ["schnorr", "ecdh", "precomputed-tables", "std"] }
