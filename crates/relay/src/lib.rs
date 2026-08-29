@@ -5,6 +5,35 @@
 //! holds no lock on the data path. The `async` methods await ring futures,
 //! which any executor can poll.
 //!
+//! # Without an executor
+//!
+//! Every operation has a blocking twin, so a service built on threads never
+//! has to poll a future. A crate whose only constructor is `async` still
+//! forces the caller to find a runtime, even though dialling a socket is
+//! not an asynchronous act, so the pairs are complete rather than partial:
+//!
+//! | Async | Blocking |
+//! |---|---|
+//! | [`NostrRelay::new`] | [`NostrRelay::connect_blocking`] |
+//! | [`NostrRelay::with_reconnect`] | [`NostrRelay::connect_blocking_with`] |
+//! | [`NostrRelay::with_driver_config`] + await | [`NostrRelay::connect_blocking_config`] |
+//! | [`NostrRelay::recv`] | [`NostrRelay::recv_blocking`] |
+//! | [`NostrRelay::recv_event`] | [`NostrRelay::recv_event_blocking`] |
+//! | [`NostrRelay::send_all`] | [`NostrRelay::send_all_blocking`] |
+//! | [`NostrPool::recv`] | [`NostrPool::recv_blocking`] |
+//! | [`NostrPool::recv_event`] | [`NostrPool::recv_event_blocking`] |
+//!
+//! `send`, `close`, and every constructor of [`NostrPool`] are already
+//! synchronous: sending only pushes to a ring, so it never blocks.
+//!
+//! `tests/blocking_only.rs` exercises the whole crate without writing
+//! `.await` once, so this parity cannot quietly lapse.
+//!
+//! The dependency list reflects this. The only async crate the library
+//! links is `futures-core`, which has no dependencies of its own and
+//! supplies the `Stream` trait for [`NostrRelay::send_all`]. A caller that
+//! never touches the async surface still compiles nothing extra.
+//!
 //! # Long-lived services
 //!
 //! The intended user is a daemon that holds a pool open for weeks and
@@ -58,7 +87,9 @@ pub mod errors;
 mod guard;
 mod heartbeat;
 mod json;
+mod next;
 mod pool;
+mod pool_event;
 mod reconnect;
 mod relay;
 mod session;
@@ -68,6 +99,7 @@ mod url;
 mod verifier;
 pub use nostro2;
 pub use pool::NostrPool;
+pub use pool_event::PoolEvent;
 pub use driver::{DriverConfig, DriverEvent, DriverPorts, Handshake, RelayDriver};
 pub use guard::{DriverGuard, Shutdown};
 pub use heartbeat::{Heartbeat, HeartbeatConfig, Liveness};

@@ -35,9 +35,12 @@ bourne = ["dep:json-bourne", "nostro2/bourne", "nostro2-nips/bourne", "nostro2-s
 serde = ["dep:serde", "dep:serde_json", "nostro2/serde", "nostro2-nips/serde", "nostro2-signer/serde"]
 
 [dependencies]
-# Only for the `Stream` bound on `NostrRelay::send_all`. The crate drives no
-# executor of its own: every connection runs on a plain thread.
-futures-util.workspace = true
+# Only for the `Stream` trait on `NostrRelay::send_all`. `futures-core` has
+# no dependencies of its own; `futures-util` would add a proc-macro chain
+# (futures-macro -> syn/quote/proc-macro2) for the single `.next()` helper,
+# so `src/next.rs` provides that instead. The crate drives no executor of
+# its own: every connection runs on a plain thread.
+futures-core = "0.3"
 log = "0.4"
 
 quetzalcoatl.workspace = true
@@ -52,6 +55,9 @@ serde_json = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
 
 [dev-dependencies]
+# The benchmark drives streams with the usual combinators. The library
+# itself needs only the `Stream` trait, so this stays a dev-dependency.
+futures-util.workspace = true
 # An independent RFC-6455 implementation, used as the test server so the
 # socket tests prove interop rather than codec self-consistency. Sync, so
 # the tests need no async runtime at all.

@@ -92,6 +92,80 @@ impl NostrRelay {
         Ok(relay)
     }
 
+    /// Connects to `url` with the default policy, parking the thread until
+    /// the first attempt settles.
+    ///
+    /// This is the synchronous twin of [`Self::new`]. Connecting is not an
+    /// asynchronous operation: the socket is dialled on its own thread and
+    /// this waits for the outcome, so a service that owns threads never has
+    /// to find an executor merely to open a connection.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::NostrRelay;
+    ///
+    /// let mut relay = NostrRelay::connect_blocking("wss://relay.example.com")?;
+    /// while let Some(event) = relay.recv_blocking() {
+    ///     println!("{event:?}");
+    /// }
+    /// # Ok::<(), nostro2_relay::errors::NostrRelayError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrRelayError::Url`] when `url` is not a relay URL, and
+    /// [`NostrRelayError::Connect`] when the first connection fails.
+    ///
+    /// [`NostrRelayError::Url`]: crate::errors::NostrRelayError::Url
+    /// [`NostrRelayError::Connect`]: crate::errors::NostrRelayError::Connect
+    pub fn connect_blocking(url: &str) -> Result<Self, crate::errors::NostrRelayError> {
+        Self::connect_blocking_with(url, ReconnectConfig::default())
+    }
+
+    /// Connects to `url` with a custom reconnection policy, parking the
+    /// thread until the first attempt settles.
+    ///
+    /// This is the synchronous twin of [`Self::with_reconnect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrRelayError::Url`] when `url` is not a relay URL, and
+    /// [`NostrRelayError::Connect`] when the first connection fails.
+    ///
+    /// [`NostrRelayError::Url`]: crate::errors::NostrRelayError::Url
+    /// [`NostrRelayError::Connect`]: crate::errors::NostrRelayError::Connect
+    pub fn connect_blocking_with(
+        url: &str,
+        reconnect: ReconnectConfig,
+    ) -> Result<Self, crate::errors::NostrRelayError> {
+        let url = crate::url::RelayUrl::parse(url)?;
+        let config = crate::driver::DriverConfig::new(url).with_reconnect(reconnect);
+        Self::connect_blocking_config(config)
+    }
+
+    /// Connects with a fully specified configuration, parking the thread
+    /// until the first attempt settles.
+    ///
+    /// This is the synchronous twin of [`Self::with_driver_config`], for a
+    /// service that wants both the tuning knobs and a settled connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NostrRelayError::Tls`] when the TLS backend refuses to
+    /// build a configuration, and [`NostrRelayError::Connect`] when the
+    /// first connection fails.
+    ///
+    /// [`NostrRelayError::Tls`]: crate::errors::NostrRelayError::Tls
+    /// [`NostrRelayError::Connect`]: crate::errors::NostrRelayError::Connect
+    pub fn connect_blocking_config(
+        config: crate::driver::DriverConfig,
+    ) -> Result<Self, crate::errors::NostrRelayError> {
+        let url = config.url.clone();
+        let (relay, mut handshake) = Self::spawn(config)?;
+        Self::report(handshake.pop_block(), &url)?;
+        Ok(relay)
+    }
+
     /// Connects to `url` without waiting for the first attempt to settle.
     ///
     /// The connection proceeds on its own thread, so this returns at once.
@@ -161,7 +235,18 @@ impl NostrRelay {
         mut handshake: quetzalcoatl::spsc::Consumer<crate::driver::Handshake>,
         url: &crate::url::RelayUrl,
     ) -> Result<(), crate::errors::NostrRelayError> {
-        match handshake.pop_async().await {
+        Self::report(handshake.pop_async().await, url)
+    }
+
+    /// Turns a handshake outcome into a result.
+    ///
+    /// The async and blocking constructors differ only in how they wait, so
+    /// they share this to keep one definition of what each outcome means.
+    fn report(
+        outcome: Option<crate::driver::Handshake>,
+        url: &crate::url::RelayUrl,
+    ) -> Result<(), crate::errors::NostrRelayError> {
+        match outcome {
             Some(Ok(())) => Ok(()),
             Some(Err(reason)) => Err(crate::errors::NostrRelayError::Connect(reason)),
             None => Err(crate::errors::NostrRelayError::Connect(format!(
@@ -225,11 +310,31 @@ impl NostrRelay {
     #[allow(clippy::future_not_send)]
     pub async fn send_all<St, T>(&self, stream: St) -> Result<(), crate::errors::NostrRelayError>
     where
-        T: Into<nostro2::NostrClientEvent> + Send + Sync + std::fmt::Debug,
-        St: futures_util::Stream<Item = T> + Unpin + Sized,
+        T: Into<nostro2::NostrClientEvent> + Send + Sync,
+        St: futures_core::Stream<Item = T> + Unpin + Sized,
     {
         let mut stream = stream;
-        while let Some(msg) = futures_util::StreamExt::next(&mut stream).await {
+        while let Some(msg) = crate::next::Next(&mut stream).await {
+            self.send(msg)?;
+        }
+        Ok(())
+    }
+
+    /// Queues every message an iterator yields.
+    ///
+    /// This is the synchronous twin of [`Self::send_all`]. A service without
+    /// an executor has iterators rather than streams, and sending never
+    /// blocks, so no future is needed to drain one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error [`Self::send`] produces.
+    pub fn send_all_blocking<I, T>(&self, messages: I) -> Result<(), crate::errors::NostrRelayError>
+    where
+        T: Into<nostro2::NostrClientEvent> + Send + Sync,
+        I: IntoIterator<Item = T>,
+    {
+        for msg in messages {
             self.send(msg)?;
         }
         Ok(())

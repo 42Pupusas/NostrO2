@@ -18,7 +18,7 @@ pub struct NostrPool {
     /// One sender per relay. These are `!Sync`, so the pool owns them
     /// directly and clones them with itself rather than sharing one set.
     relays: Vec<crate::relay::NostrRelay>,
-    stream: quetzalcoatl::mpmc::Consumer<nostro2::NostrRelayEvent>,
+    stream: quetzalcoatl::mpmc::Consumer<crate::pool_event::PoolEvent>,
     /// Stops every forwarder thread when the last clone of this pool drops.
     _forwarders: std::sync::Arc<Vec<PoolForwarder>>,
 }
@@ -109,10 +109,11 @@ impl NostrPool {
         cache_size: usize,
         configure: &dyn Fn(crate::url::RelayUrl) -> crate::driver::DriverConfig,
     ) -> Self {
-        let (stream_tx, stream_rx) = quetzalcoatl::mpmc::RingBuffer::<nostro2::NostrRelayEvent>::new(
-            quetzalcoatl::capacity::Capacity::at_least(1024),
-        )
-        .split();
+        let (stream_tx, stream_rx) =
+            quetzalcoatl::mpmc::RingBuffer::<crate::pool_event::PoolEvent>::new(
+                quetzalcoatl::capacity::Capacity::at_least(1024),
+            )
+            .split();
         let seen = nostro2_cache::Cache::new(cache_size);
 
         let mut connected = Vec::with_capacity(relays.len());
@@ -193,18 +194,48 @@ impl NostrPool {
         })
     }
 
-    /// Returns the next event from any relay, waiting for one to arrive.
+    /// Returns the next protocol message from any relay, waiting for one to
+    /// arrive.
+    ///
+    /// Connection lifecycle events are consumed here, so this yields only
+    /// relay messages. `None` means every relay stopped for good.
     ///
     /// This takes `&mut self` because a reader owns its position in the
     /// stream. Clone the pool to read from another task.
     #[allow(clippy::future_not_send)]
     pub async fn recv(&mut self) -> Option<nostro2::NostrRelayEvent> {
+        loop {
+            if let Some(message) = self.stream.pop_async().await?.message() {
+                return Some(message);
+            }
+        }
+    }
+
+    /// Returns the next protocol message from any relay, parking the thread
+    /// until one arrives.
+    pub fn recv_blocking(&mut self) -> Option<nostro2::NostrRelayEvent> {
+        loop {
+            if let Some(message) = self.stream.pop_block()?.message() {
+                return Some(message);
+            }
+        }
+    }
+
+    /// Returns the next event including the connection lifecycle ones.
+    ///
+    /// A pool merges many relays, so a lifecycle event names the relay it
+    /// came from: a disconnect is only actionable when the service knows
+    /// which relay dropped.
+    #[allow(clippy::future_not_send)]
+    pub async fn recv_event(&mut self) -> Option<crate::pool_event::PoolEvent> {
         self.stream.pop_async().await
     }
 
-    /// Returns the next event from any relay, parking the thread until one
-    /// arrives.
-    pub fn recv_blocking(&mut self) -> Option<nostro2::NostrRelayEvent> {
+    /// Returns the next event including the lifecycle ones, parking the
+    /// thread until one arrives.
+    ///
+    /// This is the synchronous twin of [`Self::recv_event`].
+    pub fn recv_event_blocking(&mut self) -> Option<crate::pool_event::PoolEvent> {
         self.stream.pop_block()
     }
 
@@ -230,15 +261,20 @@ struct PoolForwarder {
 impl PoolForwarder {
     fn spawn(
         relay: crate::relay::NostrRelay,
-        stream: quetzalcoatl::mpmc::Producer<nostro2::NostrRelayEvent>,
+        stream: quetzalcoatl::mpmc::Producer<crate::pool_event::PoolEvent>,
         seen: nostro2_cache::Cache,
     ) -> Self {
         let guard = relay.guard();
+        let url = relay.url().clone();
         let mut reader = relay;
         let handle = std::thread::Builder::new()
             .name("nostr-pool-forwarder".to_owned())
             .spawn(move || {
-                while let Some(event) = reader.recv_blocking() {
+                // The lifecycle is forwarded too, so a pool reader can see a
+                // relay drop and reconnect. Deduplication still applies only
+                // to notes: a lifecycle event is never a duplicate.
+                while let Some(event) = reader.recv_event_blocking() {
+                    let event = crate::pool_event::PoolEvent::from_driver(&url, event);
                     if Self::is_duplicate(&event, &seen) {
                         continue;
                     }
@@ -255,8 +291,11 @@ impl PoolForwarder {
         }
     }
 
-    fn is_duplicate(event: &nostro2::NostrRelayEvent, seen: &nostro2_cache::Cache) -> bool {
-        let nostro2::NostrRelayEvent::NewNote(.., note) = event else {
+    fn is_duplicate(event: &crate::pool_event::PoolEvent, seen: &nostro2_cache::Cache) -> bool {
+        let crate::pool_event::PoolEvent::Message(event) = event else {
+            return false;
+        };
+        let nostro2::NostrRelayEvent::NewNote(.., note) = event.as_ref() else {
             return false;
         };
         note.id.as_ref().is_some_and(|id| !seen.insert(id.clone()))
@@ -302,6 +341,10 @@ mod tests {
         assert_eq!(pool.relays().len(), 1);
     }
 
+    fn message(event: nostro2::NostrRelayEvent) -> crate::pool_event::PoolEvent {
+        crate::pool_event::PoolEvent::Message(Box::new(event))
+    }
+
     #[test]
     fn a_duplicate_note_is_only_forwarded_once() {
         let seen = nostro2_cache::Cache::new(16);
@@ -309,14 +352,26 @@ mod tests {
             id: Some("duplicate-id".to_owned()),
             ..Default::default()
         };
-        let event = nostro2::NostrRelayEvent::NewNote(
+        let event = message(nostro2::NostrRelayEvent::NewNote(
             nostro2::RelayEventTag::Event,
             "sub".to_owned(),
             note,
-        );
+        ));
 
         assert!(!PoolForwarder::is_duplicate(&event, &seen));
         assert!(PoolForwarder::is_duplicate(&event, &seen));
+    }
+
+    // Two relays both dropping is two real events, not a duplicate. Only
+    // notes are deduplicated, because only notes have an id.
+    #[test]
+    fn a_lifecycle_event_is_never_a_duplicate() {
+        let seen = nostro2_cache::Cache::new(16);
+        let url = crate::url::RelayUrl::parse("wss://relay.example.com").unwrap();
+        let event = crate::pool_event::PoolEvent::Disconnected(url, None);
+
+        assert!(!PoolForwarder::is_duplicate(&event, &seen));
+        assert!(!PoolForwarder::is_duplicate(&event, &seen));
     }
 
     // A pool exists so one dead relay cannot silence the set. A send to a
@@ -369,10 +424,10 @@ mod tests {
     #[test]
     fn a_non_note_event_is_never_a_duplicate() {
         let seen = nostro2_cache::Cache::new(16);
-        let event = nostro2::NostrRelayEvent::Notice(
+        let event = message(nostro2::NostrRelayEvent::Notice(
             nostro2::RelayEventTag::Notice,
             "hello".to_owned(),
-        );
+        ));
 
         assert!(!PoolForwarder::is_duplicate(&event, &seen));
         assert!(!PoolForwarder::is_duplicate(&event, &seen));

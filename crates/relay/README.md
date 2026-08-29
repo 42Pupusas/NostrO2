@@ -14,7 +14,7 @@ WebSocket relay client and connection pool for the Nostr protocol.
 - **Signature Verification** - Inbound notes are checked before you see them, so a relay cannot forge events
 - **Event Deduplication** - Built-in LRU cache to prevent duplicate events across relays
 - **Configurable Crypto Backend** - Choose between Ring or AWS-LC for TLS/crypto operations
-- **No Runtime** - Each connection runs on a plain thread. The crate depends on no async runtime, and its futures run on whichever executor you already have
+- **No Runtime** - Each connection runs on a plain thread. The crate depends on no async runtime, its futures run on whichever executor you already have, and every operation has a blocking twin so you need no executor at all
 - **Lock-Free Message Passing** - Connections talk to your code through lock-free rings, with no mutex on the data path
 
 ## Built for long-lived services
@@ -313,14 +313,60 @@ work over several readers, not to give each reader a copy of the stream.
 
 ### Blocking callers
 
-Every reader has a blocking twin, for code that owns a thread rather than a
-task. No runtime is involved:
+**Every** operation has a blocking twin, so a service built on threads never
+has to poll a future. Connecting is not an asynchronous act, so it does not
+require an executor either:
 
 ```rust
+use nostro2_relay::{NostrPool, NostrRelay, PoolEvent};
+
+// A whole session, with no runtime anywhere.
+let mut relay = NostrRelay::connect_blocking("wss://relay.example.com")?;
+relay.send(filter)?;
+
 while let Some(event) = relay.recv_blocking() {
     println!("{event:?}");
 }
 ```
+
+| Async | Blocking |
+|---|---|
+| `NostrRelay::new` | `NostrRelay::connect_blocking` |
+| `NostrRelay::with_reconnect` | `NostrRelay::connect_blocking_with` |
+| `NostrRelay::with_driver_config` + await | `NostrRelay::connect_blocking_config` |
+| `NostrRelay::recv` | `NostrRelay::recv_blocking` |
+| `NostrRelay::recv_event` | `NostrRelay::recv_event_blocking` |
+| `NostrRelay::send_all` | `NostrRelay::send_all_blocking` |
+| `NostrPool::recv` | `NostrPool::recv_blocking` |
+| `NostrPool::recv_event` | `NostrPool::recv_event_blocking` |
+
+`send`, `close`, and every `NostrPool` constructor are already synchronous:
+sending only pushes to a ring, so it never blocks.
+
+A pool reacting to its own lifecycle, still with no executor:
+
+```rust
+let mut pool = NostrPool::new(&["wss://relay.example.com"]);
+pool.send(filter)?;
+
+while let Some(event) = pool.recv_event_blocking() {
+    match event {
+        // A merged stream names the relay, so a drop is actionable.
+        PoolEvent::Disconnected(url, reason) => eprintln!("{url} dropped: {reason:?}"),
+        PoolEvent::Connected(url) => println!("{url} is back, subscriptions restored"),
+        PoolEvent::Message(event) => println!("{event:?}"),
+        PoolEvent::Exhausted(url) => eprintln!("{url} gave up"),
+    }
+}
+```
+
+`tests/blocking_only.rs` exercises the crate without writing `.await` once,
+so this parity cannot quietly lapse.
+
+The dependency list reflects it too: the only async crate the library links
+is `futures-core`, which has no dependencies of its own and supplies the
+`Stream` trait for `send_all`. `cargo tree -p nostro2-relay --edges normal`
+shows no runtime and no proc-macro chain behind it.
 
 ## Performance Considerations
 
