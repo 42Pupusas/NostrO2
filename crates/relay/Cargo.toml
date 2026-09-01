@@ -1,6 +1,6 @@
 [package]
 name = "nostro2-relay"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.87"
 categories = ["authentication", "cryptography", "web-programming"]
@@ -16,6 +16,11 @@ documentation = "https://docs.rs/nostro2-relay"
 default = ["rustls-ring", "serde", "k256"]
 rustls-ring = ["rustls/ring"]
 rustls-aws-lc = ["rustls/aws-lc-rs"]
+# Link no crypto provider at all, and take one from the caller instead
+# (`RelayTls::with_provider`, `RelayTls::from_config`, or a process-wide
+# default). This is how a provider this crate does not know about, such as
+# `rustls-rustcrypto`, is used. Enable it with `default-features = false`.
+rustls-custom-provider = []
 # Curve backend for inbound signature checking. Without one the driver
 # cannot inspect a signature and admits every note it parses, so a relay
 # could forge events from any pubkey. Mutually exclusive, like the JSON
@@ -55,6 +60,10 @@ serde_json = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["std", "tls12"], default-features = false }
 
 [dev-dependencies]
+# Under `rustls-custom-provider` the library links no crypto provider. The
+# tests stand in for the consumer that supplies one, so they need a provider
+# of their own. This never reaches the library graph.
+rustls = { version = "0.23", features = ["std", "tls12", "ring"], default-features = false }
 # The benchmark drives streams with the usual combinators. The library
 # itself needs only the `Stream` trait, so this stays a dev-dependency.
 futures-util.workspace = true

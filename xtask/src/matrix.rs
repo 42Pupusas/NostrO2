@@ -25,7 +25,10 @@ impl Matrix {
                 combos.push(Combo::new("nostro2", &[json, curve]));
                 combos.push(Combo::new("nostro2-signer", &[json, curve]));
                 combos.push(Combo::new("nostro2-nips", &[json, curve]));
-                for tls in ["rustls-ring", "rustls-aws-lc"] {
+                // `rustls-custom-provider` links no provider and takes one
+                // from the caller. It is a third TLS choice, not an absence
+                // of one, so it belongs here beside the built-in providers.
+                for tls in ["rustls-ring", "rustls-aws-lc", "rustls-custom-provider"] {
                     combos.push(Combo::new("nostro2-relay", &[tls, json, curve]));
                 }
             }
@@ -93,15 +96,30 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_covers_both_tls_providers() {
+    fn the_relay_covers_every_tls_choice() {
         let matrix = Matrix::new();
-        for tls in ["rustls-ring", "rustls-aws-lc"] {
+        for tls in ["rustls-ring", "rustls-aws-lc", "rustls-custom-provider"] {
             assert!(
                 matrix
                     .combos()
                     .iter()
                     .any(|c| c.package() == "nostro2-relay" && c.feature_list().contains(tls)),
                 "the relay never gets built with {tls}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_combination_enables_a_provider_alongside_the_custom_one() {
+        for combo in Matrix::new().combos() {
+            let features = combo.feature_list();
+            if !features.contains("rustls-custom-provider") {
+                continue;
+            }
+            assert!(
+                !features.contains("rustls-ring") && !features.contains("rustls-aws-lc"),
+                "{} links a provider while claiming the caller supplies one",
+                combo.label()
             );
         }
     }

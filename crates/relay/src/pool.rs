@@ -88,8 +88,8 @@ impl NostrPool {
     /// Connects to every relay with a fully specified driver configuration.
     ///
     /// `configure` builds the configuration for one relay URL, so a pool can
-    /// tune the liveness probe, the ring sizes, or the IO pace that the
-    /// simpler constructors leave at their defaults.
+    /// tune the liveness probe, the ring sizes, the IO pace, or the TLS
+    /// setup that the simpler constructors leave at their defaults.
     ///
     /// # Example
     /// ```no_run
@@ -103,6 +103,25 @@ impl NostrPool {
     ///     })
     /// });
     /// ```
+    ///
+    /// Give every relay one TLS configuration by capturing it in the
+    /// closure. Cloning a [`RelayTls`] shares the root store rather than
+    /// rebuilding it per relay.
+    ///
+    /// ```no_run
+    /// use nostro2_relay::{DriverConfig, NostrPool, RelayTls};
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tls = RelayTls::new()?;
+    /// let pool = NostrPool::with_driver_config(&["wss://relay.example.com"], 10_000, &|url| {
+    ///     DriverConfig::new(url).with_tls(tls.clone())
+    /// });
+    /// # let _ = pool;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`RelayTls`]: crate::tls::RelayTls
     #[must_use]
     pub fn with_driver_config(
         relays: &[&str],

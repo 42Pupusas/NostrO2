@@ -22,17 +22,34 @@ impl Cli {
         let runner = runner::Runner::new();
         let jobs = matrix.jobs();
 
-        println!("running {} jobs\n", jobs.len());
+        let total = jobs.len();
+        println!("running {total} jobs\n");
 
-        let mut outcomes = Vec::with_capacity(jobs.len());
-        for (combo, task) in jobs {
+        // Each job rebuilds from scratch, because every combination changes
+        // the feature set. Announce the job before running it: a run that
+        // prints nothing for minutes is indistinguishable from a hang.
+        let started = std::time::Instant::now();
+        let mut outcomes = Vec::with_capacity(total);
+        for (index, (combo, task)) in jobs.into_iter().enumerate() {
+            print!("[{:>2}/{total}] {} {} ... ", index + 1, task.name(), combo.label());
+            Self::flush();
+
+            let job_started = std::time::Instant::now();
             let outcome = runner.run(&combo, task);
-            println!("{}", outcome.headline());
+            println!(
+                "{} ({:.1}s)",
+                if outcome.passed() { "ok" } else { "FAIL" },
+                job_started.elapsed().as_secs_f64()
+            );
             outcomes.push(outcome);
         }
 
         let report = runner::Report::new(outcomes);
-        println!("\n{}", report.summary());
+        println!(
+            "\n{} in {:.1}s",
+            report.summary(),
+            started.elapsed().as_secs_f64()
+        );
 
         for failure in report.failures() {
             println!("\n=== {} ===\n{}", failure.label(), failure.output());
@@ -43,6 +60,13 @@ impl Cli {
         } else {
             std::process::ExitCode::FAILURE
         }
+    }
+
+    /// Pushes the pending line out before a job starts, so the label is
+    /// visible while the job runs rather than after it ends.
+    fn flush() {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
     }
 }
 

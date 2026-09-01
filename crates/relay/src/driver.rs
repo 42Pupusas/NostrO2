@@ -55,6 +55,11 @@ pub struct DriverConfig {
     /// broken connection looks exactly like a quiet one and the driver
     /// waits forever instead of reconnecting.
     pub heartbeat: crate::heartbeat::HeartbeatConfig,
+    /// The TLS configuration, or `None` to build the default one.
+    ///
+    /// Set this to choose the crypto provider, the root store, or client
+    /// certificates. A `ws://` relay never reads it.
+    pub tls: Option<crate::tls::RelayTls>,
 }
 
 impl DriverConfig {
@@ -84,7 +89,48 @@ impl DriverConfig {
             write_timeout: Self::DEFAULT_WRITE_TIMEOUT,
             verify: crate::verifier::VerifyPolicy::default(),
             heartbeat: crate::heartbeat::HeartbeatConfig::default(),
+            tls: None,
         }
+    }
+
+    /// Replaces the TLS configuration.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use nostro2_relay::{DriverConfig, RelayTls, RelayUrl};
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let url = RelayUrl::parse("wss://relay.example.com")?;
+    /// let config = DriverConfig::new(url).with_tls(RelayTls::new()?);
+    /// # let _ = config;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_tls(mut self, tls: crate::tls::RelayTls) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+
+    /// The TLS configuration, building the default one when none was set.
+    ///
+    /// A `ws://` relay never starts a TLS session, so no configuration is
+    /// built for one. Without that, a plaintext connection would demand a
+    /// crypto provider it never uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::tls::RelayTlsError`] when the URL is secure, no
+    /// configuration was set, and the default cannot be built, which under
+    /// `rustls-custom-provider` means no provider was supplied.
+    pub fn tls(&self) -> Result<Option<crate::tls::RelayTls>, crate::tls::RelayTlsError> {
+        if let Some(tls) = self.tls.clone() {
+            return Ok(Some(tls));
+        }
+        if !self.url.is_secure() {
+            return Ok(None);
+        }
+        crate::tls::RelayTls::new().map(Some)
     }
 
     /// Replaces the liveness policy.
@@ -174,7 +220,7 @@ impl std::fmt::Debug for DriverPorts {
 /// The IO thread of one relay.
 pub struct RelayDriver {
     url: crate::url::RelayUrl,
-    tls: crate::tls::RelayTls,
+    tls: Option<crate::tls::RelayTls>,
     schedule: crate::reconnect::ReconnectSchedule,
     shutdown: crate::guard::Shutdown,
     connect_timeout: std::time::Duration,
@@ -198,7 +244,7 @@ impl RelayDriver {
     ///
     /// Panics when the operating system refuses to spawn the thread.
     #[must_use]
-    pub fn spawn(config: DriverConfig, tls: crate::tls::RelayTls) -> DriverPorts {
+    pub fn spawn(config: DriverConfig, tls: Option<crate::tls::RelayTls>) -> DriverPorts {
         let (outbound_tx, outbound_rx) =
             quetzalcoatl::mpsc::RingBuffer::<String>::new(quetzalcoatl::capacity::Capacity::at_least(
                 config.outbound_capacity,
@@ -252,7 +298,7 @@ impl RelayDriver {
         while !self.shutdown.is_raised() {
             match crate::socket::WsSocket::connect(
                 &self.url,
-                &self.tls,
+                self.tls.as_ref(),
                 self.connect_timeout,
                 self.read_timeout,
                 self.write_timeout,
@@ -477,7 +523,7 @@ mod tests {
         }
 
         fn spawn_driver(&self) -> DriverPorts {
-            RelayDriver::spawn(self.config(), crate::tls::RelayTls::new().unwrap())
+            RelayDriver::spawn(self.config(), Some(crate::tls::RelayTls::testing()))
         }
     }
 
@@ -711,7 +757,7 @@ mod tests {
     fn a_trusting_driver_admits_a_forged_note() {
         let relay = FakeRelay::serving(Script::SendForgedNote);
         let config = relay.config().with_verify(crate::verifier::VerifyPolicy::Trust);
-        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
         assert!(matches!(
             Awaited::message(&ports),
             nostro2::NostrRelayEvent::NewNote(..)
@@ -748,7 +794,7 @@ mod tests {
         let config = relay
             .config()
             .with_read_timeout(std::time::Duration::from_millis(20));
-        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let mut ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
         assert_eq!(Awaited::handshake(&mut ports), Ok(()));
         Awaited::drain(&ports);
 
@@ -779,7 +825,7 @@ mod tests {
         let config = relay
             .config()
             .with_read_timeout(std::time::Duration::from_millis(10));
-        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let mut ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
         assert_eq!(Awaited::handshake(&mut ports), Ok(()));
 
         let stopping = std::time::Instant::now();
@@ -804,7 +850,7 @@ mod tests {
                 idle_timeout: std::time::Duration::from_millis(100),
                 reply_timeout: std::time::Duration::from_millis(100),
             });
-        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
@@ -826,7 +872,7 @@ mod tests {
             idle_timeout: std::time::Duration::from_millis(20),
             reply_timeout: std::time::Duration::from_millis(100),
         });
-        let mut ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let mut ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
         assert_eq!(Awaited::handshake(&mut ports), Ok(()));
         Awaited::drain(&ports);
 
@@ -900,7 +946,7 @@ mod tests {
             max_delay: std::time::Duration::from_millis(10),
             backoff_multiplier: 1.0,
         });
-        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
@@ -918,7 +964,7 @@ mod tests {
         let relay = FakeRelay::serving(Script::DropAfterUpgrade);
         let config = DriverConfig::new(relay.url())
             .with_reconnect(crate::reconnect::ReconnectConfig::disabled());
-        let ports = RelayDriver::spawn(config, crate::tls::RelayTls::new().unwrap());
+        let ports = RelayDriver::spawn(config, Some(crate::tls::RelayTls::testing()));
         Awaited::settle();
         Awaited::settle();
         drop(ports);

@@ -45,7 +45,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nostro2-relay = "0.6"
+nostro2-relay = "0.7"
 ```
 
 ### Choosing a Crypto Backend
@@ -55,17 +55,68 @@ By default, `nostro2-relay` uses the Ring crypto library. You can switch to AWS-
 ```toml
 [dependencies]
 # Use Ring (default)
-nostro2-relay = "0.6"
+nostro2-relay = "0.7"
 
 # Or use AWS-LC. `default-features = false` also drops the default `serde`
 # JSON backend, so name one explicitly.
-nostro2-relay = { version = "0.6", default-features = false, features = ["rustls-aws-lc", "serde"] }
+nostro2-relay = { version = "0.7", default-features = false, features = ["rustls-aws-lc", "serde"] }
 ```
 
 **Why choose one over the other?**
 
 - **Ring** (default): Pure Rust, well-audited, works everywhere including WASM
 - **AWS-LC**: AWS's cryptographic library, potentially faster on some platforms, FIPS-validated builds available
+
+### Bringing Your Own Provider
+
+Enable `rustls-custom-provider` to link no provider at all and supply your
+own, such as [`rustls-rustcrypto`](https://crates.io/crates/rustls-rustcrypto):
+
+```toml
+[dependencies]
+nostro2-relay = { version = "0.7", default-features = false, features = [
+    "rustls-custom-provider",
+    "serde",
+    "k256",
+] }
+rustls-rustcrypto = "0.0.2-alpha"
+```
+
+Pass the provider to `RelayTls`, then hand that to the driver:
+
+```rust,ignore
+use nostro2_relay::{DriverConfig, NostrRelay, RelayTls, RelayUrl};
+
+let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
+let tls = RelayTls::with_provider(provider)?;
+
+let url = RelayUrl::parse("wss://relay.example.com")?;
+let relay = NostrRelay::connect_blocking_config(DriverConfig::new(url).with_tls(tls))?;
+```
+
+For a custom root store, client certificates, or specific protocol versions,
+build the `rustls::ClientConfig` yourself and wrap it with
+`RelayTls::from_config`. Build it against `nostro2_relay::rustls`, the
+re-export of the exact `rustls` this crate links, so the types agree:
+
+```rust,ignore
+use nostro2_relay::{rustls, DriverConfig, NostrPool, RelayTls};
+
+let config = rustls::ClientConfig::builder_with_provider(provider)
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(my_roots)
+    .with_no_client_auth();
+
+// One configuration for every relay: cloning shares the root store.
+let tls = RelayTls::from_config(config);
+let pool = NostrPool::with_driver_config(&["wss://relay.example.com"], 10_000, &|url| {
+    DriverConfig::new(url).with_tls(tls.clone())
+});
+```
+
+A build with `rustls-custom-provider` that supplies nothing gets
+`RelayTlsError::NoProvider` on the first connection, naming the three ways
+to fix it, rather than a panic from inside `rustls`.
 
 ## Usage
 

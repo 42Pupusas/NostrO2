@@ -226,7 +226,9 @@ fn a_relay_that_stops_reading_does_not_freeze_the_driver() {
                         std::time::Duration::from_millis(10),
                     ))
                     .with_write_timeout(std::time::Duration::from_millis(300)),
-                nostro2_relay::RelayTls::new().unwrap(),
+                // Every relay here is `ws://`, which starts no TLS session
+                // and therefore needs no crypto provider.
+                None,
             );
             assert!(ports.handshake.pop_block().unwrap().is_ok());
 

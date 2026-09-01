@@ -216,7 +216,7 @@ impl NostrRelay {
         crate::errors::NostrRelayError,
     > {
         let url = config.url.clone();
-        let tls = crate::tls::RelayTls::new()?;
+        let tls = config.tls()?;
         let ports = crate::driver::RelayDriver::spawn(config, tls);
         Ok((
             Self {

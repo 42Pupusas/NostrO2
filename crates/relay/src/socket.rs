@@ -191,13 +191,18 @@ impl WsSocket {
     /// it during the upgrade would fail every relay that takes longer than
     /// a few milliseconds to reply.
     ///
+    /// `tls` is only read for a `wss://` URL. A plaintext relay starts no
+    /// TLS session, so it needs no configuration and no crypto provider.
+    ///
     /// # Errors
     ///
     /// Returns [`WsSocketError`] when resolution, connection, TLS, or the
-    /// upgrade fails.
+    /// upgrade fails, and [`WsSocketError::Tls`] carrying
+    /// [`crate::tls::RelayTlsError::NoProvider`] when `url` is secure but
+    /// `tls` is `None`.
     pub fn connect(
         url: &crate::url::RelayUrl,
-        tls: &crate::tls::RelayTls,
+        tls: Option<&crate::tls::RelayTls>,
         connect_timeout: std::time::Duration,
         read_timeout: std::time::Duration,
         write_timeout: std::time::Duration,
@@ -209,6 +214,7 @@ impl WsSocket {
         // bound applies to plain and encrypted transports alike.
         stream.set_write_timeout(Some(write_timeout))?;
         let transport = if url.is_secure() {
+            let tls = tls.ok_or(crate::tls::RelayTlsError::NoProvider)?;
             Transport::Tls(Box::new(tls.connect(url.host(), stream)?))
         } else {
             Transport::Plain(stream)
@@ -472,7 +478,7 @@ mod tests {
         fn client(&self) -> WsSocket {
             WsSocket::connect(
                 &self.url(),
-                &crate::tls::RelayTls::new().unwrap(),
+                Some(&crate::tls::RelayTls::testing()),
                 std::time::Duration::from_secs(5),
                 std::time::Duration::from_millis(200),
                 std::time::Duration::from_secs(5),
@@ -607,7 +613,7 @@ mod tests {
         let server = EchoServer::dawdling();
         let mut socket = WsSocket::connect(
             &server.url(),
-            &crate::tls::RelayTls::new().unwrap(),
+            Some(&crate::tls::RelayTls::testing()),
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(5),
             std::time::Duration::from_secs(5),
@@ -688,7 +694,7 @@ mod tests {
         let server = EchoServer::refusing();
         let error = WsSocket::connect(
             &server.url(),
-            &crate::tls::RelayTls::new().unwrap(),
+            Some(&crate::tls::RelayTls::testing()),
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(200),
             std::time::Duration::from_secs(5),
@@ -721,7 +727,7 @@ mod tests {
         let url = crate::url::RelayUrl::parse(&format!("ws://127.0.0.1:{port}")).unwrap();
         let mut socket = WsSocket::connect(
             &url,
-            &crate::tls::RelayTls::new().unwrap(),
+            Some(&crate::tls::RelayTls::testing()),
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(5),
             std::time::Duration::from_millis(200),
@@ -756,7 +762,7 @@ mod tests {
         let url = crate::url::RelayUrl::parse(&format!("ws://127.0.0.1:{port}")).unwrap();
         let error = WsSocket::connect(
             &url,
-            &crate::tls::RelayTls::new().unwrap(),
+            Some(&crate::tls::RelayTls::testing()),
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(200),
             std::time::Duration::from_secs(5),
@@ -770,7 +776,7 @@ mod tests {
         let url = crate::url::RelayUrl::parse("ws://relay.invalid.invalid:80").unwrap();
         let error = WsSocket::connect(
             &url,
-            &crate::tls::RelayTls::new().unwrap(),
+            Some(&crate::tls::RelayTls::testing()),
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(200),
             std::time::Duration::from_secs(5),

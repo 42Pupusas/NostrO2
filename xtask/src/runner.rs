@@ -4,7 +4,6 @@ use crate::combo::{Combo, Task};
 #[derive(Debug, Clone)]
 pub struct Outcome {
     label: String,
-    task: Task,
     passed: bool,
     output: String,
 }
@@ -12,11 +11,6 @@ pub struct Outcome {
 impl Outcome {
     pub fn passed(&self) -> bool {
         self.passed
-    }
-
-    pub fn headline(&self) -> String {
-        let mark = if self.passed { "ok  " } else { "FAIL" };
-        format!("{mark} {} {}", self.task.name(), self.label)
     }
 
     pub fn output(&self) -> &str {
@@ -59,7 +53,6 @@ impl Runner {
             // report that shows only one of them cannot be acted on.
             Ok(output) => Outcome {
                 label: combo.label(),
-                task,
                 passed: output.status.success(),
                 output: format!(
                     "{}{}",
@@ -69,7 +62,6 @@ impl Runner {
             },
             Err(e) => Outcome {
                 label: combo.label(),
-                task,
                 passed: false,
                 output: format!("could not start cargo: {e}"),
             },
@@ -112,7 +104,6 @@ mod tests {
     fn outcome(passed: bool) -> Outcome {
         Outcome {
             label: "pkg [feat]".to_string(),
-            task: Task::Test,
             passed,
             output: String::new(),
         }
@@ -131,12 +122,6 @@ mod tests {
         assert!(!report.is_green());
         assert_eq!(report.failures().len(), 1);
         assert_eq!(report.summary(), "1 of 2 jobs failed");
-    }
-
-    #[test]
-    fn a_headline_marks_a_failure_visibly() {
-        assert!(outcome(false).headline().starts_with("FAIL"));
-        assert!(outcome(true).headline().starts_with("ok"));
     }
 
     #[test]

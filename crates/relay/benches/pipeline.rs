@@ -244,7 +244,7 @@ impl RuntimeFreeRun {
         let parsed = nostro2_relay::RelayUrl::parse(url).unwrap();
         let config = nostro2_relay::DriverConfig::new(parsed).with_verify(verify);
         let ports =
-            nostro2_relay::RelayDriver::spawn(config, nostro2_relay::RelayTls::new().unwrap());
+            nostro2_relay::RelayDriver::spawn(config, None);
         ports.outbound.push(Fixture::request_frame()).unwrap();
         let nostro2_relay::DriverPorts { inbound, guard, .. } = ports;
         Self {

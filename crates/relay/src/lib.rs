@@ -34,6 +34,27 @@
 //! supplies the `Stream` trait for [`NostrRelay::send_all`]. A caller that
 //! never touches the async surface still compiles nothing extra.
 //!
+//! # Choosing a crypto provider
+//!
+//! TLS is `rustls`, and the provider is a build-time choice:
+//!
+//! - `rustls-ring` (default) or `rustls-aws-lc` link a provider directly.
+//! - `rustls-custom-provider` links none, and the caller supplies one.
+//!
+//! The third exists because a provider this crate does not know about, such
+//! as `rustls-rustcrypto`, is still a valid choice. Pass it to
+//! [`RelayTls::with_provider`], or build a whole [`rustls::ClientConfig`]
+//! and pass that to [`RelayTls::from_config`] when the root store, the
+//! client certificates, or the protocol versions also need to change. Give
+//! the result to [`DriverConfig::with_tls`]; cloning a [`RelayTls`] shares
+//! one root store across every relay in a pool.
+//!
+//! Build configurations against the [`rustls`] re-exported here, so the
+//! types match the version the driver uses.
+//!
+//! A `ws://` relay starts no TLS session, so it needs no provider at all
+//! and never builds a configuration.
+//!
 //! # Long-lived services
 //!
 //! The intended user is a daemon that holds a pool open for weeks and
@@ -73,13 +94,19 @@
     clippy::pedantic,
     clippy::nursery
 )]
-// A TLS backend is mandatory: `rustls` needs exactly one crypto provider,
-// and without a `rustls-*` feature it compiles with none, failing on a
-// missing provider rather than anything readable. Turn that into a single
-// clear line.
-#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
+// A crypto provider is mandatory, but it does not have to be one this crate
+// links. Enable `rustls-ring` or `rustls-aws-lc` to get one built in, or
+// `rustls-custom-provider` to promise you will supply your own through
+// `RelayTls::with_provider`, `RelayTls::from_config`, or a process-wide
+// default. Without any of the three, `rustls` would fail far from here on a
+// missing provider, so say it plainly instead.
+#[cfg(not(any(
+    feature = "rustls-ring",
+    feature = "rustls-aws-lc",
+    feature = "rustls-custom-provider"
+)))]
 compile_error!(
-    "nostro2-relay needs a TLS backend; enable exactly one of `rustls-ring` (default) or `rustls-aws-lc`"
+    "nostro2-relay needs a rustls crypto provider: enable `rustls-ring` (default), `rustls-aws-lc`, or `rustls-custom-provider` to supply your own"
 );
 
 mod driver;
@@ -98,6 +125,11 @@ mod tls;
 mod url;
 mod verifier;
 pub use nostro2;
+/// The `rustls` this crate links.
+///
+/// Build custom [`RelayTls`] configurations against this re-export, so the
+/// types match the version the driver uses.
+pub use rustls;
 pub use pool::NostrPool;
 pub use pool_event::PoolEvent;
 pub use driver::{DriverConfig, DriverEvent, DriverPorts, Handshake, RelayDriver};
