@@ -19,12 +19,23 @@
 //! measurement is honest: transport alone plus verification alone equals
 //! the full steady-state number, with nothing unexplained.
 //!
-//! The two crates use different curve backends: `nostro2` verifies with
-//! pure-Rust `k256`, `nostr-sdk` with the `secp256k1` C library. On this
-//! fixture that alone is a ~12ms difference over 500 notes, which is
-//! several times the whole transport cost. The `verification` arms measure
-//! it directly, and the `no verify` arm removes it, so the numbers
-//! separate crypto from pipeline rather than blending them.
+//! The two crates use different curve backends by default: `nostro2`
+//! verifies with pure-Rust `k256`, `nostr-sdk` with the `secp256k1` C
+//! library. On this fixture that alone is a ~14ms difference over 500
+//! notes, which dwarfs the entire transport cost, so a default-build
+//! comparison measures the crypto libraries and not these two pipelines.
+//!
+//! Build with `--no-default-features --features rustls-ring,serde,secp256k1`
+//! to put both arms on the same backend. Doing that gives verification
+//! 18.4ms against 17.5ms and steady state 21.4ms against 20.5ms, so the
+//! transports land at 2.95ms and 2.97ms: level. The `verification` arms
+//! measure the crypto directly and the `no verify` arm removes it, so the
+//! numbers separate the two rather than blending them.
+//!
+//! Both `steady state` arms drain an already open subscription, and both
+//! `lifecycle` arms include connect and teardown. Comparing across those
+//! two groups compares different spans and reads as a difference that is
+//! not there.
 //!
 //! `nostr-sdk` also keeps a verification LRU, an event database, and an
 //! admission policy on this path, so it does strictly more per event than
@@ -63,6 +74,22 @@ const COUNT: usize = 500;
 /// every fixture note under that id and an EOSE. The id must be echoed:
 /// `nostr-sdk` rejects an event whose subscription id it did not issue,
 /// and generates a random one per subscription.
+///
+/// # Why the writes are buffered
+///
+/// The socket is `set_nodelay(true)`, so an unbuffered `send` per note
+/// puts each note in its own TCP segment and the reader gets one frame
+/// per `read` syscall. Instrumenting that showed 467 reads for 500
+/// frames at 385 bytes each, and the syscalls were 84% of the measured
+/// transport: the fixture, not the crate under test, set the pace.
+///
+/// A real relay answering a REQ writes a backlog as fast as the socket
+/// accepts it, so the frames coalesce. Wrapping the stream in a
+/// [`BufWriter`] and flushing once after the burst reproduces that, and
+/// makes the arms measure the client pipelines rather than the fixture's
+/// syscall rate.
+///
+/// [`BufWriter`]: std::io::BufWriter
 struct FixtureRelay {
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -108,7 +135,7 @@ impl FixtureRelay {
         stream
             .set_read_timeout(Some(std::time::Duration::from_millis(20)))
             .unwrap();
-        let Ok(mut ws) = tungstenite::accept(stream) else {
+        let Ok(mut ws) = tungstenite::accept(BufferedStream::wrap(stream)) else {
             return;
         };
         while !halt.load(std::sync::atomic::Ordering::Relaxed) {
@@ -119,11 +146,11 @@ impl FixtureRelay {
                     };
                     for note in notes {
                         let frame = format!("[\"EVENT\",\"{id}\",{note}]");
-                        if ws.send(tungstenite::Message::Text(frame.into())).is_err() {
+                        if ws.write(tungstenite::Message::Text(frame.into())).is_err() {
                             return;
                         }
                     }
-                    let _ = ws.send(tungstenite::Message::Text(
+                    let _ = ws.write(tungstenite::Message::Text(
                         format!("[\"EOSE\",\"{id}\"]").into(),
                     ));
                     let _ = ws.flush();
@@ -156,6 +183,42 @@ impl Drop for FixtureRelay {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+/// A `TcpStream` whose writes are buffered until flushed.
+///
+/// `tungstenite` needs one value that both reads and writes, so the
+/// buffering cannot simply wrap the write half. Reads pass straight
+/// through; writes accumulate and leave in one segment on flush.
+struct BufferedStream {
+    reader: std::net::TcpStream,
+    writer: std::io::BufWriter<std::net::TcpStream>,
+}
+
+impl BufferedStream {
+    fn wrap(stream: std::net::TcpStream) -> Self {
+        let writer = std::io::BufWriter::with_capacity(1 << 20, stream.try_clone().unwrap());
+        Self {
+            reader: stream,
+            writer,
+        }
+    }
+}
+
+impl std::io::Read for BufferedStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.reader, buf)
+    }
+}
+
+impl std::io::Write for BufferedStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::io::Write::write(&mut self.writer, buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.writer)
     }
 }
 
@@ -289,6 +352,28 @@ impl TokioRun {
             .unwrap()
     }
 
+    /// Opens a connection and subscribes, leaving the events to be drained.
+    ///
+    /// The returned stream is the SDK's counterpart to a [`RuntimeFreeRun`]
+    /// that has already sent its REQ, so draining it measures the same span
+    /// this crate's `steady state` arms measure.
+    fn open(
+        runtime: &tokio::runtime::Runtime,
+        url: &str,
+    ) -> (nostr_sdk::relay::Relay, impl futures_util::Stream + Unpin) {
+        runtime.block_on(async {
+            use nostr_sdk::prelude::*;
+
+            let parsed = RelayUrl::parse(url).unwrap();
+            let client = nostr_sdk::relay::Relay::new(parsed);
+            client.try_connect().await.unwrap();
+
+            let filter = Filter::new().kind(Kind::TextNote);
+            let stream = client.stream_events(filter).await.unwrap();
+            (client, Box::pin(stream))
+        })
+    }
+
     /// Connect, drain, and disconnect, matching the SDK's own idiom.
     fn lifecycle(runtime: &tokio::runtime::Runtime, url: &str) -> usize {
         runtime.block_on(async {
@@ -366,6 +451,23 @@ fn lifecycle_nostro2(bencher: divan::Bencher) {
     });
 }
 
+/// Receiving 500 events through `nostr-sdk` on an already open connection.
+///
+/// The counterpart to the `steady state` arms above. Without this arm the
+/// only nostr-sdk number is a full lifecycle, and comparing our drain to
+/// their connect-drain-disconnect measures different spans.
+#[divan::bench(name = "steady state: nostr-sdk (tokio + channels)", sample_count = 20)]
+fn steady_nostr_sdk(bencher: divan::Bencher) {
+    let relay = FixtureRelay::start(Fixture::notes(COUNT));
+    let url = relay.url();
+    let runtime = TokioRun::runtime();
+    bencher
+        .with_inputs(|| TokioRun::open(&runtime, &url))
+        .bench_local_refs(|(_client, stream)| {
+            divan::black_box(runtime.block_on(TokioRun::drain(stream)))
+        });
+}
+
 /// Connect, drain, and disconnect through `nostr-sdk`.
 #[divan::bench(name = "lifecycle: nostr-sdk (signals, does not join)", sample_count = 20)]
 fn lifecycle_nostr_sdk(bencher: divan::Bencher) {
@@ -378,8 +480,31 @@ fn lifecycle_nostr_sdk(bencher: divan::Bencher) {
 /// The signature check alone, off the socket, on the same notes.
 ///
 /// This is the crypto term of the full runs above.
+///
+/// Build with `--features secp256k1` to put this arm on the same curve
+/// backend as `nostr-sdk`, which is the only way to compare the two
+/// pipelines rather than the two crypto libraries.
+#[cfg(feature = "k256")]
 #[divan::bench(name = "verification: nostro2 (k256)", sample_count = 20)]
 fn verify_nostro2(bencher: divan::Bencher) {
+    let notes: Vec<nostro2::NostrNote> = Fixture::notes(COUNT)
+        .iter()
+        .map(|frame| Fixture::decode(frame))
+        .collect();
+    bencher.bench_local(|| {
+        for note in &notes {
+            assert!(nostro2::NostrEvent::verify(divan::black_box(note)));
+        }
+    });
+}
+
+/// The same check, with this crate on `secp256k1` too.
+///
+/// Same curve, same library, same notes: the arms below are then a true
+/// like-for-like comparison of the pipelines.
+#[cfg(feature = "secp256k1")]
+#[divan::bench(name = "verification: nostro2 (secp256k1)", sample_count = 20)]
+fn verify_nostro2_secp(bencher: divan::Bencher) {
     let notes: Vec<nostro2::NostrNote> = Fixture::notes(COUNT)
         .iter()
         .map(|frame| Fixture::decode(frame))

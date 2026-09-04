@@ -93,3 +93,13 @@ harness = false
 name = "pool_attribution"
 path = "benches/pool_attribution.rs"
 harness = false
+
+[[bench]]
+name = "transport_breakdown"
+path = "benches/transport_breakdown.rs"
+harness = false
+
+[[bench]]
+name = "socket_stages"
+path = "benches/socket_stages.rs"
+harness = false
