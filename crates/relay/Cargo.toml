@@ -103,3 +103,8 @@ harness = false
 name = "socket_stages"
 path = "benches/socket_stages.rs"
 harness = false
+
+[[bench]]
+name = "allocation_census"
+path = "benches/allocation_census.rs"
+harness = false
