@@ -88,3 +88,8 @@ nostr-sdk = { version = "0.45", default-features = false, features = ["ring", "r
 name = "pipeline"
 path = "benches/pipeline.rs"
 harness = false
+
+[[bench]]
+name = "pool_attribution"
+path = "benches/pool_attribution.rs"
+harness = false

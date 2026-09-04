@@ -238,8 +238,8 @@ fn a_pool_reports_its_lifecycle_without_an_executor() {
                 match pool.recv_event_blocking() {
                     Some(nostro2_relay::PoolEvent::Message(from, _)) => {
                         assert_eq!(
-                            from,
-                            nostro2_relay::RelayUrl::parse(&url).unwrap(),
+                            from.as_ref(),
+                            &nostro2_relay::RelayUrl::parse(&url).unwrap(),
                             "a pooled message must name the relay that served it"
                         );
                         saw_message = true;

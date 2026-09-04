@@ -259,7 +259,10 @@ impl NostrPool {
     #[allow(clippy::future_not_send)]
     pub async fn recv_from(
         &mut self,
-    ) -> Option<(crate::url::RelayUrl, nostro2::NostrRelayEvent)> {
+    ) -> Option<(
+        std::sync::Arc<crate::url::RelayUrl>,
+        nostro2::NostrRelayEvent,
+    )> {
         loop {
             if let Some(message) = self.stream.pop_async().await?.into_message() {
                 return Some(message);
@@ -273,7 +276,10 @@ impl NostrPool {
     /// This is the synchronous twin of [`Self::recv_from`].
     pub fn recv_from_blocking(
         &mut self,
-    ) -> Option<(crate::url::RelayUrl, nostro2::NostrRelayEvent)> {
+    ) -> Option<(
+        std::sync::Arc<crate::url::RelayUrl>,
+        nostro2::NostrRelayEvent,
+    )> {
         loop {
             if let Some(message) = self.stream.pop_block()?.into_message() {
                 return Some(message);
@@ -325,7 +331,9 @@ impl PoolForwarder {
         seen: nostro2_cache::Cache,
     ) -> Self {
         let guard = relay.guard();
-        let url = relay.url().clone();
+        // One allocation per relay, shared by every event it produces,
+        // rather than a fresh copy of the address per message.
+        let url = std::sync::Arc::new(relay.url().clone());
         let mut reader = relay;
         let handle = std::thread::Builder::new()
             .name("nostr-pool-forwarder".to_owned())
@@ -403,7 +411,7 @@ mod tests {
 
     fn message(event: nostro2::NostrRelayEvent) -> crate::pool_event::PoolEvent {
         crate::pool_event::PoolEvent::Message(
-            crate::url::RelayUrl::parse("wss://relay.example.com").unwrap(),
+            std::sync::Arc::new(crate::url::RelayUrl::parse("wss://relay.example.com").unwrap()),
             Box::new(event),
         )
     }
@@ -430,7 +438,8 @@ mod tests {
     #[test]
     fn a_lifecycle_event_is_never_a_duplicate() {
         let seen = nostro2_cache::Cache::new(16);
-        let url = crate::url::RelayUrl::parse("wss://relay.example.com").unwrap();
+        let url =
+            std::sync::Arc::new(crate::url::RelayUrl::parse("wss://relay.example.com").unwrap());
         let event = crate::pool_event::PoolEvent::Disconnected(url, None);
 
         assert!(!PoolForwarder::is_duplicate(&event, &seen));

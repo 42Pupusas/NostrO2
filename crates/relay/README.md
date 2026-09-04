@@ -412,6 +412,9 @@ while let Some(event) = pool.recv_event_blocking() {
 }
 ```
 
+The origin is an `Arc<RelayUrl>`, so attributing a message costs a refcount
+bump rather than a copy of the address.
+
 When only the message and its origin matter, `recv_from` pairs them without
 the lifecycle events:
 
