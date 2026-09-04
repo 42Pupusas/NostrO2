@@ -402,14 +402,28 @@ pool.send(filter)?;
 
 while let Some(event) = pool.recv_event_blocking() {
     match event {
-        // A merged stream names the relay, so a drop is actionable.
+        // Every variant names its relay, so a drop is actionable and a
+        // note is attributable. `event.url()` works on any of them.
         PoolEvent::Disconnected(url, reason) => eprintln!("{url} dropped: {reason:?}"),
         PoolEvent::Connected(url) => println!("{url} is back, subscriptions restored"),
-        PoolEvent::Message(event) => println!("{event:?}"),
+        PoolEvent::Message(url, event) => println!("{url} served {event:?}"),
         PoolEvent::Exhausted(url) => eprintln!("{url} gave up"),
     }
 }
 ```
+
+When only the message and its origin matter, `recv_from` pairs them without
+the lifecycle events:
+
+```rust
+while let Some((url, event)) = pool.recv_from_blocking() {
+    println!("{url} served {event:?}");
+}
+```
+
+| Async | Blocking |
+|---|---|
+| `NostrPool::recv_from` | `NostrPool::recv_from_blocking` |
 
 `tests/blocking_only.rs` exercises the crate without writing `.await` once,
 so this parity cannot quietly lapse.

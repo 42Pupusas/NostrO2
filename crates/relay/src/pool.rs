@@ -240,6 +240,47 @@ impl NostrPool {
         }
     }
 
+    /// Returns the next protocol message together with the relay that
+    /// served it, waiting for one to arrive.
+    ///
+    /// This is [`Self::recv`] without the attribution thrown away. Use it
+    /// when the reader has to know which relay a note came through, for
+    /// per-relay accounting or trust decisions.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # async fn example() {
+    /// let mut pool = nostro2_relay::NostrPool::new(&["wss://relay.example.com"]);
+    /// while let Some((url, event)) = pool.recv_from().await {
+    ///     println!("{url} served {event:?}");
+    /// }
+    /// # }
+    /// ```
+    #[allow(clippy::future_not_send)]
+    pub async fn recv_from(
+        &mut self,
+    ) -> Option<(crate::url::RelayUrl, nostro2::NostrRelayEvent)> {
+        loop {
+            if let Some(message) = self.stream.pop_async().await?.into_message() {
+                return Some(message);
+            }
+        }
+    }
+
+    /// Returns the next protocol message and the relay that served it,
+    /// parking the thread until one arrives.
+    ///
+    /// This is the synchronous twin of [`Self::recv_from`].
+    pub fn recv_from_blocking(
+        &mut self,
+    ) -> Option<(crate::url::RelayUrl, nostro2::NostrRelayEvent)> {
+        loop {
+            if let Some(message) = self.stream.pop_block()?.into_message() {
+                return Some(message);
+            }
+        }
+    }
+
     /// Returns the next event including the connection lifecycle ones.
     ///
     /// A pool merges many relays, so a lifecycle event names the relay it
@@ -311,7 +352,7 @@ impl PoolForwarder {
     }
 
     fn is_duplicate(event: &crate::pool_event::PoolEvent, seen: &nostro2_cache::Cache) -> bool {
-        let crate::pool_event::PoolEvent::Message(event) = event else {
+        let crate::pool_event::PoolEvent::Message(_, event) = event else {
             return false;
         };
         let nostro2::NostrRelayEvent::NewNote(.., note) = event.as_ref() else {
@@ -361,7 +402,10 @@ mod tests {
     }
 
     fn message(event: nostro2::NostrRelayEvent) -> crate::pool_event::PoolEvent {
-        crate::pool_event::PoolEvent::Message(Box::new(event))
+        crate::pool_event::PoolEvent::Message(
+            crate::url::RelayUrl::parse("wss://relay.example.com").unwrap(),
+            Box::new(event),
+        )
     }
 
     #[test]

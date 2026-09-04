@@ -3,11 +3,15 @@
 //! A single relay's events already say what happened, because the reader
 //! knows which relay it is holding. A pool merges many relays into one
 //! stream, so the same events become ambiguous: "disconnected" is only
-//! actionable when it names the relay that dropped.
+//! actionable when it names the relay that dropped, and a note is only
+//! attributable when it names the relay that served it.
 //!
-//! [`PoolEvent`] is therefore a relay event plus its origin.
+//! [`PoolEvent`] is therefore a relay event plus its origin, for every
+//! variant without exception.
 
 /// One event from one relay in a pool.
+///
+/// Every variant names its relay, so [`Self::url`] is total.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoolEvent {
     /// A relay connected, and its subscriptions were restored.
@@ -16,8 +20,12 @@ pub enum PoolEvent {
     Disconnected(crate::url::RelayUrl, Option<String>),
     /// A relay gave up: its retry budget is spent, and it will send no more.
     Exhausted(crate::url::RelayUrl),
-    /// A relay delivered a protocol message.
-    Message(Box<nostro2::NostrRelayEvent>),
+    /// A relay delivered a protocol message, and which relay that was.
+    ///
+    /// The URL distinguishes otherwise identical notes arriving from
+    /// different relays, which is what makes per-relay accounting,
+    /// trust decisions, and "who served this first" possible.
+    Message(crate::url::RelayUrl, Box<nostro2::NostrRelayEvent>),
 }
 
 impl PoolEvent {
@@ -29,16 +37,18 @@ impl PoolEvent {
                 Self::Disconnected(url.clone(), reason)
             }
             crate::driver::DriverEvent::Exhausted => Self::Exhausted(url.clone()),
-            crate::driver::DriverEvent::Message(event) => Self::Message(event),
+            crate::driver::DriverEvent::Message(event) => Self::Message(url.clone(), event),
         }
     }
 
     /// The relay this event came from.
     #[must_use]
-    pub const fn url(&self) -> Option<&crate::url::RelayUrl> {
+    pub const fn url(&self) -> &crate::url::RelayUrl {
         match self {
-            Self::Connected(url) | Self::Disconnected(url, _) | Self::Exhausted(url) => Some(url),
-            Self::Message(_) => None,
+            Self::Connected(url)
+            | Self::Disconnected(url, _)
+            | Self::Exhausted(url)
+            | Self::Message(url, _) => url,
         }
     }
 
@@ -46,7 +56,28 @@ impl PoolEvent {
     #[must_use]
     pub fn message(self) -> Option<nostro2::NostrRelayEvent> {
         match self {
-            Self::Message(event) => Some(*event),
+            Self::Message(_, event) => Some(*event),
+            _ => None,
+        }
+    }
+
+    /// The protocol message together with the relay that served it.
+    ///
+    /// Use this over [`Self::message`] when the same note may arrive from
+    /// several relays and the reader has to tell them apart.
+    #[must_use]
+    pub fn into_message(self) -> Option<(crate::url::RelayUrl, nostro2::NostrRelayEvent)> {
+        match self {
+            Self::Message(url, event) => Some((url, *event)),
+            _ => None,
+        }
+    }
+
+    /// The protocol message without consuming the event.
+    #[must_use]
+    pub fn as_message(&self) -> Option<&nostro2::NostrRelayEvent> {
+        match self {
+            Self::Message(_, event) => Some(event),
             _ => None,
         }
     }
@@ -71,7 +102,7 @@ mod tests {
     #[test]
     fn a_lifecycle_event_carries_its_relay() {
         let event = PoolEvent::from_driver(&url(), crate::driver::DriverEvent::Connected);
-        assert_eq!(event.url(), Some(&url()));
+        assert_eq!(event.url(), &url());
     }
 
     #[test]
@@ -107,15 +138,53 @@ mod tests {
     #[test]
     fn a_lifecycle_event_carries_no_message() {
         let event = PoolEvent::from_driver(&url(), crate::driver::DriverEvent::Connected);
-        assert!(event.message().is_none());
+        assert!(event.as_message().is_none());
+        assert!(event.clone().message().is_none());
+        assert!(event.into_message().is_none());
     }
 
+    // The reason this type exists: a merged stream must attribute a note,
+    // not just a disconnect. A message that cannot name its relay makes
+    // per-relay accounting impossible.
     #[test]
-    fn a_message_has_no_single_url_field() {
+    fn a_message_names_the_relay_that_served_it() {
         let event = PoolEvent::from_driver(
             &url(),
             crate::driver::DriverEvent::Message(Box::new(note_event())),
         );
-        assert!(event.url().is_none());
+        assert_eq!(event.url(), &url());
+        assert_eq!(event.into_message(), Some((url(), note_event())));
+    }
+
+    // The same note from two relays is two attributable events, so a reader
+    // can tell which relay served it first.
+    #[test]
+    fn the_same_note_from_two_relays_is_told_apart_by_its_url() {
+        let other = crate::url::RelayUrl::parse("wss://other.example.com").unwrap();
+        let one = PoolEvent::from_driver(
+            &url(),
+            crate::driver::DriverEvent::Message(Box::new(note_event())),
+        );
+        let two = PoolEvent::from_driver(
+            &other,
+            crate::driver::DriverEvent::Message(Box::new(note_event())),
+        );
+
+        assert_ne!(one, two);
+        assert_eq!(one.as_message(), two.as_message());
+        assert_ne!(one.url(), two.url());
+    }
+
+    // Every variant answers, so a reader never has to unwrap an origin.
+    #[test]
+    fn every_variant_names_its_relay() {
+        for event in [
+            crate::driver::DriverEvent::Connected,
+            crate::driver::DriverEvent::Disconnected(None),
+            crate::driver::DriverEvent::Exhausted,
+            crate::driver::DriverEvent::Message(Box::new(note_event())),
+        ] {
+            assert_eq!(PoolEvent::from_driver(&url(), event).url(), &url());
+        }
     }
 }

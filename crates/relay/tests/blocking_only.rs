@@ -236,7 +236,12 @@ fn a_pool_reports_its_lifecycle_without_an_executor() {
             let mut saw_message = false;
             for _ in 0..8 {
                 match pool.recv_event_blocking() {
-                    Some(nostro2_relay::PoolEvent::Message(_)) => {
+                    Some(nostro2_relay::PoolEvent::Message(from, _)) => {
+                        assert_eq!(
+                            from,
+                            nostro2_relay::RelayUrl::parse(&url).unwrap(),
+                            "a pooled message must name the relay that served it"
+                        );
                         saw_message = true;
                         break;
                     }
@@ -289,7 +294,7 @@ fn a_service_runs_a_full_session_without_an_executor() {
                 std::thread::spawn(move || {
                     let mut seen = 0_usize;
                     while let Some(event) = reader.recv_event_blocking() {
-                        if matches!(event, nostro2_relay::PoolEvent::Message(_)) {
+                        if matches!(event, nostro2_relay::PoolEvent::Message(..)) {
                             seen += 1;
                         }
                     }
